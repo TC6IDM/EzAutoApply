@@ -13,7 +13,7 @@ const byLabel = (fields: FieldDescriptor[], text: string) => {
 };
 
 const RESUME: DocumentPayload = { name: 'Resume', fileName: 'resume.pdf', mime: 'application/pdf', base64: btoa('%PDF-1.4 test'), text: 'Jordan Rivera\nEngineer' };
-const fillCtx = { getDocument: async (kind: string) => (kind === 'resume' ? RESUME : null) };
+const fillCtx = { getDocument: async (kind: string) => (kind === 'resume' ? RESUME : null), getSecret: async () => null };
 
 beforeEach(() => {
   document.body.innerHTML = GREENHOUSE_LIKE;

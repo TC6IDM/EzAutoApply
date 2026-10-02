@@ -102,6 +102,25 @@ function saveRequest(f: FieldReport, scope: string): SaveAnswerRequest {
   return { question: f.label, fieldKind: f.kind, options: f.options.length ? f.options : undefined, canonicalKey: f.key, scope };
 }
 
+/** A field's question; clicking it scrolls the page to the field and puts the cursor there. */
+function QuestionTitle(props: { field: FieldReport; tabId: number; compact?: boolean }) {
+  const { field } = props;
+  const jump = () => {
+    send({ type: 'focusField', tabId: props.tabId, frameId: field.frameId, fieldId: field.id }).catch(() => {});
+  };
+  return (
+    <button type="button" className={`q q-link${props.compact ? ' compact' : ''}`} onClick={jump} title="Show this question on the page">
+      {field.label}
+      {field.required && !/\*\s*$/.test(field.label) && (
+        <span className="req" title="Required">
+          {' '}
+          *
+        </span>
+      )}
+    </button>
+  );
+}
+
 /** One field that needs an answer (or a second look). */
 function FieldCard(props: { field: FieldReport; tabId: number; host: string; goto(v: View): void }) {
   const { field, tabId, host } = props;
@@ -147,14 +166,32 @@ function FieldCard(props: { field: FieldReport; tabId: number; host: string; got
     }
   };
 
+  if (field.kind === 'password') {
+    // Passwords are never typed into the panel or saved as answers; they come from the account password.
+    return (
+      <li className={`card status-${field.status}`}>
+        <QuestionTitle field={field} tabId={tabId} />
+        {field.status === 'filled' ? <p className="val">Filled with your job-site account password</p> : <p className="note">{field.note ?? 'Not filled.'}</p>}
+        {field.status !== 'filled' && (
+          <Button small onClick={() => props.goto('profile')}>
+            Set account password
+          </Button>
+        )}
+      </li>
+    );
+  }
+
   if (field.kind === 'file') {
     return (
       <li className={`card status-${field.status}`}>
-        <p className="q">{field.label}</p>
+        <QuestionTitle field={field} tabId={tabId} />
         <p className="note">{field.note ?? 'No document to upload here.'}</p>
-        <Button small onClick={() => props.goto('documents')}>
-          Add a document
-        </Button>
+        <div className="row">
+          <Button small onClick={() => props.goto('documents')}>
+            Add a document
+          </Button>
+          <CopyDetails field={field} host={host} />
+        </div>
       </li>
     );
   }
@@ -162,10 +199,7 @@ function FieldCard(props: { field: FieldReport; tabId: number; host: string; got
   const typed = field.userValue !== undefined && !isBlank(field.userValue);
   return (
     <li className={`card status-${field.status}`}>
-      <p className="q">
-        {field.label}
-        {field.required && <span className="req" title="Required"> *</span>}
-      </p>
+      <QuestionTitle field={field} tabId={tabId} />
       {!editing && (
         <p className="val">
           {typed ? (
@@ -228,10 +262,38 @@ function FieldCard(props: { field: FieldReport; tabId: number; host: string; got
           <Button kind="ghost" small onClick={() => setEditing(true)}>
             Change
           </Button>
+          <CopyDetails field={field} host={host} />
         </div>
       )}
       {error && <p className="error-text">{error}</p>}
     </li>
+  );
+}
+
+/** Copies what EzAutoApply saw for a field (no values), to send in when a site isn't filled right. */
+function CopyDetails(props: { field: FieldReport; host: string }) {
+  const [copied, setCopied] = useState(false);
+  const { field } = props;
+  if (!field.debug) return null;
+  const copy = async () => {
+    const details = {
+      site: props.host,
+      label: field.label,
+      kind: field.kind,
+      status: field.status,
+      recognizedAs: field.key,
+      note: field.note,
+      options: field.options.slice(0, 20),
+      html: field.debug,
+    };
+    await navigator.clipboard.writeText(JSON.stringify(details, null, 2));
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+  return (
+    <Button kind="ghost" small onClick={copy} title="Copy what EzAutoApply saw for this field (no values) to report a problem">
+      {copied ? 'Copied ✓' : 'Copy details'}
+    </Button>
   );
 }
 
@@ -268,6 +330,7 @@ export function ApplyView(props: { tab: ActiveTab | null; goto(v: View, opts?: {
   const host = tab ? hostOf(tab.url) : '';
   const fields = useMemo(() => state.reports.flatMap((r) => r.fields), [state]);
   const classifierError = state.reports.find((r) => r.classifierError)?.classifierError;
+  const pending = state.reports.find((r) => r.pending)?.pending;
 
   useEffect(() => setError(''), [tab?.id]);
 
@@ -342,6 +405,14 @@ export function ApplyView(props: { tab: ActiveTab | null; goto(v: View, opts?: {
       </div>
 
       {error && <Banner tone="error">{error}</Banner>}
+      {pending && (
+        <Banner tone="info">
+          <span className="pending">
+            <span className="spinner" aria-hidden="true" />
+            {pending} Anything it can answer is filled in automatically; you can start on the questions below meanwhile.
+          </span>
+        </Banner>
+      )}
       {classifierError && (
         <Banner tone="warn">
           The classifier wasn’t available ({classifierError}), so questions the rules didn’t recognize were left for you.
@@ -397,7 +468,7 @@ export function ApplyView(props: { tab: ActiveTab | null; goto(v: View, opts?: {
             <ul className="filled-list">
               {byStatus('filled').map((f) => (
                 <li key={`${f.frameId}:${f.id}`}>
-                  <span className="q">{f.label}</span>
+                  <QuestionTitle field={f} tabId={tab.id} compact />
                   <span className="v">{f.valueText || shown(f.current)}</span>
                 </li>
               ))}

@@ -29,6 +29,10 @@
         <label for="resume">Resume/CV *</label>
         <div class="dropzone">Drop your resume here <input type="file" id="resume" name="resume" required /></div>
       </div>
+      <div class="field">
+        <label for="cover_letter">Cover Letter</label>
+        <div class="dropzone">Drop your cover letter here <input type="file" id="cover_letter" name="cover_letter" /></div>
+      </div>
 
       <h2>Questions</h2>
       <fieldset>
@@ -55,6 +59,14 @@
     <iframe src="/frame.html" title="Additional details"></iframe>
 
     <script>
+      // Like most upload widgets, show the chosen file's name.
+      for (const input of document.querySelectorAll('.dropzone input[type=file]')) {
+        const name = document.createElement('div');
+        name.className = 'file-name';
+        input.closest('.dropzone').after(name);
+        input.addEventListener('change', () => (name.textContent = [...input.files].map((f) => f.name).join(', ')));
+      }
+
       // A react-select-style dropdown: options render only while it's open.
       const input = document.getElementById('country');
       const list = document.getElementById('country-list');

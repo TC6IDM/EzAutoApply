@@ -54,11 +54,26 @@ Import a resume (PDF, DOCX or TXT) on the **Profile** tab. The parser:
 2. Splits it into sections ("Experience", "Work History", "Technical Skills", and so on) using a list of known headings. Headings it doesn't recognize go to the classifier.
 3. Breaks each section into entries using date ranges ("Jun 2021 – Present") and bullets, and pulls out titles, companies, schools, degrees, GPA, links and skills.
 
-You then **review and save**. The parser gets most things right but not everything, so nothing is saved until you confirm it. The profile also holds what resumes don't: work authorization, sponsorship, salary expectations, start date, and voluntary EEO answers (which default to "Decline to self-identify"). Every field stays editable.
+You can drag the file onto the import box or choose it. You then **review and save**. The parser gets most things right but not everything, so nothing is saved until you confirm it. The profile also holds what resumes don't: work authorization, sponsorship, salary expectations, start date, voluntary EEO answers (which default to "Decline to self-identify"), and the password for job-site accounts (see [Job-site accounts](#job-site-accounts)). Every field stays editable.
+
+### Documents
+
+Drag resumes, cover letters and transcripts onto the **Documents** tab (or choose them). Each file is sorted by type automatically, from its name ("Cover Letter.pdf") or, failing that, its wording ("Dear Hiring Manager…"). You can change the type afterwards, or drop a file onto a specific section to choose the type yourself.
+
+The original files are stored, and when a form asks for one, it's uploaded under a **standard name** built from your profile name, whatever the file is called on your computer:
+
+| Type | Uploaded as |
+|---|---|
+| Resume | `Jordan_Rivera_Resume.pdf` |
+| Cover letter | `Jordan_Rivera_Cover_Letter.pdf` |
+| Transcript | `Jordan_Rivera_Transcript.pdf` |
+| Other | `Jordan_Rivera_<document name>.pdf` |
+
+**Settings → Name uploaded files** switches to `Jordan-Rivera-Resume.pdf`, `Jordan Rivera - Resume.pdf`, or the original name. Names are kept to plain ASCII ("José" becomes "Jose"), because some applicant-tracking systems mangle accents.
 
 ### 2. Autofill
 
-When you click **Autofill**, every frame of the page is scanned. That includes embedded application iframes and open shadow DOM. Each field (text box, dropdown, radio group, checkbox, custom dropdown or file upload) gets a label, which comes from its `<label>`, ARIA attributes, the fieldset legend, or the text just above it. Each field then goes through these steps, cheapest first:
+When you click **Autofill**, every frame of the page is scanned. That includes embedded application iframes and open shadow DOM. Each field (text box, dropdown, radio group, checkbox, custom dropdown, date, password or file upload) gets a label, which comes from its `<label>`, ARIA attributes, the fieldset legend, the section heading, or the text just above it. Each field then goes through these steps, cheapest first:
 
 | Step | What it does | Example |
 |---|---|---|
@@ -67,15 +82,41 @@ When you click **Autofill**, every frame of the page is scanned. That includes e
 | **Classifier** | Laya/Jev decides which profile field an unfamiliar question is asking for, or which option matches your answer | "Institution you graduated from" → school |
 | **You** | Anything still unknown is outlined in red and listed in the side panel | "Why do you want to work here?" |
 
-Filled values go in the way a person would enter them. Text uses the browser's native value setter followed by real input and change events, which React, Vue and Angular forms all accept. Choices are made by clicking. Custom dropdowns (react-select, Workday) are opened, searched and clicked. Files are attached with `DataTransfer`.
+Autofill runs in **two passes**. The rules and saved answers fill everything they can immediately. Only the questions left over go to the classifier, which takes a second or so each on a laptop CPU, and those are filled as its answers arrive.
+
+Values go in the way a person would enter them:
+
+- **Text:** the browser's native value setter followed by real input and change events, which React, Vue and Angular forms all accept. Masked inputs that ignore a pasted value (dates like `MM/YYYY`) are typed one character at a time.
+- **Choices:** made by clicking.
+- **Custom dropdowns:** these are where Workday and react-select differ most. EzAutoApply opens the list (retrying with mousedown or the keyboard for lists that toggle shut on a click), picks the matching option, and confirms the page took it. If the option isn't shown, it types the value and presses **Enter**. That runs Workday's "How did you hear about us?" search, or selects the match in a long "Select One" list. A state abbreviation is typed as the full name ("TX" → "Texas").
+- **Split dates:** Workday's separate month and year boxes are filled as one date.
+- **Locations:** search-as-you-type boxes (Greenhouse's "Location (City)") get your city typed in, and the suggestion matching your city and province or country is picked. If none matches and there's a **Locate me** button, it's clicked, and Chrome asks you once whether the site may use your location.
+- **Yes/No buttons:** pairs of toggle buttons (Ashby) are answered like any other yes/no question.
+- **Privacy notices:** links like "Click to read and acknowledge the privacy notice" are opened, and the dialog's **Acknowledge** button is pressed. Each one is listed under *Check these*. Turn this off in Settings.
+- **Files:** attached to the upload input. If the widget doesn't react, the file is dropped onto the drop zone instead.
+- **Repeating sections:** before filling, EzAutoApply clicks **Add / Add Another** in the Work Experience and Education sections until there's one entry per job and school in your profile, then fills them most recent first. It only clicks buttons that say "Add…" inside those sections, never Save, Next, Continue or Submit.
 
 Fields are outlined by outcome: **green** = filled, **amber** = filled but worth a check, **red dashed** = needs you, **blue** = you changed it.
 
 ### 3. Learning answers
 
-Each red field shows up on the side panel's **Apply** tab with an input that matches it (a dropdown for a dropdown, checkboxes for checkboxes, and so on). **Fill & remember** fills the field and saves the answer. Saved answers are global by default or, if you choose, limited to that one site. If you type an answer directly into the page, the panel offers **Remember this answer** instead.
+Each red field shows up on the side panel's **Apply** tab with an input that matches it (a dropdown for a dropdown, checkboxes for checkboxes, and so on). Every unanswered dropdown, radio and checkbox question is listed, even when the page doesn't mark it required. Workday's "Select One" lists only load their options when opened, so EzAutoApply opens each one briefly to read its options, then closes it without choosing, so you can pick from the real list. **Fill & remember** fills the field and saves the answer. Saved answers are global by default or, if you choose, limited to that one site. If you type an answer directly into the page, the panel offers **Remember this answer** instead.
 
 On later applications, that question, or a rephrasing of it, fills automatically. All saved answers can be edited on the **Answers** tab.
+
+Click a question's title in the side panel to scroll the page to it.
+
+If a field on some site isn't filled correctly, **Copy details** on its card copies what EzAutoApply saw: the label, the options, and the HTML around the field, with every value stripped out. Paste that into a bug report and the site can be fixed precisely.
+
+### Job-site accounts
+
+Workday, iCIMS, Taleo and similar sites make you create an account before applying. Set one password under **Profile → Job site accounts**. A checklist shows the usual requirements (8+ characters, upper and lower case, a number, a special character), and there's a button to generate a strong one. EzAutoApply fills it into "Password" and "Verify password" fields, both when creating an account and when signing in.
+
+The password is handled more carefully than everything else:
+
+- **Where it's used:** it's only handed to pages on known job-account sites (Workday, iCIMS, Taleo, SuccessFactors, Oracle, Jobvite, SmartRecruiters, ADP and others), unless you tick **Also fill it on other sites**.
+- **When the page gets it:** only at the moment it's typed in. It never appears in the side panel, in reports, or in saved answers.
+- **Where it's stored:** only in this browser. It's never included in backups, and importing a backup keeps the password you already have.
 
 ### 4. Multi-page forms
 
@@ -163,7 +204,7 @@ In **Settings → Classifier**, choose **Jev (TypeSafe cloud)**, enter the API U
 
 1. **Open the side panel** by clicking the EzAutoApply toolbar icon.
 2. **Profile:** click **Choose resume file**, check what was parsed, fill in work authorization and preferences, then click **Save profile**.
-3. **Documents:** add cover letters, transcripts and extra resumes. The original files are stored, and the ★ default of each type is what gets uploaded.
+3. **Documents:** drag in cover letters, transcripts and extra resumes. The original files are stored, the ★ default of each type is what gets uploaded, and uploads get standard names (see [Documents](#documents)). For Workday-style sites, also set a password under **Profile → Job site accounts**.
 4. **Go to a job application** and click **Autofill**. You can use the floating ⚡ button on the page, **Alt+Shift+F**, or the button on the side panel's Apply tab.
 5. **Apply tab:** answer anything under *Needs your answer*, look over *Check these*, and pick a different resume or cover letter for this application if you want.
 6. **Review the page and submit it yourself.**
@@ -241,6 +282,9 @@ It sends ten unusual application questions through the same steps the extension 
 | The Autofill button doesn't appear | It only shows on pages that look like applications. Use the side panel's **Autofill this page** or **Alt+Shift+F** instead, and check **Settings → Show the Autofill button**. |
 | Nothing happens on a tab | Reload the tab (see the note under [Using it](#using-it)). Pages like `chrome://` and the Chrome Web Store can't be autofilled. |
 | "Classifier off" | Start `classifier\start.ps1`, then click the dot to open Settings and **Save & test connection**. If you set `-ApiKey`, enter the same key in Settings. |
+| `start.ps1` says the port is in use | If it says Laya is already running, it is: nothing to do. If another program has port 8000, run `.\classifier\start.ps1 -Port 8001` and set `http://127.0.0.1:8001` in Settings. |
+| A field wasn't filled or picked the wrong option | Use **Copy details** on its card in the side panel and include that in a bug report. |
+| Password fields stay red | Set the password under **Profile → Job site accounts**. On a site that isn't a known job-account site, also tick **Also fill it on other sites**. |
 | Autofill takes a while with Laya on | Each field the rules don't recognize costs 1–3 s of CPU time the first time. Once you answer it, it's instant from then on. Turn the classifier off in Settings if you prefer speed. |
 | The first autofill after starting Laya is slow | The checkpoint loads on first use. The start script preloads it, so wait for "Application startup complete" first. |
 | A dropdown wasn't filled | Some custom dropdowns load options from a server as you type. The field is marked red; pick the option on the page and click **Remember this answer**. |
@@ -250,11 +294,11 @@ It sends ten unusual application questions through the same steps the extension 
 
 ## Status and roadmap
 
-**Working now:** resume import and review; profile, documents and answer-bank management; generic autofill across frames and shadow DOM (text, selects, radio buttons, checkboxes, custom dropdowns, file uploads, dates); the Laya/Jev classifier tier with confidence gating; learning answers from the panel and from edits on the page; multi-step form detection; per-application document choice; application history; backup and restore.
+**Working now:** resume import and review; drag-and-drop documents with automatic type detection and standardized upload names; profile, documents and answer-bank management; job-site account passwords; generic autofill across frames and shadow DOM (text, selects, radio buttons, checkboxes, custom dropdowns including Workday's, split and masked dates, passwords, file uploads with drop-zone fallback); clicking "Add Another" for every job and school; two-pass filling with the Laya/Jev classifier tier and confidence gating; learning answers from the panel and from edits on the page; reading dropdown options so you can answer them; multi-step form detection; per-application document choice; application history; backup and restore.
 
 **Next:**
 
-- Dedicated site adapters for Workday (date widgets, "Add another" experience entries), LinkedIn Easy Apply, Indeed and Ashby. Right now these sites use the generic filler.
-- Clicking "Add another" to create extra experience and education entries. Entries already on the page are filled in order, most recent first.
+- Fixes for Workday screens the generic filler doesn't fully handle yet, as they're reported with **Copy details**. The Workday-style handling so far is tested against a page that imitates Workday's widgets, not Workday itself.
+- Dedicated handling for LinkedIn Easy Apply, Indeed and Ashby, which use the generic filler today.
 - Fine-tuning Laya on your own saved answers. Each answered question becomes a labeled example, and the Laya authors report big accuracy gains from fine-tuning.
 - A Firefox build (WXT supports it).

@@ -117,11 +117,29 @@ function wordContains(hay: string, needle: string): boolean {
 }
 
 /** Score how well one option label represents the desired text value (0–1). */
+/**
+ * "Toronto, ON" against "Toronto, Ontario, Canada": same city, and the region or country
+ * agrees once abbreviations are expanded. Returns 0 when either side isn't "City, Place".
+ */
+export function scoreLocation(label: string, want: string): number {
+  const optParts = label.split(',').map((p) => p.trim()).filter(Boolean);
+  const wantParts = want.split(',').map((p) => p.trim()).filter(Boolean);
+  if (optParts.length < 2 || wantParts.length < 2) return 0;
+  if (normalize(optParts[0]) !== normalize(wantParts[0])) return 0;
+  const places = (parts: string[]) =>
+    new Set(parts.slice(1).flatMap((p) => [canonicalRegion(p), canonicalCountry(p), normalize(p)]).filter(Boolean) as string[]);
+  const optPlaces = places(optParts);
+  return [...places(wantParts)].some((p) => optPlaces.has(p)) ? 0.92 : 0;
+}
+
 export function scoreOption(label: string, want: string): number {
   const a = normalize(label);
   const b = normalize(want);
   if (!a || !b) return 0;
   if (a === b) return 1;
+
+  const loc = scoreLocation(label, want);
+  if (loc) return loc;
 
   const ca = canonicalCountry(label);
   if (ca && ca === canonicalCountry(want)) return 0.97;

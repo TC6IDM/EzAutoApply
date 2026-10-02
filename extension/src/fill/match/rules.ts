@@ -14,7 +14,7 @@ export interface RuleMatch {
   via: 'autocomplete' | 'label' | 'attr' | 'type';
 }
 
-const AUTOCOMPLETE_IGNORED = new Set(['on', 'off', 'none', 'false', 'true', 'nope', 'new-password', 'chrome-off', 'disabled']);
+const AUTOCOMPLETE_IGNORED = new Set(['on', 'off', 'none', 'false', 'true', 'nope', 'chrome-off', 'disabled']);
 
 function longestMatch(patterns: RegExp[] | undefined, text: string): number {
   if (!patterns || !text) return 0;
@@ -83,6 +83,12 @@ export function matchRules(field: FieldInfo): RuleMatch | null {
     }
 
     if (score) consider({ key: def.key, score, via });
+  }
+
+  // Upload boxes are often labelled by their section heading ("Resume/CV"), with the box itself
+  // saying only "Drop files here or select files".
+  if (!best && field.kind === 'file' && field.section && field.section !== field.label) {
+    return matchRules({ ...field, label: field.section, placeholder: '', section: '' });
   }
 
   // Input types are a last resort for unlabeled fields.

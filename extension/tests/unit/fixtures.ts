@@ -131,3 +131,121 @@ export function makeReactLike(input: HTMLInputElement): { committed: () => strin
   });
   return { committed: () => committed };
 }
+
+/**
+ * Workday's "How did you hear about us?" prompt, as it behaves for a person: opening
+ * it shows categories; typing does nothing until Enter searches; the top result is
+ * highlighted (aria-selected) but not chosen; clicking a result does nothing; a second
+ * Enter (after ArrowDown to move the highlight) chooses it, shown as a pill.
+ */
+export function mountWorkdaySearchPrompt(container: HTMLElement, label: string, categories: string[], results: Record<string, string[]>) {
+  const wrap = document.createElement('div');
+  wrap.innerHTML = `
+    <div data-automation-id="formField-source">
+      <label for="wd-prompt">${label}</label>
+      <div class="prompt">
+        <div class="pills"></div>
+        <input id="wd-prompt" role="combobox" placeholder="Search" aria-controls="wd-prompt-list" aria-autocomplete="list">
+      </div>
+      <div id="wd-prompt-list" role="listbox" hidden></div>
+    </div>`;
+  container.appendChild(wrap);
+  const input = wrap.querySelector('input')!;
+  const list = wrap.querySelector<HTMLElement>('#wd-prompt-list')!;
+  const pills = wrap.querySelector<HTMLElement>('.pills')!;
+  let shownResults: string[] = [];
+  let highlighted = 0;
+  const highlight = () =>
+    Array.from(list.children).forEach((o, i) => o.setAttribute('aria-selected', String(shownResults.length > 0 && i === highlighted)));
+  const show = (items: string[], areResults: boolean) => {
+    list.innerHTML = '';
+    shownResults = areResults ? items : [];
+    highlighted = 0;
+    for (const text of items) {
+      const o = document.createElement('div');
+      o.setAttribute('role', 'option');
+      o.setAttribute('data-automation-label', text);
+      // The visible text sits in an aria-hidden node, as on Workday. Clicks are ignored.
+      o.innerHTML = `<span aria-hidden="true">${text}</span>${areResults ? '' : ' <span aria-hidden="true">›</span>'}`;
+      list.appendChild(o);
+    }
+    highlight();
+    list.hidden = false;
+  };
+  input.addEventListener('mousedown', () => show(categories, false));
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' && shownResults.length) {
+      highlighted = Math.min(highlighted + 1, shownResults.length - 1);
+      highlight();
+    } else if (e.key === 'Enter' && shownResults.length) {
+      pills.textContent = shownResults[highlighted];
+      input.value = '';
+      list.hidden = true;
+      shownResults = [];
+    } else if (e.key === 'Enter') {
+      show(results[input.value.trim().toLowerCase()] ?? [], true);
+    }
+  });
+  return { chosen: () => pills.textContent ?? '' };
+}
+
+/**
+ * Workday's "Select One" dropdown, at its most awkward: it toggles open on
+ * mousedown *and* on click (so a full click leaves it closed), ignores clicks on
+ * options, and selects with the keyboard: type-ahead, then Enter. `rendered`
+ * limits how many options are in the DOM at once, like a virtualized long list.
+ */
+let selectCount = 0;
+export function mountWorkdaySelect(
+  container: HTMLElement,
+  label: string,
+  options: string[],
+  opts: { rendered?: number; workdayNaming?: boolean } = {},
+) {
+  const n = ++selectCount;
+  const wrap = document.createElement('div');
+  // workdayNaming: the button's accessible name is "Select One Required" and the question
+  // is a <label> elsewhere in the field's formField container, as on real Workday pages.
+  wrap.innerHTML = opts.workdayNaming
+    ? `<div data-automation-id="formField-q${n}"><label>${label}</label><div>
+         <button type="button" aria-haspopup="listbox" aria-label="Select One Required">Select One</button>
+       </div><ul class="wd-list" role="listbox" tabindex="-1" hidden></ul></div>`
+    : `<label id="wd-select-label-${n}">${label}</label>
+       <button type="button" aria-haspopup="listbox" aria-labelledby="wd-select-label-${n}">Select One</button>
+       <ul class="wd-list" role="listbox" tabindex="-1" hidden></ul>`;
+  container.appendChild(wrap);
+  const button = wrap.querySelector('button')!;
+  const list = wrap.querySelector<HTMLElement>('ul')!;
+  let highlighted = -1;
+  let typed = '';
+  const items = options.map((text, i) => {
+    const li = document.createElement('li');
+    li.setAttribute('role', 'option');
+    li.tabIndex = -1;
+    li.textContent = text;
+    if (i < (opts.rendered ?? options.length)) list.appendChild(li);
+    return li;
+  });
+  const toggle = () => {
+    list.hidden = !list.hidden;
+    if (!list.hidden) list.focus();
+  };
+  const select = (i: number) => {
+    button.textContent = options[i];
+    list.hidden = true;
+    button.focus();
+  };
+  button.addEventListener('mousedown', toggle);
+  button.addEventListener('click', toggle);
+  list.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const i = items.indexOf(e.target as HTMLLIElement);
+      if (i >= 0) select(i);
+      else if (highlighted >= 0) select(highlighted);
+    } else if (e.key.length === 1) {
+      typed += e.key.toLowerCase();
+      highlighted = options.findIndex((o) => o.toLowerCase().startsWith(typed));
+    }
+  });
+  return { chosen: () => (button.textContent === 'Select One' ? '' : button.textContent), list, button };
+}

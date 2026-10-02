@@ -122,3 +122,15 @@ describe('matchRules: attributes and sections', () => {
     expect(keyOf({ label: 'Unofficial transcript', kind: 'file' })).toBe('transcript');
   });
 });
+
+describe('matchRules: work authorization vs sponsorship', () => {
+  const yesNo = [{ label: 'Yes', value: 'Yes' }, { label: 'No', value: 'No' }];
+  it.each([
+    ['Do you now or will you in the future require sponsorship for work authorization in Canada?', 'needsSponsorship'],
+    ['Will you need sponsorship to obtain work authorization?', 'needsSponsorship'],
+    ['Are you legally authorized to work in the United States without requiring sponsorship?', 'authorizedToWork'],
+    ['Do you have work authorization in Canada?', 'authorizedToWork'],
+  ])('%s → %s', (label, key) => {
+    expect(matchRules({ ...field({ label }), kind: 'radio', options: yesNo })?.key).toBe(key);
+  });
+});

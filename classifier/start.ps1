@@ -34,6 +34,24 @@ if (-not (Test-Path $python)) {
     if ($LASTEXITCODE -ne 0) { throw 'Installing Laya failed. See the pip output above.' }
 }
 
+# Check the port before loading the model, so a clash gets a clear message instead of a socket error.
+$listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($listener) {
+    $running = $false
+    try {
+        $health = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/health" -TimeoutSec 3
+        $running = $health.status -eq 'ok'
+    } catch {}
+    if ($running) {
+        Write-Host "Laya is already running on http://127.0.0.1:$Port. Nothing to do."
+        exit 0
+    }
+    $owner = Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue
+    Write-Host "Port $Port is already in use by $($owner.ProcessName) (PID $($listener.OwningProcess))."
+    Write-Host "Close that program, or start Laya on another port: .\start.ps1 -Port 8001 (then set http://127.0.0.1:8001 in EzAutoApply's Settings)."
+    exit 1
+}
+
 # Bind to localhost only: laya-serve's default (0.0.0.0) would expose it to your network.
 $env:LAYA_HOST = '127.0.0.1'
 $env:LAYA_PORT = "$Port"

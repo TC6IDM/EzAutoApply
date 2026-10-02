@@ -731,3 +731,148 @@ input.doc-name:hover {
     transition: none;
   }
 }
+
+/* ── drag and drop ────────────────────────────────────────── */
+
+.dropzone {
+  border-radius: var(--radius);
+  transition: background-color 0.12s, outline-color 0.12s;
+  outline: 2px dashed transparent;
+  outline-offset: 2px;
+}
+
+.dropzone.over {
+  outline-color: var(--accent);
+  background: var(--info-bg);
+}
+
+.drop-main {
+  border: 2px dashed var(--border);
+  padding: 18px 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+  background: var(--surface);
+}
+
+.drop-main.over {
+  border-color: var(--accent);
+  outline-color: transparent;
+}
+
+.drop-main p {
+  margin: 0;
+}
+
+.drop-icon {
+  font-size: 22px;
+  line-height: 1;
+  color: var(--muted);
+}
+
+.import-card.dropzone.over {
+  outline-color: var(--accent);
+}
+
+.doc .upload-name {
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.doc select.doc-kind {
+  width: auto;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
+.added-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dropzone {
+    transition: none;
+  }
+}
+
+/* ── account password ─────────────────────────────────────── */
+
+.row.nowrap {
+  flex-wrap: nowrap;
+}
+
+.rules {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 2px 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.rules li.ok {
+  color: var(--ok);
+}
+
+/* ── classifier progress ──────────────────────────────────── */
+
+.pending {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.spinner {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  margin-top: 3px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+  }
+}
+
+/* ── jump to question ─────────────────────────────────────── */
+
+.q-link {
+  all: unset;
+  display: block;
+  cursor: pointer;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  border-radius: 4px;
+}
+
+.q-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.q-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.q-link.compact {
+  font-weight: 400;
+  color: var(--muted);
+}

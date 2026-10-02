@@ -1,7 +1,8 @@
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useEffect, useRef, useState } from 'react';
+import { FILE_NAME_FORMATS, uploadFileName } from '../../core/documents';
 import { type ClassifierSettings, LAYA_DEFAULT_URL, type Settings } from '../../core/types';
-import { db, type ExportFile, exportAll, getSettings, importAll, listApplications, saveSettings } from '../../db';
+import { db, type ExportFile, exportAll, getProfile, getSettings, importAll, listApplications, saveSettings } from '../../db';
 import type { Health } from '../App';
 import { send } from '../api';
 import { Banner, Button, Empty, formatDate, Section, SelectInput, TextInput } from '../ui';
@@ -40,6 +41,7 @@ export function SettingsView(props: { onSaved(): void; health: Health | null }) 
   const [backupMsg, setBackupMsg] = useState('');
   const importRef = useRef<HTMLInputElement>(null);
   const apps = useLiveQuery(() => listApplications(50), [], []);
+  const person = useLiveQuery(async () => (await getProfile()).personal, [], null);
 
   useEffect(() => {
     getSettings().then(setS);
@@ -67,6 +69,13 @@ export function SettingsView(props: { onSaved(): void; health: Health | null }) 
   };
 
   const c = s.classifier;
+  /** Each naming format, shown with the user's own name when the profile has one. */
+  const formatLabel = (format: Settings['fileNameFormat']) => {
+    if (format === 'original') return 'Keep the original file name';
+    const named = person && (person.firstName || person.lastName);
+    if (!named) return FILE_NAME_FORMATS.find((f) => f.value === format)!.label;
+    return uploadFileName({ kind: 'resume', name: 'Resume', fileName: 'resume.pdf', mime: 'application/pdf' }, person, format);
+  };
   return (
     <div className="view settings">
       <Section title="Classifier">
@@ -163,9 +172,23 @@ export function SettingsView(props: { onSaved(): void; health: Health | null }) 
           onChange={(v) => change((x) => (x.autoFillNextStep = v))}
         />
         <Toggle
+          label="Acknowledge privacy notices"
+          hint="Opens “read and acknowledge the privacy notice” links and presses Acknowledge. Shown under “Check these”."
+          checked={s.acknowledgePrivacyNotices}
+          onChange={(v) => change((x) => (x.acknowledgePrivacyNotices = v))}
+        />
+        <Toggle
           label="Overwrite fields that already have a value"
           checked={s.overwriteFilled}
           onChange={(v) => change((x) => (x.overwriteFilled = v))}
+        />
+        <SelectInput
+          label="Name uploaded files"
+          hint="Employers see this name instead of whatever the file is called on your computer."
+          value={formatLabel(s.fileNameFormat)}
+          options={FILE_NAME_FORMATS.map((f) => formatLabel(f.value))}
+          onChange={(label) => change((x) => (x.fileNameFormat = FILE_NAME_FORMATS.find((f) => formatLabel(f.value) === label)!.value))}
+          wide
         />
       </Section>
 

@@ -4,6 +4,7 @@ import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   addDocument,
+  changeDocumentKind,
   db,
   deleteDocument,
   documentFor,
@@ -39,6 +40,19 @@ describe('documents', () => {
     await deleteDocument(b.id);
     expect((await documentFor('resume'))?.id).toBe(a.id);
     expect((await db.documents.get(a.id))?.isDefault).toBe(true);
+  });
+
+  it('moves a document to another kind and keeps one default per kind', async () => {
+    const a = await addDocument({ kind: 'resume', file: pdf('a'), fileName: 'a.pdf' });
+    const b = await addDocument({ kind: 'resume', file: pdf('b'), fileName: 'b.pdf' });
+    // a was the default resume; moving it promotes b, and it becomes the first (default) cover letter.
+    await changeDocumentKind(a.id, 'coverLetter');
+    expect((await db.documents.get(a.id))).toMatchObject({ kind: 'coverLetter', isDefault: true });
+    expect((await db.documents.get(b.id))?.isDefault).toBe(true);
+    // A second document moved into a kind that already has a default doesn't take it over.
+    const c = await addDocument({ kind: 'transcript', file: pdf('c'), fileName: 'c.pdf' });
+    await changeDocumentKind(c.id, 'coverLetter');
+    expect((await db.documents.get(c.id))).toMatchObject({ kind: 'coverLetter', isDefault: false });
   });
 
   it('returns nothing for a kind with no documents', async () => {

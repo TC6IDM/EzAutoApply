@@ -25,6 +25,14 @@ export interface FieldDescriptor extends FieldInfo {
   element: HTMLElement;
   /** Radio/checkbox group members, aligned with `options`. */
   members: HTMLInputElement[];
+  /** Date widgets split into separate month/day/year inputs (Workday's "MM/YYYY"). */
+  segments?: DateSegments;
+}
+
+export interface DateSegments {
+  month?: HTMLInputElement;
+  day?: HTMLInputElement;
+  year?: HTMLInputElement;
 }
 
 export type FillStatus = 'filled' | 'review' | 'needs' | 'skipped' | 'prefilled';
@@ -62,6 +70,8 @@ export interface FieldReport {
   current?: AnswerValue;
   /** What the user typed or picked on the page after the run, if anything. */
   userValue?: AnswerValue;
+  /** Trimmed HTML around a field that wasn't filled (values stripped), for bug reports. */
+  debug?: string;
 }
 
 export interface FrameReport {
@@ -71,5 +81,7 @@ export interface FrameReport {
   fields: FieldReport[];
   /** Set when the classifier failed during the run (offline, bad key, timeout). */
   classifierError?: string;
+  /** Set while the classifier is still working on the leftover questions. */
+  pending?: string;
   updatedAt: number;
 }

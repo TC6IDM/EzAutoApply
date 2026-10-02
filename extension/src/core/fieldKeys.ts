@@ -24,9 +24,10 @@ export type Category =
   | 'logistics'
   | 'compensation'
   | 'documents'
-  | 'about';
+  | 'about'
+  | 'account';
 
-export type ValueType = 'text' | 'number' | 'date' | 'bool' | 'list' | 'file';
+export type ValueType = 'text' | 'number' | 'date' | 'bool' | 'list' | 'file' | 'secret';
 
 export interface ResolveContext {
   profile: Profile;
@@ -91,10 +92,11 @@ export const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
   compensation: 'Salary or pay expectations',
   documents: 'A file upload or pasted copy of a resume, cover letter or transcript',
   about: 'A short professional summary, a list of skills, spoken languages or certifications',
+  account: 'A password for the applicant’s account on the job site',
 };
 
-const EXPERIENCE_SECTION = /\b(experience|employment|work history|job history|employer|positions?|career history)\b/;
-const EDUCATION_SECTION = /\b(education|school|university|college|degree|academic)\b/;
+export const EXPERIENCE_SECTION = /\b(experience|employment|work history|job history|employer|positions?|career history)\b/;
+export const EDUCATION_SECTION = /\b(education|school|university|college|degree|academic)\b/;
 const PEOPLE = /\b(reference|referr(al|er|ed)|manager|supervisor|emergency|recruiter|parent|spouse|relative|friend)\b/;
 
 const DIAL_CODES: Record<string, string> = {
@@ -246,7 +248,8 @@ export const FIELD_KEYS: FieldKeyDef[] = [
   {
     key: 'region', category: 'address', title: 'State / province', valueType: 'text',
     description: 'State, province or region the applicant lives in',
-    label: [/^(home |current )?(state|province|region|county|territory|prefecture)( \/ (province|region|territory|state))?$/, /\bstate (\/ |or )province\b/, /\bprovince (\/ |or )state\b/],
+    // "State", "State / Province", "Province or Territory", "State and Region"…
+    label: [/^(home |current )?(state|province|region|county|territory|prefecture)(( \/ | or | and )(province|region|territory|state))?$/, /\bstate (\/ |or )province\b/, /\bprovince (\/ |or )state\b/],
     attr: [/\bstate\b/, /\bprovince\b/, /\bregion\b/],
     exclude: [/\b(city|country|statement)\b/], maxWords: 5, autocomplete: ['address-level1'],
     resolve: (c) => text(c.profile.personal.address.region),
@@ -315,6 +318,8 @@ export const FIELD_KEYS: FieldKeyDef[] = [
     description: 'Whether the applicant is legally authorized to work in the job’s country',
     label: [/\b(legally )?(authori[sz]ed|eligible|permitted|entitled|allowed) to work\b/, /\bwork authori[sz]ation\b/, /\bright to work\b/, /\bwork permit\b/, /\beligib(le|ility) (for|to) (employment|be employed)\b/, /\blegally (able|eligible) to\b/],
     attr: [/\bauthori[sz]ed\b/, /\bwork ?auth/, /\beligib/], maxWords: 40,
+    // "Will you require sponsorship for work authorization?" is the sponsorship question, never this one.
+    exclude: [/\b(require|need)s?\b.{0,80}\bsponsor/],
     resolve: (c) => {
       const { country, guessed } = questionCountry(c);
       if (!country || !c.profile.workAuth.authorizedCountries.length) return null;
@@ -325,7 +330,7 @@ export const FIELD_KEYS: FieldKeyDef[] = [
   {
     key: 'needsSponsorship', category: 'workAuth', title: 'Needs visa sponsorship', valueType: 'bool',
     description: 'Whether the applicant now or in the future requires visa sponsorship to work',
-    label: [/\bsponsor(ship|ed)?\b/, /\b(visa|immigration) (support|status)\b/, /\bh ?1 ?b\b/], attr: [/\bsponsor/, /\bvisa\b/],
+    label: [/\b(require|need)s?\b.{0,80}\bsponsor(ship|ed)?\b/, /\bsponsor(ship|ed)?\b/, /\b(visa|immigration) (support|status)\b/, /\bh ?1 ?b\b/], attr: [/\bsponsor/, /\bvisa\b/],
     maxWords: 50,
     resolve: (c) => {
       const named = detectCountry(c.label);
@@ -445,14 +450,14 @@ export const FIELD_KEYS: FieldKeyDef[] = [
     key: 'expStart', category: 'experience', title: 'Job start date', valueType: 'date', repeat: true, noClassify: true,
     description: 'Start date of a job in the work history',
     label: [/\bstart( date| month| year)?\b/, /^from$/, /\bfrom (date|month|year)\b/, /\bdate (started|from)\b/],
-    section: EXPERIENCE_SECTION, maxWords: 5,
+    attr: [/\b(start|from) ?date\b/], section: EXPERIENCE_SECTION, maxWords: 5,
     resolve: (c) => text(exp(c)?.start),
   },
   {
     key: 'expEnd', category: 'experience', title: 'Job end date', valueType: 'date', repeat: true, noClassify: true,
     description: 'End date of a job in the work history',
     label: [/\bend( date| month| year)?\b/, /^to$/, /\bto (date|month|year)\b/, /\bdate (ended|left|to)\b/],
-    section: EXPERIENCE_SECTION, maxWords: 5,
+    attr: [/\b(end|to) ?date\b/], section: EXPERIENCE_SECTION, maxWords: 5,
     resolve: (c) => {
       const e = exp(c);
       return e && !e.current ? text(e.end) : null;
@@ -520,14 +525,14 @@ export const FIELD_KEYS: FieldKeyDef[] = [
     key: 'eduStart', category: 'education', title: 'School start date', valueType: 'date', repeat: true,
     description: 'Date the applicant started at a school',
     label: [/\bstart( date| month| year)?\b/, /^from$/, /\bfrom (date|month|year)\b/, /\bdate (started|from)\b/],
-    section: EDUCATION_SECTION, maxWords: 5,
+    attr: [/\b(start|from) ?date\b/, /\bfirst year attended\b/], section: EDUCATION_SECTION, maxWords: 5,
     resolve: (c) => text(edu(c)?.start),
   },
   {
     key: 'eduEnd', category: 'education', title: 'School end date', valueType: 'date', repeat: true,
     description: 'Date the applicant finished or will finish at a school',
     label: [/\bend( date| month| year)?\b/, /^to$/, /\bto (date|month|year)\b/, /\bdate (ended|to)\b/],
-    section: EDUCATION_SECTION, maxWords: 5,
+    attr: [/\b(end|to) ?date\b/, /\blast year attended\b/], section: EDUCATION_SECTION, maxWords: 5,
     resolve: (c) => text(edu(c)?.end),
   },
   {
@@ -590,21 +595,32 @@ export const FIELD_KEYS: FieldKeyDef[] = [
     key: 'resume', category: 'documents', title: 'Resume', valueType: 'file',
     description: 'Upload or paste the applicant’s resume or CV',
     label: [/\bresume\b/, /\bcv\b/, /\bcurriculum vitae\b/], attr: [/\bresume\b/, /\bcv\b/],
-    exclude: [/\bcover\b/], maxWords: 10,
+    exclude: [/\bcover\b/], maxWords: 25,
     resolve: () => ({ fileKind: 'resume' }),
   },
   {
     key: 'coverLetter', category: 'documents', title: 'Cover letter', valueType: 'file',
     description: 'Upload or paste a cover letter',
     label: [/\bcover ?letter\b/, /\bmotivation(al)? letter\b/, /\bletter of (interest|motivation)\b/], attr: [/\bcover ?letter\b/],
-    maxWords: 10,
+    maxWords: 25,
     resolve: () => ({ fileKind: 'coverLetter' }),
   },
   {
     key: 'transcript', category: 'documents', title: 'Transcript', valueType: 'file',
     description: 'Upload an academic transcript',
-    label: [/\btranscripts?\b/, /\bacademic record\b/], attr: [/\btranscript\b/], maxWords: 10,
+    label: [/\btranscripts?\b/, /\bacademic record\b/], attr: [/\btranscript\b/], maxWords: 25,
     resolve: () => ({ fileKind: 'transcript' }),
+  },
+
+  // ── job-site account ───────────────────────────────────────────────────
+  {
+    // "Password", "Verify New Password", "Confirm password": all get the same saved password.
+    key: 'accountPassword', category: 'account', title: 'Account password', valueType: 'secret', noClassify: true,
+    description: 'The password for the applicant’s account on this job site',
+    label: [/\bpass ?(word|code|phrase)\b/], attr: [/\bpass ?(word|wd)\b/, /\bpwd\b/],
+    exclude: [/\b(forgot|reset|requirements?|hint)\b/], maxWords: 8,
+    autocomplete: ['new-password', 'current-password'],
+    resolve: () => ({ secret: 'accountPassword' }),
   },
 
   // ── about ──────────────────────────────────────────────────────────────
@@ -649,9 +665,12 @@ export function kindAccepts(def: FieldKeyDef, kind: FieldKind): boolean {
       return kind === 'file' || kind === 'textarea';
     case 'bool':
       return kind === 'select' || kind === 'radio' || kind === 'combobox' || kind === 'checkbox';
+    case 'secret':
+      return kind === 'password';
     default:
       // Text answers can also tick the matching box of a checkbox group ("Race: select all that apply").
-      return kind !== 'file' && kind !== 'checkbox';
+      // Password inputs only ever get the account password.
+      return kind !== 'file' && kind !== 'checkbox' && kind !== 'password';
   }
 }
 

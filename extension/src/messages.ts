@@ -28,6 +28,7 @@ export type ContentToBackground =
   | { type: 'classify'; op: 'predict'; req: SystemOneRequest }
   | { type: 'classify'; op: 'predictBatch'; req: SystemOneBatchRequest }
   | { type: 'getDocument'; kind: DocKind }
+  | { type: 'getSecret'; name: 'accountPassword' }
   | { type: 'report'; report: FrameReport }
   | { type: 'fieldEdited'; fieldId: string; userValue: AnswerValue }
   | { type: 'answersUsed'; ids: string[] }
@@ -40,6 +41,7 @@ export type PanelToBackground =
   | { type: 'clearTab'; tabId: number }
   | { type: 'setDocSelection'; tabId: number; selection: DocSelection }
   | { type: 'answerField'; tabId: number; frameId: number; fieldId: string; answer: AnswerValue; save: SaveAnswerRequest | null }
+  | { type: 'focusField'; tabId: number; frameId: number; fieldId: string }
   | { type: 'classifierHealth' }
   | { type: 'settingsChanged' };
 
@@ -48,6 +50,7 @@ export type BackgroundToContent =
   | { type: 'autofill' }
   | { type: 'applyAnswer'; fieldId: string; answer: AnswerValue }
   | { type: 'clearHighlights' }
+  | { type: 'focusField'; fieldId: string }
   | { type: 'settingsChanged'; settings: Settings };
 
 /** Broadcast by the background to extension pages (the side panel). */

@@ -9,11 +9,11 @@ import {
   type Profile,
   type Project,
 } from '../../core/profile';
-import { addDocument, getDocument, getProfile, hasProfile, saveProfile } from '../../db';
+import { addDocument, getAccountPassword, getDocument, getProfile, getSettings, hasProfile, saveAccountPassword, saveProfile, saveSettings } from '../../db';
 import { extractLines, fileKindOf } from '../../parse/extract';
 import { parseResume, type RawSection } from '../../parse/resume';
 import { classifyHeading } from '../api';
-import { Banner, Button, Empty, ListInput, Section, SelectInput, TextInput, TriInput } from '../ui';
+import { Banner, Button, DropZone, Empty, ListInput, Section, SelectInput, TextInput, TriInput } from '../ui';
 
 const GENDERS = ['Male', 'Female', 'Non-binary', DECLINE];
 const RACES = [
@@ -103,12 +103,18 @@ function ImportCard(props: { profile: Profile; importDocId: string | null; onPar
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.importDocId]);
 
+  const pick = (f: File | undefined) => {
+    if (!f) return;
+    if (!fileKindOf(f)) return setError('Unsupported file type. Use PDF, DOCX or TXT.');
+    run(f, keepFile);
+  };
+
   return (
-    <div className="import-card">
+    <DropZone className="import-card" disabled={busy} onFiles={(files) => pick(files[0])}>
       <p>
         <strong>Import from a resume</strong>
         <br />
-        PDF, DOCX or TXT. The text is parsed on your computer; nothing is uploaded.
+        Drop a PDF, DOCX or TXT here, or choose one. The text is parsed on your computer; nothing is uploaded.
       </p>
       <input
         ref={fileRef}
@@ -118,9 +124,7 @@ function ImportCard(props: { profile: Profile; importDocId: string | null; onPar
         onChange={(e) => {
           const f = e.target.files?.[0];
           e.target.value = '';
-          if (!f) return;
-          if (!fileKindOf(f)) return setError('Unsupported file type. Use PDF, DOCX or TXT.');
-          run(f, keepFile);
+          pick(f);
         }}
       />
       <label className="inline">
@@ -131,7 +135,7 @@ function ImportCard(props: { profile: Profile; importDocId: string | null; onPar
         {busy ? 'Parsing…' : 'Choose resume file'}
       </Button>
       {error && <p className="error-text">{error}</p>}
-    </div>
+    </DropZone>
   );
 }
 
@@ -224,6 +228,112 @@ function ProjectEditor(props: { items: Project[]; onChange(items: Project[]): vo
   );
 }
 
+/** Common job-site password rules (Workday's, among others). */
+const PASSWORD_RULES: [string, (p: string) => boolean][] = [
+  ['8+ characters', (p) => p.length >= 8],
+  ['a letter', (p) => /[A-Za-z]/.test(p)],
+  ['a number', (p) => /\d/.test(p)],
+  ['a lowercase letter', (p) => /[a-z]/.test(p)],
+  ['an uppercase letter', (p) => /[A-Z]/.test(p)],
+  ['a special character', (p) => /[^A-Za-z0-9]/.test(p)],
+];
+
+/** A random 16-character password that meets every rule above. */
+function generatePassword(): string {
+  const sets = ['ABCDEFGHJKLMNPQRSTUVWXYZ', 'abcdefghijkmnopqrstuvwxyz', '23456789', '!@#$%&*?-_'];
+  const all = sets.join('');
+  const rand = (n: number) => crypto.getRandomValues(new Uint32Array(1))[0] % n;
+  const chars = sets.map((s) => s[rand(s.length)]);
+  while (chars.length < 16) chars.push(all[rand(all.length)]);
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = rand(i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join('');
+}
+
+/**
+ * The password used to create and sign in to accounts on job sites like Workday.
+ * Saved on its own (not with the profile), never exported in backups.
+ */
+function AccountSection() {
+  const [password, setPassword] = useState<string | null>(null);
+  const [anySite, setAnySite] = useState(false);
+  const [show, setShow] = useState(false);
+  const [saved, setSaved] = useState<'idle' | 'saved'>('idle');
+
+  useEffect(() => {
+    getAccountPassword().then(setPassword);
+    getSettings().then((s) => setAnySite(s.passwordOnAnySite));
+  }, []);
+  if (password === null) return null;
+
+  const save = async () => {
+    await saveAccountPassword(password);
+    const s = await getSettings();
+    await saveSettings({ ...s, passwordOnAnySite: anySite });
+    setSaved('saved');
+  };
+  const edit = (fn: () => void) => {
+    fn();
+    setSaved('idle');
+  };
+
+  return (
+    <Section title="Job site accounts" defaultOpen={false}>
+      <p className="hint">
+        Sites like Workday, iCIMS and Taleo make you create an account to apply. EzAutoApply fills this password into their “Password” and
+        “Verify password” fields, both when creating an account and when signing in. It’s stored only in this browser and never included in
+        backups.
+      </p>
+      <div className="field wide">
+        <label htmlFor="account-password">Password</label>
+        <div className="row nowrap">
+          <input
+            id="account-password"
+            type={show ? 'text' : 'password'}
+            autoComplete="off"
+            value={password}
+            onChange={(e) => edit(() => setPassword(e.target.value))}
+          />
+          <Button small kind="ghost" onClick={() => setShow((v) => !v)}>
+            {show ? 'Hide' : 'Show'}
+          </Button>
+        </div>
+      </div>
+      <ul className="rules" aria-label="Password requirements">
+        {PASSWORD_RULES.map(([label, ok]) => (
+          <li key={label} className={ok(password) ? 'ok' : ''}>
+            {ok(password) ? '✓' : '○'} {label}
+          </li>
+        ))}
+      </ul>
+      <label className="inline">
+        <input type="checkbox" checked={anySite} onChange={(e) => edit(() => setAnySite(e.target.checked))} />
+        Also fill it on sites that aren’t known job-account sites
+      </label>
+      {anySite && <Banner tone="warn">Only autofill pages you trust: with this on, any page you autofill can receive the password.</Banner>}
+      <div className="row">
+        <Button
+          small
+          onClick={() =>
+            edit(() => {
+              setPassword(generatePassword());
+              setShow(true);
+            })
+          }
+        >
+          Generate a strong password
+        </Button>
+        <Button kind="primary" small onClick={save}>
+          Save password
+        </Button>
+        {saved === 'saved' && <span className="saved">Saved ✓</span>}
+      </div>
+    </Section>
+  );
+}
+
 export function ProfileView(props: { importDocId: string | null; onImported(): void }) {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -304,6 +414,8 @@ export function ProfileView(props: { importDocId: string | null; onImported(): v
           <TextInput label="Website" value={p.links.website} onChange={(v) => update((x) => (x.links.website = v))} wide />
         </div>
       </Section>
+
+      <AccountSection />
 
       <Section title="Summary" defaultOpen={false}>
         <TextInput label="Professional summary" multiline value={p.summary} onChange={(v) => update((x) => (x.summary = v))} />

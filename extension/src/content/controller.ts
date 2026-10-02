@@ -1,10 +1,12 @@
 import type { SystemOneResponse } from '../classifier/systemone';
 import { isPlaceholderOption } from '../core/options';
 import type { Settings } from '../core/types';
-import { type FillContext, fillField } from '../fill/fillers';
+import { type FillContext, fillField, isOn, readDropdownOptions } from '../fill/fillers';
 import { textOf } from '../fill/labels';
 import type { Classifier } from '../fill/match/classify';
 import { resolveFields } from '../fill/pipeline';
+import { acknowledgePrivacyNotices } from '../fill/consent';
+import { expandRepeatingSections } from '../fill/repeat';
 import { scanFields } from '../fill/scan';
 import type { FieldDescriptor, FieldReport, FillStatus, FrameReport, Resolution } from '../fill/types';
 import {
@@ -15,7 +17,7 @@ import {
   type DocumentResponse,
 } from '../messages';
 import type { FloatingUi } from './floatingUi';
-import { clearAllHighlights, highlight } from './highlight';
+import { clearAllHighlights, flash, highlight } from './highlight';
 
 export type Send = (msg: ContentToBackground) => Promise<unknown>;
 
@@ -32,22 +34,40 @@ export function readValue(f: FieldDescriptor): AnswerValue {
       return s.multiple ? picked : (picked[0] ?? '');
     }
     case 'radio': {
-      const i = f.members.findIndex((m) => m.checked || m.getAttribute('aria-checked') === 'true');
+      const i = f.members.findIndex(isOn);
       return i >= 0 ? f.options[i].label : '';
     }
     case 'checkboxGroup':
-      return f.members.flatMap((m, i) => (m.checked || m.getAttribute('aria-checked') === 'true' ? [f.options[i].label] : []));
+      return f.members.flatMap((m, i) => (isOn(m) ? [f.options[i].label] : []));
     case 'checkbox': {
       const m = f.members[0] ?? (el as HTMLInputElement);
-      return m.checked ?? m.getAttribute('aria-checked') === 'true';
+      return isOn(m);
     }
     case 'combobox':
       return el instanceof HTMLInputElement ? el.value : textOf(el);
     case 'file':
       return Array.from((el as HTMLInputElement).files ?? []).map((x) => x.name).join(', ');
+    case 'password':
+      // Never read a password back out of the page.
+      return (el as HTMLInputElement).value ? '••••••••' : '';
     default:
       return (el as HTMLInputElement).value;
   }
+}
+
+/**
+ * The HTML around a field, trimmed and with every value stripped, so a user can
+ * send it in when a field on some site isn't filled correctly.
+ */
+export function debugHtml(f: FieldDescriptor): string {
+  const container = f.element.closest('[data-automation-id^="formField"]') ?? f.element.parentElement?.parentElement ?? f.element;
+  const clone = container.cloneNode(true) as Element;
+  for (const n of [clone, ...Array.from(clone.querySelectorAll('*'))]) {
+    n.removeAttribute('value');
+    n.removeAttribute('style');
+    if (n instanceof HTMLInputElement || n instanceof HTMLTextAreaElement) n.value = '';
+  }
+  return clone.outerHTML.replace(/\s+/g, ' ').slice(0, 3000);
 }
 
 function shown(v: AnswerValue): string {
@@ -74,7 +94,10 @@ export class AutofillController {
   ) {}
 
   private fillContext(): FillContext {
-    return { getDocument: (kind) => call<DocumentResponse>(() => this.send({ type: 'getDocument', kind })) };
+    return {
+      getDocument: (kind) => call<DocumentResponse>(() => this.send({ type: 'getDocument', kind })),
+      getSecret: (name) => call<string | null>(() => this.send({ type: 'getSecret', name })),
+    };
   }
 
   private classifier(): Classifier {
@@ -89,7 +112,7 @@ export class AutofillController {
     this.running = true;
     this.ui()?.setBusy(true);
     try {
-      const fields = scanFields(document);
+      let fields = scanFields(document);
       if (!fields.length) {
         // Still report, so the panel knows this frame finished (and drops any stale report).
         this.reports.clear();
@@ -99,39 +122,67 @@ export class AutofillController {
       const ctx = await call<ContentContext>(() => this.send({ type: 'getContext' }));
       this.settings = ctx.settings;
       this.classifierError = undefined;
-      const resolutions = await resolveFields(fields, {
-        profile: ctx.profile,
-        answers: ctx.answers,
-        host: location.hostname,
-        settings: ctx.settings,
-        classifier: ctx.settings.classifier.provider === 'none' ? null : this.classifier(),
-        onClassifierError: (e) => (this.classifierError = e.message),
-      });
+      // One entry per job and school: click "Add Another" first, then fill them all.
+      if (await expandRepeatingSections(ctx.profile, document)) fields = scanFields(document);
 
       this.watchers.abort();
       this.watchers = new AbortController();
       this.fields.clear();
       this.reports.clear();
       const used: string[] = [];
-      const fillCtx = this.fillContext();
+      const deps = { profile: ctx.profile, answers: ctx.answers, host: location.hostname, settings: ctx.settings };
 
-      for (let i = 0; i < fields.length; i++) {
-        const f = fields[i];
-        const r = resolutions[i];
-        let status: FillStatus = r.status;
-        let note = r.note;
-        let text = r.status === 'prefilled' ? shown(readValue(f)) : '';
-        if ((status === 'filled' || status === 'review') && r.value !== undefined) {
-          const out = await fillField(f, r, fillCtx);
-          if (out.ok) {
-            text = out.valueText;
-            if (r.answerId) used.push(r.answerId);
-          } else {
-            status = f.required ? 'needs' : 'skipped';
-            note = out.reason;
-          }
-        }
-        this.track(f, r, status, text, note);
+      // Privacy notices that must be opened and acknowledged before the form submits.
+      if (ctx.settings.acknowledgePrivacyNotices) {
+        (await acknowledgePrivacyNotices(document)).forEach((notice, i) => {
+          const id = `notice-${i}`;
+          this.reports.set(id, {
+            id,
+            frameId: 0,
+            label: notice.label,
+            kind: 'checkbox',
+            options: [],
+            required: true,
+            status: 'review',
+            source: 'rule',
+            confidence: 1,
+            valueText: 'Acknowledged',
+            note: 'EzAutoApply opened this privacy notice and pressed Acknowledge',
+          });
+        });
+      }
+
+      // Pass 1, instant: rules and saved answers.
+      const fast = await resolveFields(fields, { ...deps, classifier: null });
+      await this.fillAll(fields, fast, used);
+
+      // Before the slow part, read the options of every unanswered dropdown and show the panel
+      // everything that needs an answer.
+      await this.readUnansweredDropdowns();
+      this.dropVanishedFields();
+
+      // Pass 2: only the questions pass 1 couldn't answer go to the (slower) classifier.
+      const leftovers = fields.filter(
+        (f, i) => this.reports.has(f.id) && fast[i].source === 'none' && (fast[i].status === 'needs' || fast[i].status === 'skipped'),
+      );
+      if (ctx.settings.classifier.provider !== 'none' && leftovers.length) {
+        const pending = `${ctx.settings.classifier.provider === 'jev' ? 'Jev' : 'Laya'} is checking ${leftovers.length} more question${leftovers.length === 1 ? '' : 's'}…`;
+        await this.publish(pending);
+        this.updateUi();
+        this.ui()?.setBusy(true, 'Checking…');
+        const slow = await resolveFields(leftovers, {
+          ...deps,
+          classifier: this.classifier(),
+          onClassifierError: (e) => (this.classifierError = e.message),
+        });
+        const answered = slow.map((r, i) => [leftovers[i], r] as const).filter(([, r]) => r.status === 'filled' || r.status === 'review');
+        await this.fillAll(answered.map(([f]) => f), answered.map(([, r]) => r), used);
+        // Still unanswered: keep any more specific note from the classifier ("Needs a personal answer").
+        slow.forEach((r, i) => {
+          const report = this.reports.get(leftovers[i].id);
+          if (report && r.note && (report.status === 'needs' || report.status === 'skipped')) report.note = r.note;
+        });
+        this.dropVanishedFields();
       }
 
       await this.publish();
@@ -145,6 +196,34 @@ export class AutofillController {
     } finally {
       this.running = false;
       this.ui()?.setBusy(false);
+    }
+  }
+
+  /** Fill each resolved field in page order and record the outcome. */
+  private async fillAll(fields: FieldDescriptor[], resolutions: Resolution[], used: string[]): Promise<void> {
+    const fillCtx = this.fillContext();
+    for (let i = 0; i < fields.length; i++) {
+      const f = fields[i];
+      const r = resolutions[i];
+      let status: FillStatus = r.status;
+      let note = r.note;
+      let text = r.status === 'prefilled' ? shown(readValue(f)) : '';
+      if ((status === 'filled' || status === 'review') && r.value !== undefined) {
+        if (!f.element.isConnected) continue;
+        const out = await fillField(f, r, fillCtx);
+        if (out.ok) {
+          text = out.valueText;
+          if (r.answerId) used.push(r.answerId);
+          if (out.uncertain && status === 'filled') {
+            status = 'review';
+            note = note ?? 'The page didn’t clearly confirm this choice; check it';
+          }
+        } else {
+          status = f.required ? 'needs' : 'skipped';
+          note = out.reason;
+        }
+      }
+      this.track(f, r, status, text, note);
     }
   }
 
@@ -164,9 +243,11 @@ export class AutofillController {
       valueText,
       note,
       current: readValue(f),
+      debug: status === 'needs' || status === 'review' ? debugHtml(f) : undefined,
     });
     highlight(f, status);
-    if (status !== 'filled' && status !== 'prefilled') this.watch(f);
+    // Passwords typed on the page are never reported or offered for "remember this answer".
+    if (status !== 'filled' && status !== 'prefilled' && f.kind !== 'password') this.watch(f);
   }
 
   /** Notice when the user answers a flagged field on the page, so the panel can offer to remember it. */
@@ -190,13 +271,38 @@ export class AutofillController {
     }
   }
 
-  private async publish(): Promise<void> {
+  /** Dropdowns that load their options when opened: read them, so the panel can offer them as choices. */
+  private async readUnansweredDropdowns(): Promise<void> {
+    for (const [id, report] of this.reports) {
+      const f = this.fields.get(id);
+      if (!f || f.kind !== 'combobox' || report.options.length || (report.status !== 'needs' && report.status !== 'skipped')) continue;
+      const options = await readDropdownOptions(f).catch(() => []);
+      if (options.length) {
+        report.options = options;
+        f.options = options.map((o) => ({ label: o, value: o }));
+      }
+    }
+  }
+
+  /** Filling can remove fields (checking "I currently work here" removes "To"); don't report those. */
+  private dropVanishedFields(): void {
+    for (const [id, f] of this.fields) {
+      if (!f.element.isConnected) {
+        this.fields.delete(id);
+        this.reports.delete(id);
+      }
+    }
+  }
+
+  /** Send this frame's results to the panel. `pending` says the classifier is still working. */
+  private async publish(pending?: string): Promise<void> {
     const report: FrameReport = {
       frameId: 0,
       url: location.href,
       title: document.title,
       fields: [...this.reports.values()],
       classifierError: this.classifierError,
+      pending,
       updatedAt: Date.now(),
     };
     await this.send({ type: 'report', report });
@@ -227,6 +333,19 @@ export class AutofillController {
       this.updateUi();
     }
     return out;
+  }
+
+  /** Scroll the page to a field (from the side panel), flash it and put the cursor in it. */
+  focusField(fieldId: string): boolean {
+    const f = this.fields.get(fieldId) ?? scanFields(document).find((x) => x.id === fieldId);
+    if (!f || !f.element.isConnected) return false;
+    f.element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    flash(f.element);
+    const focusable = f.element.matches('input, select, textarea, button, [tabindex]')
+      ? f.element
+      : f.element.querySelector<HTMLElement>('input:not([type="hidden"]), select, textarea, button, [tabindex]');
+    focusable?.focus({ preventScroll: true });
+    return true;
   }
 
   clearHighlights(): void {

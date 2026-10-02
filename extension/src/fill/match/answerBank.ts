@@ -21,7 +21,8 @@ function optionOverlap(a: string[] | undefined, b: string[]): number {
 }
 
 function compatible(answer: SavedAnswer, field: FieldInfo): boolean {
-  if (field.kind === 'file') return false;
+  // Saved answers never go into password fields; only the account password does.
+  if (field.kind === 'file' || field.kind === 'password') return false;
   if (typeof answer.answer === 'boolean') return CHOICE.includes(field.kind);
   if (Array.isArray(answer.answer)) return field.kind === 'checkboxGroup' || field.kind === 'select' || field.kind === 'text' || field.kind === 'textarea';
   return field.kind !== 'checkbox' || /^(yes|no|true|false)$/i.test(String(answer.answer));

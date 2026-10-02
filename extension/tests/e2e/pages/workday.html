@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Apply: Associate (Workday-style test page)</title>
+    <style>
+      body { font: 14px system-ui, sans-serif; max-width: 700px; margin: 30px auto; }
+      .field { margin: 12px 0; display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+      .select-one { min-width: 240px; text-align: left; padding: 6px; }
+      [role=listbox] { border: 1px solid #999; margin: 0; padding: 0; list-style: none; min-width: 240px; background: #fff; }
+      [role=option] { padding: 4px 8px; }
+      .date { display: flex; gap: 2px; align-items: center; border: 1px solid #999; padding: 2px 6px; }
+      .date input { width: 3.5em; border: 0; }
+      .zone { border: 2px dashed #aaa; padding: 20px; width: 400px; }
+      .zone input[type=file] { display: none; }
+      .pill { background: #def; padding: 2px 6px; border-radius: 10px; }
+    </style>
+  </head>
+  <body>
+    <h2>Create Account</h2>
+    <div class="field"><label for="email">Email Address*</label><input id="email" data-automation-id="email" /></div>
+    <div class="field"><label for="password">Password*</label><input id="password" type="password" data-automation-id="password" /></div>
+    <div class="field"><label for="verify">Verify New Password*</label><input id="verify" type="password" data-automation-id="verifyPassword" /></div>
+
+    <h2>My Information</h2>
+    <div class="field"><label for="first">Given Name(s)*</label><input id="first" /></div>
+    <div class="field"><label for="last">Family Name*</label><input id="last" /></div>
+    <div class="field" data-select="phoneType" data-label="Phone Device Type*" data-options="Landline|Mobile"></div>
+    <div class="field" data-select="region" data-label="Province or Territory*" data-rendered="6"
+         data-options="Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|Georgia|Texas|Utah|Vermont"></div>
+    <div class="field" id="heard">
+      <label for="heard-input">How Did You Hear About Us?*</label>
+      <div class="pills"></div>
+      <input id="heard-input" role="combobox" placeholder="Search" aria-controls="heard-list" aria-autocomplete="list" />
+      <ul id="heard-list" role="listbox" hidden></ul>
+    </div>
+
+    <h2>My Experience</h2>
+    <h3>Work Experience</h3>
+    <div id="jobs"></div>
+    <button type="button" id="add-job">Add Another</button>
+
+    <h3>Resume/CV</h3>
+    <div class="field">
+      <p>Upload a file (5MB max)*</p>
+      <div class="zone" data-automation-id="file-upload-drop-zone">
+        <p>Drop files here</p>
+        <p>or <button type="button">Select files</button></p>
+        <input type="file" data-automation-id="file-upload-input-ref" />
+      </div>
+      <div id="uploaded"></div>
+    </div>
+
+    <h2>Application Questions</h2>
+    <div class="field" data-select="age" data-label="Please select your age category:*" data-options="Under 18|18 and over"></div>
+
+    <button type="button" id="save-continue" onclick="document.body.dataset.submitted = 'yes'">Save and Continue</button>
+
+    <script>
+      let uid = 0;
+
+      /**
+       * Workday-like "Select One": toggles on mousedown AND click (a full click leaves it closed),
+       * ignores clicks on options, selects with Enter on an option or after type-ahead,
+       * and only renders the first `rendered` options at a time.
+       */
+      function mountSelect(host) {
+        const id = ++uid;
+        const options = host.dataset.options.split('|');
+        const rendered = Number(host.dataset.rendered || options.length);
+        // As on Workday: the button's own name is "Select One Required"; the question is the container's <label>.
+        host.setAttribute('data-automation-id', `formField-q${id}`);
+        host.innerHTML = `<label>${host.dataset.label}</label>
+          <button type="button" class="select-one" aria-haspopup="listbox" aria-label="Select One Required">Select One</button>
+          <ul role="listbox" tabindex="-1" hidden></ul>`;
+        const button = host.querySelector('button');
+        const list = host.querySelector('ul');
+        let typed = '';
+        let highlighted = -1;
+        options.slice(0, rendered).forEach((text) => {
+          const li = document.createElement('li');
+          li.setAttribute('role', 'option');
+          li.tabIndex = -1;
+          li.innerHTML = `<div aria-hidden="true">${text}</div>`;
+          li.setAttribute('data-automation-label', text);
+          list.appendChild(li);
+        });
+        const toggle = () => {
+          list.hidden = !list.hidden;
+          typed = '';
+          if (!list.hidden) list.focus();
+        };
+        const select = (text) => {
+          button.textContent = text;
+          list.hidden = true;
+          button.focus();
+        };
+        button.addEventListener('mousedown', toggle);
+        button.addEventListener('click', toggle);
+        list.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape') list.hidden = true;
+          else if (e.key === 'Enter') {
+            const li = e.target.closest('[role=option]');
+            if (li) select(li.dataset.automationLabel);
+            else if (highlighted >= 0) select(options[highlighted]);
+          } else if (e.key.length === 1) {
+            typed += e.key.toLowerCase();
+            highlighted = options.findIndex((o) => o.toLowerCase().startsWith(typed));
+          }
+        });
+      }
+      document.querySelectorAll('[data-select]').forEach(mountSelect);
+
+      // "How did you hear", as on Workday: categories on open; typing does nothing until Enter
+      // searches; the top result is highlighted (aria-selected) but not chosen; clicks on results
+      // do nothing; ArrowDown moves the highlight and a second Enter chooses it (shown as a pill).
+      const heardInput = document.getElementById('heard-input');
+      const heardList = document.getElementById('heard-list');
+      let results = [];
+      let highlighted = 0;
+      const paint = () =>
+        [...heardList.children].forEach((li, i) => li.setAttribute('aria-selected', String(results.length > 0 && i === highlighted)));
+      const show = (items, areResults) => {
+        heardList.innerHTML = '';
+        results = areResults ? items : [];
+        highlighted = 0;
+        for (const text of items) {
+          const li = document.createElement('li');
+          li.setAttribute('role', 'option');
+          li.textContent = areResults ? text : `${text} ›`;
+          heardList.appendChild(li);
+        }
+        paint();
+        heardList.hidden = false;
+      };
+      heardInput.addEventListener('mousedown', () => show(['Advertising', 'Job Board', 'Social Media'], false));
+      heardInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') heardList.hidden = true;
+        else if (e.key === 'ArrowDown' && results.length) {
+          highlighted = Math.min(highlighted + 1, results.length - 1);
+          paint();
+        } else if (e.key === 'Enter' && results.length) {
+          document.querySelector('#heard .pills').innerHTML = `<span class="pill">${results[highlighted]}</span>`;
+          heardInput.value = '';
+          heardList.hidden = true;
+          results = [];
+        } else if (e.key === 'Enter') {
+          show(heardInput.value.toLowerCase().includes('linkedin') ? ['LinkedIn Learning Partner', 'LinkedIn'] : [], true);
+        }
+      });
+
+      // Work experience: one empty entry, more via "Add Another". Dates are split month/year boxes.
+      const jobs = document.getElementById('jobs');
+      function addJob() {
+        const n = jobs.children.length + 1;
+        const div = document.createElement('div');
+        div.className = 'job';
+        div.innerHTML = `<h4>Work Experience ${n}</h4>
+          <div class="field"><label for="title${n}">Job Title*</label><input id="title${n}" /></div>
+          <div class="field"><label for="company${n}">Company*</label><input id="company${n}" /></div>
+          <div class="field"><label><input type="checkbox" class="current" /> I currently work here</label></div>
+          ${['From', 'To'].map((which) => `
+          <div class="field" data-automation-id="formField-${which === 'From' ? 'startDate' : 'endDate'}">
+            <label>${which}*</label>
+            <div class="date" data-automation-id="dateInputWrapper">
+              <span data-automation-id="dateSectionMonth-display">MM</span>
+              <input data-automation-id="dateSectionMonth-input" aria-label="Month" />
+              /
+              <span data-automation-id="dateSectionYear-display">YYYY</span>
+              <input data-automation-id="dateSectionYear-input" aria-label="Year" />
+            </div>
+          </div>`).join('')}`;
+        // Like Workday, "I currently work here" removes the To date.
+        div.querySelector('.current').addEventListener('change', (e) => {
+          const to = div.querySelector('[data-automation-id="formField-endDate"]');
+          if (e.target.checked && to) to.remove();
+        });
+        jobs.appendChild(div);
+      }
+      addJob();
+      document.getElementById('add-job').addEventListener('click', addJob);
+
+      // Resume: the hidden input is ignored; only a drop on the zone uploads.
+      document.querySelector('.zone').addEventListener('dragover', (e) => e.preventDefault());
+      document.querySelector('.zone').addEventListener('drop', (e) => {
+        e.preventDefault();
+        document.getElementById('uploaded').textContent = [...e.dataTransfer.files].map((f) => f.name).join(', ');
+      });
+    </script>
+  </body>
+</html>

@@ -37,7 +37,23 @@ function useClassifierHealth(): [Health | null, () => void] {
   return [health, check];
 }
 
+/** A file dropped outside a drop zone would replace the whole panel with that file; ignore it instead. */
+function useBlockStrayDrops() {
+  useEffect(() => {
+    const block = (e: DragEvent) => {
+      if (Array.from(e.dataTransfer?.types ?? []).includes('Files')) e.preventDefault();
+    };
+    window.addEventListener('dragover', block);
+    window.addEventListener('drop', block);
+    return () => {
+      window.removeEventListener('dragover', block);
+      window.removeEventListener('drop', block);
+    };
+  }, []);
+}
+
 export function App() {
+  useBlockStrayDrops();
   const [view, setView] = useState<View>('apply');
   /** A document to parse into the profile when the Profile view opens. */
   const [importDocId, setImportDocId] = useState<string | null>(null);

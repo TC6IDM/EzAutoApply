@@ -1,9 +1,9 @@
 import { isPlaceholderOption, type OptionLike } from '../core/options';
-import { cleanText } from '../core/normalize';
+import { cleanText, normalize, splitIdentifier } from '../core/normalize';
 import type { FieldKind } from '../core/types';
 import { byId, commonAncestor, deepQueryAll, isOwnUi, isVisible } from './dom';
-import { CONTROL_SELECTOR, groupLabel, helpText, labelFor, optionLabel, sectionOf, textOf } from './labels';
-import type { FieldDescriptor } from './types';
+import { CONTROL_SELECTOR, contextLabel, groupLabel, helpText, labelFor, optionLabel, sectionOf, textOf, uploadLabel } from './labels';
+import type { DateSegments, FieldDescriptor } from './types';
 
 /**
  * Find every fillable field on the page (including open shadow roots) and
@@ -27,13 +27,14 @@ export function elementForField(id: string, root: ParentNode = document): HTMLEl
   return deepQueryAll<HTMLElement>(root, `[${ID_ATTR}="${id}"]`)[0] ?? null;
 }
 
-const SKIP_INPUT_TYPES = new Set(['hidden', 'submit', 'button', 'reset', 'image', 'password', 'search', 'range', 'color']);
+const SKIP_INPUT_TYPES = new Set(['hidden', 'submit', 'button', 'reset', 'image', 'search', 'range', 'color']);
 
 function isRequired(el: Element, label: string): boolean {
   return (
     (el as HTMLInputElement).required === true ||
     el.getAttribute('aria-required') === 'true' ||
-    /\*\s*$|^\s*\*|\(required\)/i.test(label)
+    // The asterisk isn't always last ("From* MM/YYYY"), so anywhere in the label counts.
+    /\*|\(required\)/i.test(label)
   );
 }
 
@@ -41,12 +42,15 @@ function inputKind(el: HTMLInputElement): FieldKind | null {
   const t = (el.getAttribute('type') || 'text').toLowerCase();
   if (SKIP_INPUT_TYPES.has(t)) return null;
   if (t === 'file') return 'file';
+  if (t === 'password') return 'password';
   if (t === 'radio') return 'radio';
   if (t === 'checkbox') return 'checkbox';
   if (t === 'date' || t === 'datetime-local') return 'date';
   if (t === 'month') return 'month';
   if (t === 'number') return 'number';
   if (el.getAttribute('role') === 'combobox' && !el.hasAttribute('list')) return 'combobox';
+  // Workday's multi-select prompts ("Disability", "How did you hear") are search boxes over a list.
+  if (/searchBox|multiSelect|monikerSearch/i.test(el.getAttribute('data-automation-id') ?? '')) return 'combobox';
   if (el.getAttribute('aria-autocomplete') === 'list' && (el.hasAttribute('aria-controls') || el.hasAttribute('aria-owns'))) {
     return 'combobox';
   }
@@ -78,8 +82,9 @@ function comboboxOptions(el: Element): OptionLike[] {
 
 function comboboxHasValue(el: Element): boolean {
   if (el instanceof HTMLInputElement) return el.value.trim() !== '';
+  // "–Select–", "Select One", "Please choose…" all mean empty.
   const t = textOf(el);
-  return !!t && !/^(select|choose|please select|--)/i.test(t);
+  return !!t && !isPlaceholderOption({ label: t, value: '' });
 }
 
 /** Radio/checkbox members grouped by name, falling back to a shared radiogroup/fieldset. */
@@ -104,20 +109,160 @@ function scopeIndex(n: Node): number {
 
 function isChecked(el: HTMLElement): boolean {
   if (el instanceof HTMLInputElement) return el.checked;
-  return el.getAttribute('aria-checked') === 'true';
+  return el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-pressed') === 'true';
+}
+
+/** Toggle buttons (aria-pressed) that act as one choice, e.g. Ashby's Yes / No pairs. */
+const TOGGLE_SELECTOR = 'button[aria-pressed], [role="button"][aria-pressed]';
+
+interface ToggleGroup {
+  container: HTMLElement;
+  buttons: HTMLElement[];
+  /** Inputs the widget keeps its value in (a hidden checkbox); part of the group, not fields of their own. */
+  backing: HTMLInputElement[];
+}
+
+function toggleGroups(root: ParentNode): Map<Element, ToggleGroup> {
+  const byParent = new Map<HTMLElement, HTMLElement[]>();
+  for (const b of deepQueryAll<HTMLElement>(root, TOGGLE_SELECTOR)) {
+    if (isOwnUi(b) || !b.parentElement) continue;
+    const list = byParent.get(b.parentElement) ?? [];
+    list.push(b);
+    byParent.set(b.parentElement, list);
+  }
+  const out = new Map<Element, ToggleGroup>();
+  for (const [container, buttons] of byParent) {
+    if (buttons.length < 2 || !buttons.some(isVisible)) continue;
+    const backing = Array.from(container.querySelectorAll<HTMLInputElement>('input')).filter((i) => !isVisible(i));
+    const group = { container, buttons, backing };
+    for (const el of [...buttons, ...backing]) out.set(el, group);
+  }
+  return out;
+}
+
+/** Ashby points <label for="…"> at the hidden input's name, not an id. */
+function labelForName(inputs: HTMLInputElement[]): HTMLLabelElement | null {
+  for (const i of inputs) {
+    const name = i.getAttribute('name');
+    if (!name || i.id) continue;
+    const label = i.ownerDocument.querySelector<HTMLLabelElement>(`label[for="${CSS.escape(name)}"]`);
+    if (label) return label;
+  }
+  return null;
+}
+
+/**
+ * Section context: the nearest heading, plus Workday-style container ids
+ * ("workExperience-2", "educationSection") for pages whose headings aren't real heading elements.
+ */
+function sectionContext(el: Element, headings: Element[]): string {
+  let ids = '';
+  const groups: string[] = [];
+  for (let p = el.parentElement; p; p = p.parentElement) {
+    const id = p.getAttribute('data-automation-id') ?? '';
+    if (!ids && /experience|employment|education|school/i.test(id)) ids = splitIdentifier(id);
+    // Sections drawn as <fieldset><legend>Work experience</legend> (Avature) or labelled groups.
+    if (p.tagName === 'FIELDSET') {
+      const legend = p.querySelector(':scope > legend');
+      if (legend) groups.push(textOf(legend));
+    } else if (/^(group|region)$/.test(p.getAttribute('role') ?? '') || p.tagName === 'SECTION') {
+      const name = p.getAttribute('aria-label') ?? (p.getAttribute('aria-labelledby') ? labelledByText(p) : '');
+      if (name) groups.push(name);
+    }
+    if (groups.length >= 2) break;
+  }
+  return cleanText(`${sectionOf(el, headings)} ${groups.join(' ')} ${ids} ${entryKind(el)}`);
+}
+
+/**
+ * Whether a field sits in a work-experience or education block, judged by its neighbours:
+ * the smallest surrounding block of 3–8 fields that also asks for an employer/position
+ * (or a school/degree). Catches sections whose title isn't a heading element.
+ */
+function entryKind(el: Element): string {
+  for (let p = el.parentElement, i = 0; p && i < 6; p = p.parentElement, i++) {
+    const count = p.querySelectorAll(CONTROL_SELECTOR).length;
+    if (count < 3) continue;
+    if (count > 8) return '';
+    const labels = normalize(Array.from(p.querySelectorAll('label, legend')).map((l) => textOf(l)).join(' | '));
+    if (/\b(employer|company|position title|job title)\b/.test(labels)) return 'experience';
+    if (/\b(school|university|college|degree)\b/.test(labels)) return 'education';
+    return '';
+  }
+  return '';
+}
+
+function labelledByText(el: Element): string {
+  return (el.getAttribute('aria-labelledby') ?? '')
+    .split(/\s+/)
+    .map((id) => (id ? el.ownerDocument.getElementById(id) : null))
+    .map((n) => (n ? textOf(n) : ''))
+    .join(' ');
+}
+
+/** Workday names each date's container ("formField-startDate"); that says which date it is. */
+function dateContainerId(el: Element): string {
+  for (let p = el.parentElement, i = 0; p && i < 6; p = p.parentElement, i++) {
+    const id = p.getAttribute('data-automation-id') ?? '';
+    if (/(start|from|end|to)Date|YearAttended/i.test(id)) return id;
+  }
+  return '';
 }
 
 function headingsIn(root: ParentNode): Element[] {
   return deepQueryAll(root, 'h1, h2, h3, h4, h5, h6, [role="heading"]').filter((h) => !isOwnUi(h));
 }
 
+type Segment = keyof DateSegments;
+
+/** Which part of a split date an input is, from Workday's automation ids or its label/placeholder. */
+function segmentOf(el: Element): Segment | null {
+  if (!(el instanceof HTMLInputElement)) return null;
+  const auto = /dateSection(Month|Day|Year)/i.exec(el.getAttribute('data-automation-id') ?? '');
+  if (auto) return auto[1].toLowerCase() as Segment;
+  for (const hint of [el.getAttribute('aria-label'), el.getAttribute('placeholder'), el.getAttribute('name')?.split(/[[\]._-]/).filter(Boolean).pop()]) {
+    const h = (hint ?? '').trim().toLowerCase();
+    if (/^(month|mm|mo)$/.test(h)) return 'month';
+    if (/^(day|dd)$/.test(h)) return 'day';
+    if (/^(year|yyyy|yy)$/.test(h)) return 'year';
+  }
+  return null;
+}
+
+/** Month/day/year inputs that sit together form one date field; returns them grouped by their container. */
+function dateSegmentGroups(controls: HTMLElement[]): { container: HTMLElement; segments: DateSegments; inputs: HTMLInputElement[] }[] {
+  const out: { container: HTMLElement; segments: DateSegments; inputs: HTMLInputElement[] }[] = [];
+  const used = new Set<Element>();
+  for (const el of controls) {
+    if (used.has(el) || !segmentOf(el)) continue;
+    let container = el.parentElement;
+    for (let i = 0; container && i < 4; i++, container = container.parentElement) {
+      const inputs = Array.from(container.querySelectorAll('input')).filter((x) => segmentOf(x) && !used.has(x));
+      const segments: DateSegments = {};
+      for (const x of inputs) segments[segmentOf(x)!] ??= x;
+      if (segments.month && segments.year) {
+        inputs.forEach((x) => used.add(x));
+        out.push({ container, segments, inputs });
+        break;
+      }
+    }
+  }
+  return out;
+}
+
 export function scanFields(root: ParentNode = document): FieldDescriptor[] {
   const headings = headingsIn(root);
-  const controls = deepQueryAll<HTMLElement>(root, CONTROL_SELECTOR).filter((el) => !isOwnUi(el));
+  const toggles = toggleGroups(root);
+  const controls = deepQueryAll<HTMLElement>(root, `${CONTROL_SELECTOR}, ${TOGGLE_SELECTOR}`).filter((el) => !isOwnUi(el));
   const fields: FieldDescriptor[] = [];
   const groups = new Map<string, HTMLElement[]>();
   const groupOrder: { key: string; kind: 'radio' | 'checkbox'; at: number }[] = [];
   const consumed = new Set<Element>();
+  const dateGroups = new Map<Element, ReturnType<typeof dateSegmentGroups>[number]>();
+  for (const g of dateSegmentGroups(controls)) {
+    for (const x of g.inputs) consumed.add(x);
+    dateGroups.set(g.inputs[0], g);
+  }
 
   const base = (el: HTMLElement, kind: FieldKind, label: string): FieldDescriptor => ({
     id: fieldId(el),
@@ -131,7 +276,7 @@ export function scanFields(root: ParentNode = document): FieldDescriptor[] {
     inputType: (el.getAttribute('type') ?? '').toLowerCase(),
     options: [],
     required: isRequired(el, label),
-    section: sectionOf(el, headings),
+    section: sectionContext(el, headings),
     multiple: false,
     hasValue: false,
     element: el,
@@ -139,7 +284,51 @@ export function scanFields(root: ParentNode = document): FieldDescriptor[] {
   });
 
   for (const el of controls) {
+    const dateGroup = dateGroups.get(el);
+    if (dateGroup) {
+      // One field for the whole widget, labelled by the text before it ("From", not "Month").
+      const { container, segments, inputs } = dateGroup;
+      // The nearest text is often just the "MM" hint, so keep looking outward until a real label remains.
+      const stripHints = (t: string) => cleanText(t.replace(/\b(MM|DD|YYYY|YY)\b|\//g, ' '));
+      let raw = '';
+      let label = '';
+      for (let node: HTMLElement | null = inputs[0], i = 0; node && i < 4 && !label; node = node.parentElement, i++) {
+        raw = contextLabel(node, inputs);
+        label = stripHints(raw);
+      }
+      if (!label) label = stripHints((raw = labelFor(container) || labelFor(inputs[0])));
+      const f = base(inputs[0], segments.day ? 'date' : 'month', label);
+      f.element = container;
+      f.segments = segments;
+      f.name = dateContainerId(inputs[0]) || f.name;
+      f.members = inputs;
+      f.required = inputs.some((x) => isRequired(x, '')) || isRequired(inputs[0], label);
+      f.hasValue = inputs.some((x) => x.value.trim() !== '');
+      fields.push(f);
+      continue;
+    }
     if (consumed.has(el)) continue;
+    const toggle = toggles.get(el);
+    if (toggle) {
+      // One choice field per toggle group, at the position of its first part on the page.
+      const { container, buttons, backing } = toggle;
+      [...buttons, ...backing].forEach((x) => consumed.add(x));
+      const labelEl = labelForName(backing);
+      const label = (labelEl ? textOf(labelEl) : '') || groupLabel([...buttons, ...backing], container);
+      const f = base(buttons[0], 'radio', label);
+      f.element = container;
+      f.members = buttons as HTMLInputElement[];
+      f.options = buttons.map((b) => {
+        const text = cleanText(b.getAttribute('aria-label') ?? '') || textOf(b);
+        return { label: text, value: b.getAttribute('data-option') ?? text };
+      });
+      // Ashby marks required questions with a class on the label and draws the asterisk in CSS.
+      f.required = isRequired(buttons[0], label) || backing.some((x) => x.required) || /required/i.test(labelEl?.className ?? '');
+      f.hasValue = buttons.some(isChecked);
+      fields.push(f);
+      continue;
+    }
+    if (!el.matches(CONTROL_SELECTOR)) continue;
     if ((el as HTMLInputElement).disabled || el.getAttribute('aria-disabled') === 'true') continue;
     // A combobox wrapper around a real input: the input is the field.
     if (el.getAttribute('role') === 'combobox' && !(el instanceof HTMLInputElement) && el.querySelector('input:not([type="hidden"])')) {
@@ -163,7 +352,7 @@ export function scanFields(root: ParentNode = document): FieldDescriptor[] {
       }
       if (kind === 'file') {
         // File inputs are usually visually hidden behind a styled dropzone.
-        const f = base(el, 'file', labelFor(el) || fileZoneLabel(el));
+        const f = base(el, 'file', labelFor(el) || uploadLabel(el) || fileZoneLabel(el));
         f.hasValue = ((el as HTMLInputElement).files?.length ?? 0) > 0;
         fields.push(f);
         continue;

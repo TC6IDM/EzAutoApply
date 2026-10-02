@@ -56,6 +56,20 @@ export async function hasProfile(): Promise<boolean> {
   return !!(await db.kv.get('profile'));
 }
 
+/**
+ * The job-site account password. Stored apart from the profile and settings so it
+ * is never part of an export, and only handed to pages on allowed sites.
+ */
+export async function getAccountPassword(): Promise<string> {
+  const row = await db.kv.get('accountPassword');
+  return typeof row?.value === 'string' ? row.value : '';
+}
+
+export async function saveAccountPassword(password: string): Promise<void> {
+  if (password) await db.kv.put({ key: 'accountPassword', value: password });
+  else await db.kv.delete('accountPassword');
+}
+
 export async function getSettings(): Promise<Settings> {
   const row = await db.kv.get('settings');
   const d = defaultSettings();
@@ -134,16 +148,29 @@ export async function updateDocument(id: string, changes: Partial<Pick<StoredDoc
   await db.documents.update(id, changes);
 }
 
+/** Keep one default per kind: when the default leaves a kind, promote the newest remaining document. */
+async function promoteNewestDefault(kind: DocKind): Promise<void> {
+  const rest = await db.documents.where('kind').equals(kind).sortBy('createdAt');
+  const next = rest[rest.length - 1];
+  if (next && !rest.some((d) => d.isDefault)) await db.documents.update(next.id, { isDefault: true });
+}
+
 export async function deleteDocument(id: string): Promise<void> {
   await db.transaction('rw', db.documents, async () => {
     const doc = await db.documents.get(id);
     await db.documents.delete(id);
-    if (doc?.isDefault) {
-      // Keep one default per kind: promote the newest remaining document.
-      const rest = await db.documents.where('kind').equals(doc.kind).sortBy('createdAt');
-      const next = rest[rest.length - 1];
-      if (next) await db.documents.update(next.id, { isDefault: true });
-    }
+    if (doc?.isDefault) await promoteNewestDefault(doc.kind);
+  });
+}
+
+/** Move a document to another kind, e.g. when a dropped file was sorted wrongly. */
+export async function changeDocumentKind(id: string, kind: DocKind): Promise<void> {
+  await db.transaction('rw', db.documents, async () => {
+    const doc = await db.documents.get(id);
+    if (!doc || doc.kind === kind) return;
+    const hasDefault = (await db.documents.where('kind').equals(kind).filter((d) => d.isDefault).count()) > 0;
+    await db.documents.update(id, { kind, isDefault: !hasDefault });
+    if (doc.isDefault) await promoteNewestDefault(doc.kind);
   });
 }
 
@@ -246,7 +273,10 @@ export async function exportAll(): Promise<ExportFile> {
 export async function importAll(data: ExportFile): Promise<void> {
   if (data?.app !== 'EzAutoApply') throw new Error('Not an EzAutoApply backup file');
   await db.transaction('rw', [db.kv, db.documents, db.answers, db.applications], async () => {
+    // Backups never contain the account password, so keep the one already saved here.
+    const password = await db.kv.get('accountPassword');
     await Promise.all([db.kv.clear(), db.documents.clear(), db.answers.clear(), db.applications.clear()]);
+    if (password) await db.kv.put(password);
     await db.kv.put({ key: 'profile', value: normalizeProfile(data.profile) });
     if (data.settings) await db.kv.put({ key: 'settings', value: data.settings });
     await db.answers.bulkPut(data.answers ?? []);

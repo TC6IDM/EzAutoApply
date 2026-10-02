@@ -1,4 +1,4 @@
-import { type ReactNode, useId, useState } from 'react';
+import { type DragEvent, type ReactNode, useId, useRef, useState } from 'react';
 import type { TriState } from '../core/profile';
 
 /** Small form building blocks for the side panel. */
@@ -141,6 +141,46 @@ export function Section(props: { title: string; children: ReactNode; actions?: R
       </summary>
       <div className="section-body">{props.children}</div>
     </details>
+  );
+}
+
+const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
+
+/** An area that accepts files dragged in from the desktop or file explorer. */
+export function DropZone(props: { onFiles(files: File[]): void; children: ReactNode; className?: string; disabled?: boolean }) {
+  const [over, setOver] = useState(false);
+  // dragenter/dragleave also fire for every child element, so count them.
+  const depth = useRef(0);
+  return (
+    <div
+      className={`dropzone${over ? ' over' : ''}${props.className ? ` ${props.className}` : ''}`}
+      onDragEnter={(e) => {
+        if (!hasFiles(e) || props.disabled) return;
+        e.preventDefault();
+        depth.current++;
+        setOver(true);
+      }}
+      onDragOver={(e) => {
+        if (!hasFiles(e) || props.disabled) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+      }}
+      onDragLeave={(e) => {
+        if (!hasFiles(e)) return;
+        depth.current = Math.max(0, depth.current - 1);
+        if (!depth.current) setOver(false);
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        depth.current = 0;
+        setOver(false);
+        const files = Array.from(e.dataTransfer?.files ?? []);
+        if (files.length && !props.disabled) props.onFiles(files);
+      }}
+    >
+      {props.children}
+    </div>
   );
 }
 

@@ -10,6 +10,8 @@ const CSS = `
 [${STATUS_ATTR}="review"] { outline: 2px solid #d97706 !important; outline-offset: 2px !important; }
 [${STATUS_ATTR}="needs"]  { outline: 2px dashed #dc2626 !important; outline-offset: 2px !important; }
 [${STATUS_ATTR}="user"]   { outline: 2px solid #2563eb !important; outline-offset: 2px !important; }
+[data-ezaa-flash] { animation: ezaa-flash 1.4s ease-out 1 !important; }
+@keyframes ezaa-flash { 0%, 40% { box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.55); } 100% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0); } }
 `;
 
 export type HighlightStatus = FillStatus | 'user';
@@ -38,6 +40,15 @@ export function highlight(f: FieldDescriptor, status: HighlightStatus): void {
   ensureStyle(el.getRootNode() as Document | ShadowRoot);
   if (status === 'skipped' || status === 'prefilled') el.removeAttribute(STATUS_ATTR);
   else el.setAttribute(STATUS_ATTR, status);
+}
+
+/** Briefly pulse a field so it's easy to spot after scrolling to it. */
+export function flash(el: HTMLElement): void {
+  ensureStyle(el.getRootNode() as Document | ShadowRoot);
+  el.removeAttribute('data-ezaa-flash');
+  void el.offsetWidth; // restart the animation
+  el.setAttribute('data-ezaa-flash', '');
+  setTimeout(() => el.removeAttribute('data-ezaa-flash'), 1500);
 }
 
 export function clearAllHighlights(root: ParentNode = document): void {

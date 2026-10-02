@@ -61,6 +61,9 @@ export default defineContentScript({
           controller.clearHighlights();
           sendResponse(null);
           return false;
+        case 'focusField':
+          sendResponse(controller.focusField(msg.fieldId));
+          return false;
         case 'settingsChanged':
           applySettings(msg.settings);
           sendResponse(null);

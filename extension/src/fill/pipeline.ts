@@ -2,7 +2,7 @@ import { profileFacts } from '../core/facts';
 import { FIELD_KEY_MAP, isUncertain } from '../core/fieldKeys';
 import { boolOf, matchBoolOption, matchOption } from '../core/options';
 import type { Profile } from '../core/profile';
-import { type FieldValue, isFileRef, type SavedAnswer, type Settings } from '../core/types';
+import { CHOICE_KINDS, type FieldValue, isFileRef, isSecretRef, type SavedAnswer, type Settings } from '../core/types';
 import { type BankHit, findAnswers } from './match/answerBank';
 import {
   type Classifier,
@@ -51,6 +51,7 @@ export function valueText(v: FieldValue | undefined): string {
   if (typeof v === 'boolean') return v ? 'Yes' : 'No';
   if (Array.isArray(v)) return v.join(', ');
   if (isFileRef(v)) return `[${v.fileKind}]`;
+  if (isSecretRef(v)) return '••••••••';
   return v;
 }
 
@@ -92,7 +93,8 @@ export async function resolveFields(fields: FieldInfo[], deps: PipelineDeps): Pr
     key,
     source: 'none',
     confidence: 0,
-    status: f.required ? 'needs' : 'skipped',
+    // A question left at "Select One" almost always needs an answer, even when the page doesn't mark it required.
+    status: f.required || CHOICE_KINDS.includes(f.kind) ? 'needs' : 'skipped',
     note,
   });
 
@@ -107,7 +109,7 @@ export async function resolveFields(fields: FieldInfo[], deps: PipelineDeps): Pr
       status: statusFor(meta.confidence, meta.forceReview),
       answerId: meta.answerId,
     };
-    if (isFileRef(value)) return base;
+    if (isFileRef(value) || isSecretRef(value)) return base;
 
     if (f.kind === 'checkbox') {
       const b = typeof value === 'boolean' ? value : Array.isArray(value) ? null : boolOf(value);

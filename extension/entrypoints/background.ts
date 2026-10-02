@@ -1,10 +1,13 @@
 import { type Browser, browser } from 'wxt/browser';
 import { defineBackground } from 'wxt/utils/define-background';
 import { SystemOneClient } from '../src/classifier/systemone';
+import { uploadFileName } from '../src/core/documents';
+import { isAccountSite } from '../src/core/sites';
 import type { DocKind, DocSelection } from '../src/core/types';
 import {
   blobToBase64,
   documentFor,
+  getAccountPassword,
   getProfile,
   getSettings,
   listAnswers,
@@ -89,7 +92,10 @@ async function documentPayload(tabId: number | undefined, kind: DocKind): Promis
   if (selection[kind] === 'none') return null;
   const doc = await documentFor(kind, selection[kind]);
   if (!doc) return null;
-  return { name: doc.name, fileName: doc.fileName, mime: doc.mime, base64: await blobToBase64(doc.blob), text: doc.text };
+  // Employers receive a standardized name (Jordan_Rivera_Resume.pdf), not whatever the file was called locally.
+  const [profile, settings] = await Promise.all([getProfile(), getSettings()]);
+  const fileName = uploadFileName(doc, profile.personal, settings.fileNameFormat);
+  return { name: doc.name, fileName, mime: doc.mime, base64: await blobToBase64(doc.blob), text: doc.text };
 }
 
 async function recordApplication(tabId: number, report: FrameReport, tab: Browser.tabs.Tab | undefined): Promise<void> {
@@ -129,6 +135,12 @@ async function handleContent(msg: ContentToBackground, sender: Browser.runtime.M
     }
     case 'getDocument':
       return documentPayload(tabId, msg.kind);
+    case 'getSecret': {
+      // sender.url is the frame's own URL, so an embedded iframe is judged by its own site.
+      const settings = await getSettings();
+      if (!settings.passwordOnAnySite && !isAccountSite(sender.url ?? '')) return null;
+      return (await getAccountPassword()) || null;
+    }
     case 'report': {
       if (tabId === undefined) return null;
       const frameId = sender.frameId ?? 0;
@@ -185,6 +197,8 @@ async function handlePanel(msg: PanelToBackground): Promise<unknown> {
       if (msg.save) await saveAnswer({ ...msg.save, answer: msg.answer });
       return toTab(msg.tabId, { type: 'applyAnswer', fieldId: msg.fieldId, answer: msg.answer }, msg.frameId);
     }
+    case 'focusField':
+      return toTab(msg.tabId, { type: 'focusField', fieldId: msg.fieldId }, msg.frameId);
     case 'classifierHealth':
       return new SystemOneClient((await getSettings()).classifier).health();
     case 'settingsChanged': {

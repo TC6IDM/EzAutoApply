@@ -37,7 +37,8 @@ export type FieldKind =
   | 'checkbox'
   | 'checkboxGroup'
   | 'combobox'
-  | 'file';
+  | 'file'
+  | 'password';
 
 export const TEXT_KINDS: FieldKind[] = ['text', 'textarea', 'number', 'date', 'month'];
 export const CHOICE_KINDS: FieldKind[] = ['select', 'radio', 'combobox', 'checkboxGroup'];
@@ -46,14 +47,26 @@ export interface FileRef {
   fileKind: DocKind;
 }
 
-/** A value a field should receive: text, a yes/no, several choices, or a stored document. */
-export type FieldValue = string | boolean | string[] | FileRef;
+/**
+ * A secret the background hands over only at the moment it's typed into the
+ * page (and only on allowed sites), so it never sits in reports or messages.
+ */
+export interface SecretRef {
+  secret: 'accountPassword';
+}
+
+/** A value a field should receive: text, a yes/no, several choices, a stored document, or a secret. */
+export type FieldValue = string | boolean | string[] | FileRef | SecretRef;
 
 /** An answer as the user gives it: free text, chosen option label(s), or a checkbox state. */
 export type AnswerValue = string | string[] | boolean;
 
 export function isFileRef(v: unknown): v is FileRef {
   return typeof v === 'object' && v !== null && !Array.isArray(v) && 'fileKind' in v;
+}
+
+export function isSecretRef(v: unknown): v is SecretRef {
+  return typeof v === 'object' && v !== null && !Array.isArray(v) && 'secret' in v;
 }
 
 export type AnswerScope = 'global' | string; // a hostname for company-specific answers
@@ -84,6 +97,9 @@ export interface ClassifierSettings {
   reviewThreshold: number;
 }
 
+/** How uploaded files are named: Jordan_Rivera_Resume.pdf, Jordan-Rivera-Resume.pdf, "Jordan Rivera - Resume.pdf", or unchanged. */
+export type FileNameFormat = 'underscore' | 'dash' | 'spaced' | 'original';
+
 export interface Settings {
   classifier: ClassifierSettings;
   /** Re-run autofill automatically when a multi-step form shows its next step. */
@@ -91,6 +107,11 @@ export interface Settings {
   /** Overwrite fields that already contain a value. */
   overwriteFilled: boolean;
   showFloatingButton: boolean;
+  fileNameFormat: FileNameFormat;
+  /** Fill the account password on any site, not just known job-account sites (Workday, iCIMS, …). */
+  passwordOnAnySite: boolean;
+  /** Open "read and acknowledge the privacy notice" links and press Acknowledge. */
+  acknowledgePrivacyNotices: boolean;
 }
 
 export const LAYA_DEFAULT_URL = 'http://127.0.0.1:8000';
@@ -108,6 +129,9 @@ export function defaultSettings(): Settings {
     autoFillNextStep: false,
     overwriteFilled: false,
     showFloatingButton: true,
+    fileNameFormat: 'underscore',
+    passwordOnAnySite: false,
+    acknowledgePrivacyNotices: true,
   };
 }
 

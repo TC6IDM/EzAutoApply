@@ -10,6 +10,7 @@ Ground rules:
 - **Never `git commit` or `git push` without the user's explicit approval for that specific commit or push.**
 - The extension never submits forms. Filling only happens when the user acts.
 - The classifier must stay optional. Rules and saved answers must work with it off or unreachable.
+- The job-site account password is a secret: never put it in reports, saved answers, backups, or messages other than `getSecret`.
 
 ## Commands
 
@@ -37,16 +38,25 @@ Laya server: `classifier\start.ps1` (or `start.sh`). The first run creates `clas
 - **Side panel** (`entrypoints/sidepanel` → `src/panel/`) is an extension page. It uses Dexie directly (`useLiveQuery`) and gets tab state via messages and `tabStateChanged` broadcasts.
 
 ### Fill pipeline
-`scan.ts` (+ `labels.ts`) turns the DOM into `FieldDescriptor`s. These include radio and checkbox *groups*, ARIA comboboxes, hidden file inputs, and fields in open shadow roots. Ids are stored in the `data-ezaa-id` attribute and stay stable across rescans. `pipeline.ts › resolveFields` is **pure logic over DOM-free `FieldInfo`**, so it's unit-testable. It runs these tiers in order:
+`scan.ts` (+ `labels.ts`) turns the DOM into `FieldDescriptor`s. `labelFor` ignores widget text like "Select One Required" (Workday's button names) and checks the `formField-…` container's `<label>`; section context includes Workday container ids (`workExperience-1`) as well as headings. These include radio and checkbox *groups*, ARIA comboboxes (anything with `aria-haspopup=listbox`, e.g. Workday "Select One" buttons and Material-UI selects), toggle-button groups (sibling `aria-pressed` buttons such as Ashby's Yes/No, scanned as `radio` with their hidden backing input folded in), hidden file inputs, password inputs, split month/day/year date boxes grouped into one field with `segments` (Workday's `dateSection*-input`), and fields in open shadow roots. Ids are stored in the `data-ezaa-id` attribute and stay stable across rescans. `pipeline.ts › resolveFields` is **pure logic over DOM-free `FieldInfo`**, so it's unit-testable. It runs these tiers in order:
 
 1. already has a value → `prefilled`
 2. **rules** (`match/rules.ts`)
 3. **answer bank** (`match/answerBank.ts`), fuzzy match; when a classifier is available, borderline matches are confirmed by it
 4. **classifier** (`match/classify.ts`): `classifyGroups` (one batched `choice` over 10 groups) → `likelyGroups` (top 2, *ignoring "other"*, which Laya over-predicts) → `rankKeys` (one `noul` per candidate key in a single request) → accept if P ≥ `reviewThreshold` and it leads the runner-up by `KEY_MARGIN`
 5. derived yes/no from `profileFacts` (always `review`)
-6. otherwise `needs` (if required) or `skipped`
+6. otherwise `needs` (if required, or if it's a choice kind: select/radio/combobox/checkboxGroup), else `skipped`
 
-`fillers.ts` then writes the values. Text goes through `setNativeValue` (the prototype setter, so React's value tracker notices) plus input/change events. Radios and checkboxes are clicked. Comboboxes are opened, typed into and clicked. Files are set via `DataTransfer`.
+The controller (`src/content/controller.ts`) runs this in **two passes**: pass 1 with `classifier: null` fills instantly, then only pass-1 leftovers (`source === 'none'`) are re-resolved with the classifier. Before either pass, `fill/repeat.ts › expandRepeatingSections` clicks "Add / Add Another" in Work Experience and Education until there's one entry per profile entry (it refuses anything matching Save/Next/Continue/Submit). After filling, unanswered comboboxes are opened and closed by `readDropdownOptions` so the panel can offer their options. Fields that vanished during filling are dropped from the report. Before filling, `fill/consent.ts` opens "read and acknowledge the privacy notice" links and presses Acknowledge in a privacy/data-protection dialog (setting `acknowledgePrivacyNotices`). Section context also uses enclosing fieldset legends and `entryKind` (a 3–8 field block that asks for an employer → "experience").
+
+`fillers.ts` then writes the values:
+
+- **Text:** `setNativeValue` (the prototype setter, so React's value tracker notices) plus input/change events. If the value doesn't stick (masked inputs), it falls back to `typeLikeUser`, one character at a time; dates compare by digits.
+- **Radios and checkboxes:** clicked.
+- **Comboboxes** (`fillCombobox`): Workday mounts a fresh list per dropdown without `aria-controls`, so a field's options are `optionsOf(el, before)`: its `aria-controls` list, else options that weren't showing before it opened (`closeStrayLists` snapshots them and closes leftovers first). `openList` tries click, then mousedown, then the keyboard; `closeList` tries Escape, then click / mousedown / click toggles. Options are read with `optionText` (`aria-label`, then `data-automation-label`, then text). On no match, it types the value and presses Enter (Workday search prompts search only on Enter; type-ahead lists select on Enter). After clicking, `looksChosen` (compared against a before-snapshot) checks the selection took; otherwise it presses Enter on the option, and if it still can't confirm, returns `uncertain`, which becomes `review`.
+- **Opening dropdowns** (`openList`): click, then the widget's own toggle/arrow button (`toggleButtonFor`; Greenhouse's react-select ignores synthetic events on the input but opens from "Toggle flyout"), then mousedown, then keys. Search boxes are typed with `typeSearch` (per-character `InputEvent`s; Greenhouse's location search ignores a value set at once). `keyTarget` only follows focus inside the widget or an open list.
+- **Files:** set via `DataTransfer` on the input. If the file name doesn't show up around the drop zone, a synthetic drop on the zone follows.
+- **Passwords:** a `SecretRef`, fetched from the background with `getSecret` only at fill time.
 
 ### `src/core/fieldKeys.ts` is the central registry
 Every canonical field (~60) has label/attr/exclude regexes, an optional `section` / `notSection` gate, `maxWords`, autocomplete tokens, a `valueType`, and a `resolve(ctx)` that returns a value, `null` (not in the profile), or `{ uncertain }` (forces review). Rule scoring is the longest match, plus a bonus when the section gate matches. `kindAccepts` controls which field kinds a key may fill. `repeat` keys (experience/education entries) pick their entry by occurrence order. `noClassify` hides keys from the classifier. `description` doubles as the classifier's criteria text. To add a field, add an entry here and a case in `tests/unit/rules.test.ts`.
@@ -62,10 +72,12 @@ Option matching (`core/options.ts`) is deterministic and runs before any model c
 `extract.ts` turns PDF (pdf.js v6, with font size and bold resolved from `commonObjs`), DOCX (mammoth → HTML) or TXT into `TextLine[]`. `resume.ts` is heuristic. It splits sections by heading synonyms or all-caps/bold/larger lines (the first line is the name and is never a heading), splits entries by date ranges and bullets, and only splits "X at Y" when X looks like a job title. Unknown headings can go to the classifier. Results always go through the review screen in `ProfileView` before saving.
 
 ### Storage (`src/db/index.ts`)
-Dexie database `ezautoapply`. Documents keep the **original file Blob** plus extracted text, with one `isDefault` per kind. A per-tab `DocSelection` (including `'none'`) overrides the default. Answers are upserted by (normalized question, scope), where scope is `'global'` or a hostname. `exportAll`/`importAll` round-trip everything, with files as base64.
+Dexie database `ezautoapply`. Documents keep the **original file Blob**, original `fileName` and extracted text, with one `isDefault` per kind (`changeDocumentKind` keeps that invariant). The name employers receive is derived at upload time by `core/documents.ts › uploadFileName` (profile name + `settings.fileNameFormat`, e.g. `Jordan_Rivera_Resume.pdf`); `guessDocKind` sorts dropped files. The account password lives in kv `accountPassword`: excluded from `exportAll`, preserved by `importAll`, and only returned by the background's `getSecret` to frames whose own URL passes `core/sites.ts › isAccountSite` (or when `settings.passwordOnAnySite`). A per-tab `DocSelection` (including `'none'`) overrides the default. Answers are upserted by (normalized question, scope), where scope is `'global'` or a hostname. `exportAll`/`importAll` round-trip everything, with files as base64.
 
 ## Testing notes
 - `tests/unit/db.test.ts` uses `// @vitest-environment node` because happy-dom's Blob doesn't survive fake-indexeddb cloning.
 - Combobox no-match tests wait out real timeouts (~3 s).
 - E2E uses Playwright's bundled Chromium (`channel: 'chromium'`), because branded Chrome ignores `--load-extension`. Tests trigger autofill by calling `chrome.tabs.sendMessage` from the service worker (`worker.evaluate`), drive the side panel at `chrome-extension://<id>/sidepanel.html`, and serve fixtures from `tests/e2e/pages`. Run `npx playwright install chromium` once.
-- `tests/unit/fixtures.ts` has DOM fixtures imitating real ATS markup (Greenhouse-like form, react-select-style combobox, React value-tracker shim).
+- `tests/unit/fixtures.ts` has DOM fixtures imitating real ATS markup (Greenhouse-like form, react-select-style combobox, React value-tracker shim, Workday search prompt and "Select One" list that toggles on mousedown+click and ignores option clicks). `tests/unit/workday.test.ts` covers the Workday behaviours; `tests/e2e/pages/workday.html` is the same in a real browser.
+- E2E tests call `classifierOff()` so they don't depend on a local Laya; the last test runs only when Laya answers on port 8000.
+- When editing files from the shell on this Windows setup, inline heredoc scripts can mangle backslashes (`\b` became a literal backspace). Write such scripts to a file first, or use the editor, for anything containing regexes.

@@ -62,8 +62,8 @@ export class FloatingUi {
     document.documentElement.appendChild(this.host);
   }
 
-  setBusy(busy: boolean): void {
-    this.main.textContent = busy ? 'Filling…' : '⚡ Autofill';
+  setBusy(busy: boolean, label = 'Filling…'): void {
+    this.main.textContent = busy ? label : '⚡ Autofill';
     this.main.disabled = busy;
   }
 
