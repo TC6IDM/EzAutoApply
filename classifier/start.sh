@@ -20,4 +20,5 @@ fi
 # Bind to localhost only; laya-serve's default (0.0.0.0) would expose it to your network.
 export LAYA_HOST=127.0.0.1 LAYA_PORT="$port" LAYA_DEVICE="${LAYA_DEVICE:-cpu}" LAYA_PRELOAD=1 LAYA_MODELS="$model"
 echo "Starting Laya on http://127.0.0.1:$port (checkpoint: $model). Press Ctrl+C to stop."
-exec "$venv/bin/laya-serve"
+# python -m instead of bin/laya-serve, whose shebang hard-codes the venv path.
+exec "$venv/bin/python" -m laya.serve

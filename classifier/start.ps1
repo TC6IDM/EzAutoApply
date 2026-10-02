@@ -45,4 +45,6 @@ if ($ApiKey) { $env:LAYA_API_KEY = $ApiKey }
 if ($Threads -gt 0) { $env:LAYA_THREADS = "$Threads" }
 
 Write-Host "Starting Laya on http://127.0.0.1:$Port (checkpoint: $Model). Press Ctrl+C to stop."
-& (Join-Path $venv 'Scripts\laya-serve.exe')
+# Run through python rather than Scripts\laya-serve.exe, whose launcher hard-codes the
+# venv's path and breaks if the project folder is moved.
+& $python -m laya.serve
