@@ -11,6 +11,8 @@ import {
 } from '../../core/profile';
 import { addDocument, getAccountPassword, getDocument, getProfile, getSettings, hasProfile, saveAccountPassword, saveProfile, saveSettings } from '../../db';
 import { extractLines, fileKindOf } from '../../parse/extract';
+import { isLinkedInExport, isLinkedInPdf, type LinkedInImport, parseLinkedInExport, parseLinkedInPdf, readExportFiles } from '../../parse/linkedin';
+import { mergeParsed, type ParsedProfile } from '../../parse/merge';
 import { parseResume, type RawSection } from '../../parse/resume';
 import { classifyHeading } from '../api';
 import { Banner, Button, DropZone, Empty, ListInput, Section, SelectInput, TextInput, TriInput } from '../ui';
@@ -37,30 +39,38 @@ const REMOTE: [Profile['preferences']['remotePreference'], string][] = [
   ['any', 'Flexible'],
 ];
 
-type ParsedProfile = Awaited<ReturnType<typeof parseResume>>['profile'];
+/** "3 jobs, 2 schools, 12 skills" */
+function foundSummary(p: ParsedProfile): string {
+  const counts: [number, string][] = [
+    [p.experience.length, 'job'],
+    [p.education.length, 'school'],
+    [p.projects.length, 'project'],
+    [p.skills.length, 'skill'],
+    [p.certifications.length, 'certification'],
+    [p.languages.length, 'language'],
+  ];
+  return counts
+    .filter(([n]) => n)
+    .map(([n, word]) => `${n} ${word}${n === 1 ? '' : 's'}`)
+    .join(', ');
+}
 
-/** Merge parsed resume data into the profile. `fillEmpty` keeps everything the user already has. */
-function mergeParsed(current: Profile, parsed: ParsedProfile, mode: 'replace' | 'fillEmpty'): Profile {
-  const next = structuredClone(current);
-  const pick = (a: string, b: string) => (mode === 'replace' ? b || a : a || b);
-  const pp = parsed.personal;
-  next.personal.firstName = pick(next.personal.firstName, pp.firstName);
-  next.personal.lastName = pick(next.personal.lastName, pp.lastName);
-  next.personal.email = pick(next.personal.email, pp.email);
-  next.personal.phone = pick(next.personal.phone, pp.phone);
-  next.personal.address.city = pick(next.personal.address.city, pp.address.city);
-  next.personal.address.region = pick(next.personal.address.region, pp.address.region);
-  next.personal.address.country = pick(next.personal.address.country, pp.address.country);
-  for (const k of ['linkedin', 'github', 'portfolio', 'website'] as const) next.links[k] = pick(next.links[k], parsed.links[k]);
-  next.summary = pick(next.summary, parsed.summary);
-  const list = <T,>(a: T[], b: T[]) => (mode === 'replace' ? (b.length ? b : a) : a.length ? a : b);
-  next.experience = list(next.experience, parsed.experience);
-  next.education = list(next.education, parsed.education);
-  next.projects = list(next.projects, parsed.projects);
-  next.skills = list(next.skills, parsed.skills);
-  next.certifications = list(next.certifications, parsed.certifications);
-  next.languages = list(next.languages, parsed.languages);
-  return next;
+/**
+ * Merge a LinkedIn import into the profile and describe it. LinkedIn usually adds
+ * to what a resume gave, so jobs, schools and skills the profile lacks are added.
+ */
+async function mergeLinkedIn(result: LinkedInImport, source: string, current: Profile): Promise<{ profile: Profile; note: string }> {
+  const empty = !(await hasProfile());
+  const profile = mergeParsed(current, result.profile, empty ? 'replace' : 'combine');
+  const note = [
+    `Imported ${source}: ${foundSummary(result.profile) || 'no jobs, schools or skills'}.`,
+    empty
+      ? 'Review everything below, then save.'
+      : 'Jobs, schools and skills you didn’t have were added and empty fields filled in; nothing you already had was changed. Review, then save.',
+  ];
+  if (result.notImported.length) note.push(`Not part of the profile, so not imported: ${result.notImported.join(', ')}.`);
+  if (!profile.links.linkedin) note.push('Add your LinkedIn URL under Links; this file doesn’t include it.');
+  return { profile, note: note.join(' ') };
 }
 
 function ImportCard(props: { profile: Profile; importDocId: string | null; onParsed(p: Profile, note: string, unknown: RawSection[]): void }) {
@@ -76,10 +86,19 @@ function ImportCard(props: { profile: Profile; importDocId: string | null; onPar
     try {
       const lines = await extractLines(file);
       if (!lines.length) throw new Error('No text found. Scanned (image-only) PDFs aren’t supported; try a DOCX or a text-based PDF.');
-      const parsed = await parseResume(lines, props.profile, classifyHeading);
-      if (saveAsDocument) {
-        await addDocument({ kind: 'resume', file, fileName: file.name, text: parsed.text });
+      const keep = async () => {
+        if (saveAsDocument) await addDocument({ kind: 'resume', file, fileName: file.name, text: lines.map((l) => l.text).join('\n') });
+      };
+      // A LinkedIn profile saved as PDF has a fixed layout with its own parser.
+      if (isLinkedInPdf(lines)) {
+        const result = parseLinkedInPdf(lines, props.profile);
+        await keep();
+        const { profile, note } = await mergeLinkedIn(result, `${file.name} (a LinkedIn profile PDF)`, props.profile);
+        props.onParsed(profile, note, []);
+        return;
       }
+      const parsed = await parseResume(lines, props.profile, classifyHeading);
+      await keep();
       const empty = !(await hasProfile());
       props.onParsed(
         mergeParsed(props.profile, parsed.profile, empty ? 'replace' : 'fillEmpty'),
@@ -135,6 +154,83 @@ function ImportCard(props: { profile: Profile; importDocId: string | null; onPar
         {busy ? 'Parsing…' : 'Choose resume file'}
       </Button>
       {error && <p className="error-text">{error}</p>}
+    </DropZone>
+  );
+}
+
+/** LinkedIn's data export (the ZIP, or CSV files from it) or a profile saved with "Save to PDF". */
+function LinkedInSection(props: { profile: Profile; onParsed(p: Profile, note: string): void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const run = async (files: File[]) => {
+    setBusy(true);
+    setError('');
+    try {
+      const pdf = files.find((f) => fileKindOf(f) === 'pdf');
+      let result: LinkedInImport;
+      let source: string;
+      if (pdf) {
+        const lines = await extractLines(pdf);
+        if (!isLinkedInPdf(lines)) {
+          throw new Error('That PDF isn’t a LinkedIn profile saved with “Save to PDF”. To read it as a resume, use “Import from a resume” above.');
+        }
+        result = parseLinkedInPdf(lines, props.profile);
+        source = pdf.name;
+      } else {
+        const csvs = await readExportFiles(files);
+        if (!isLinkedInExport(csvs)) {
+          throw new Error('No LinkedIn profile data found. Drop the .zip from LinkedIn’s data export, the CSV files inside it, or a profile saved as PDF.');
+        }
+        result = parseLinkedInExport(csvs, props.profile);
+        source = 'your LinkedIn data export';
+      }
+      const { profile, note } = await mergeLinkedIn(result, source, props.profile);
+      props.onParsed(profile, note);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <DropZone className="linkedin-import" disabled={busy} onFiles={run}>
+      <Section title="Import from LinkedIn" defaultOpen={false}>
+        <p className="hint">Drop either of these here, or choose it. It’s read on your computer; nothing is uploaded.</p>
+        <ul className="source-list">
+          <li>
+            <strong>Data export</strong> (most complete): on LinkedIn, Me → Settings &amp; Privacy → Data privacy →{' '}
+            <a href="https://www.linkedin.com/mypreferences/d/download-my-data" target="_blank" rel="noreferrer">
+              Get a copy of your data
+            </a>
+            . Pick the files you want, including Profile, and request the archive. LinkedIn emails you when the .zip is ready, usually within
+            minutes.
+          </li>
+          <li>
+            <strong>Profile PDF</strong> (instant): on your profile, More → Save to PDF. It lists only your top three skills and no projects.
+          </li>
+        </ul>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".zip,.csv,.pdf"
+          multiple
+          hidden
+          onChange={(e) => {
+            const files = Array.from(e.target.files ?? []);
+            e.target.value = '';
+            if (files.length) run(files);
+          }}
+        />
+        <div className="row">
+          <Button kind="primary" disabled={busy} onClick={() => fileRef.current?.click()}>
+            {busy ? 'Reading…' : 'Choose LinkedIn file'}
+          </Button>
+        </div>
+        {error && <p className="error-text">{error}</p>}
+      </Section>
     </DropZone>
   );
 }
@@ -380,6 +476,15 @@ export function ProfileView(props: { importDocId: string | null; onImported(): v
           setNote(msg);
           setUnknown(unk);
           props.onImported();
+        }}
+      />
+      <LinkedInSection
+        profile={profile}
+        onParsed={(next, msg) => {
+          setProfile(next);
+          setDirty(true);
+          setNote(msg);
+          setUnknown([]);
         }}
       />
       {note && <Banner tone="info">{note}</Banner>}

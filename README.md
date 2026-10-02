@@ -56,6 +56,19 @@ Import a resume (PDF, DOCX or TXT) on the **Profile** tab. The parser:
 
 You can drag the file onto the import box or choose it. You then **review and save**. The parser gets most things right but not everything, so nothing is saved until you confirm it. The profile also holds what resumes don't: work authorization, sponsorship, salary expectations, start date, voluntary EEO answers (which default to "Decline to self-identify"), and the password for job-site accounts (see [Job-site accounts](#job-site-accounts)). Every field stays editable.
 
+#### From LinkedIn
+
+**Profile → Import from LinkedIn** takes either of the two files LinkedIn gives you:
+
+| File | How to get it | What it has |
+|---|---|---|
+| **Data export** (`.zip`, or the CSV files inside it) | Me → Settings & Privacy → Data privacy → [Get a copy of your data](https://www.linkedin.com/mypreferences/d/download-my-data). Pick the files you want, including Profile. LinkedIn emails you when it's ready. | Everything: name, email, phone, location, summary, websites, every job with its description, schools with degree, field and grade, all skills, certifications, languages, projects |
+| **Profile PDF** | On your profile, **More → Save to PDF** | Name, email, phone, location, LinkedIn URL, summary, jobs with descriptions, schools, certifications, languages, and only your top three skills |
+
+The data export is read column by column, so nothing is guessed. The PDF has a fixed layout: a sidebar (contact, top skills, languages, certifications) beside the main column. EzAutoApply reads the two columns separately and tells the parts of each entry apart by font size (company, title, then the date line). A company with several roles is split into one job per role. A LinkedIn PDF dropped on the resume import box is recognized and read the same way. LinkedIn PDFs from before about 2018, which had a single column, go through the resume parser.
+
+If your profile is empty, the import fills it in. If you already imported a resume, the import only adds: jobs, schools and projects you don't have are added, matching ones get their empty fields filled (a job's description, say), and new skills, certifications and languages are appended. Nothing you already have is changed. LinkedIn data with no place in the profile (recommendations, honors, volunteering, publications) is listed and left out. As with a resume, you review everything and then save.
+
 ### Documents
 
 Drag resumes, cover letters and transcripts onto the **Documents** tab (or choose them). Each file is sorted by type automatically, from its name ("Cover Letter.pdf") or, failing that, its wording ("Dear Hiring Manager…"). You can change the type afterwards, or drop a file onto a specific section to choose the type yourself.
@@ -203,7 +216,7 @@ In **Settings → Classifier**, choose **Jev (TypeSafe cloud)**, enter the API U
 ## Using it
 
 1. **Open the side panel** by clicking the EzAutoApply toolbar icon.
-2. **Profile:** click **Choose resume file**, check what was parsed, fill in work authorization and preferences, then click **Save profile**.
+2. **Profile:** click **Choose resume file** (and/or import your LinkedIn data under **Import from LinkedIn**), check what was parsed, fill in work authorization and preferences, then click **Save profile**.
 3. **Documents:** drag in cover letters, transcripts and extra resumes. The original files are stored, the ★ default of each type is what gets uploaded, and uploads get standard names (see [Documents](#documents)). For Workday-style sites, also set a password under **Profile → Job site accounts**.
 4. **Go to a job application** and click **Autofill**. You can use the floating ⚡ button on the page, **Alt+Shift+F**, or the button on the side panel's Apply tab.
 5. **Apply tab:** answer anything under *Needs your answer*, look over *Check these*, and pick a different resume or cover letter for this application if you want.
@@ -219,7 +232,7 @@ In **Settings → Classifier**, choose **Jev (TypeSafe cloud)**, enter the API U
 - The **Documents** tab lists every stored file. You can open, download, rename or delete each one, or make it the default for its type.
 - **Settings → Backup** exports everything (profile, documents, saved answers, history) to a JSON file and imports it again. Use this to move to another browser or computer.
 - **Settings → Delete all data** wipes everything.
-- Resume parsing happens in the side panel. The file never leaves your computer.
+- Resume and LinkedIn parsing happen in the side panel. The file never leaves your computer.
 
 ---
 
@@ -237,7 +250,7 @@ EzAutoApply/
 │  │  ├─ fill/                     scanner, label extraction, matching pipeline, fillers
 │  │  │  └─ match/                 rules, saved answers, classifier questions
 │  │  ├─ classifier/systemone.ts   HTTP client for Laya/Jev (/v1/systemone)
-│  │  ├─ parse/                    resume text extraction and parsing
+│  │  ├─ parse/                    resume text extraction and parsing, LinkedIn imports
 │  │  ├─ content/                  in-page controller, highlights, floating button
 │  │  ├─ panel/                    side panel views
 │  │  └─ db/                       IndexedDB (Dexie) schema, backup
@@ -294,7 +307,7 @@ It sends ten unusual application questions through the same steps the extension 
 
 ## Status and roadmap
 
-**Working now:** resume import and review; drag-and-drop documents with automatic type detection and standardized upload names; profile, documents and answer-bank management; job-site account passwords; generic autofill across frames and shadow DOM (text, selects, radio buttons, checkboxes, custom dropdowns including Workday's, split and masked dates, passwords, file uploads with drop-zone fallback); clicking "Add Another" for every job and school; two-pass filling with the Laya/Jev classifier tier and confidence gating; learning answers from the panel and from edits on the page; reading dropdown options so you can answer them; multi-step form detection; per-application document choice; application history; backup and restore.
+**Working now:** resume import and review; LinkedIn import from the data export or a profile PDF; drag-and-drop documents with automatic type detection and standardized upload names; profile, documents and answer-bank management; job-site account passwords; generic autofill across frames and shadow DOM (text, selects, radio buttons, checkboxes, custom dropdowns including Workday's, split and masked dates, passwords, file uploads with drop-zone fallback); clicking "Add Another" for every job and school; two-pass filling with the Laya/Jev classifier tier and confidence gating; learning answers from the panel and from edits on the page; reading dropdown options so you can answer them; multi-step form detection; per-application document choice; application history; backup and restore.
 
 **Next:**
 

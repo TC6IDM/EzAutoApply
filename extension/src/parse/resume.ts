@@ -25,6 +25,11 @@ export interface TextLine {
   bold: boolean;
   /** Came from a list item or starts with a bullet glyph. */
   bullet: boolean;
+  /** PDF only: width in points, and the space between this line and the one above it (unset at the top of a page). */
+  width?: number;
+  gap?: number;
+  /** PDF only: the column of LinkedIn's "Save to PDF" layout (sidebar or main). */
+  column?: 'side' | 'main';
 }
 
 export type SectionType =
@@ -59,13 +64,13 @@ export function sectionTypeOf(heading: string): SectionType | null {
 }
 
 const BULLET_RE = /^\s*[•●▪◦‣∙·○■□➢►▶✓✔\-–*]\s+/;
-const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+export const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
 const PHONE_RE = /(?:\+?\d{1,3}[\s.-]?)?(?:\(\d{2,4}\)|\d{2,4})[\s.-]?\d{3,4}[\s.-]?\d{3,4}/;
 const URL_RE = /\b(?:https?:\/\/)?(?:www\.)?(?:[a-z0-9-]+\.)+(?:com|io|dev|me|net|org|co|ai|app|xyz|tech|site|page|ca|uk|in)(?:\/[^\s|,•]*)?/gi;
 const TITLE_WORDS =
   /\b(engineer|developer|manager|intern|internship|analyst|designer|scientist|lead|director|consultant|specialist|associate|assistant|coordinator|administrator|architect|officer|technician|researcher|representative|founder|co-founder|head|vp|president|teacher|tutor|programmer|accountant|editor|writer|nurse|advisor|strategist|owner|fellow|instructor|supervisor|clerk|cashier|agent|mentor|volunteer|trainee|apprentice|sde|swe)\b/i;
 const SCHOOL_WORDS = /\b(university|college|institute|school|academy|polytechnic|universit[éa]|conservatory|seminary)\b/i;
-const DEGREE_RE =
+export const DEGREE_RE =
   /\b(bachelor(?:'s)?|master(?:'s)?|doctor(?:ate)?|ph\.?\s?d\.?|mba|b\.?\s?(?:sc|s|a|eng|tech|comm?)\.?|m\.?\s?(?:sc|s|a|eng|tech)\.?|associate(?:'s)?|diploma|certificate|high school|ged|a\.?a\.?s?\.?|hons?\.?|honours|honors)\b/i;
 
 export function isBulletText(t: string): boolean {
@@ -126,7 +131,7 @@ export function splitSections(lines: TextLine[]): { header: TextLine[]; sections
 
 // ── contact block ───────────────────────────────────────────────────────
 
-function classifyUrl(raw: string, links: Links): void {
+export function classifyUrl(raw: string, links: Links): void {
   const url = raw.replace(/[).,;]+$/, '');
   const full = /^https?:\/\//i.test(url) ? url : `https://${url}`;
   if (/linkedin\.com/i.test(url)) links.linkedin ||= full;
@@ -135,7 +140,7 @@ function classifyUrl(raw: string, links: Links): void {
   else if (!links.website && links.portfolio !== full) links.website = full;
 }
 
-function parseLocation(part: string): { city: string; region: string; country: string } | null {
+export function parseLocation(part: string): { city: string; region: string; country: string } | null {
   const m = /^([A-Za-zÀ-ÿ.' -]{2,40}),\s*([A-Za-zÀ-ÿ. ]{2,40})(?:,\s*([A-Za-zÀ-ÿ. ]{2,40}))?$/.exec(part.trim());
   if (!m) return null;
   const region = canonicalRegion(m[2]);
@@ -307,6 +312,12 @@ export function parseExperience(lines: TextLine[]): Experience[] {
   return out;
 }
 
+/** "GPA: 3.8/4.0" → "3.8/4.0"; "" when the text has none. */
+export function findGpa(text: string): string {
+  const gpa = /\b(?:c?gpa|grade point average)\s*[:\-]?\s*(\d(?:\.\d{1,2})?)(\s*\/\s*\d(?:\.\d+)?)?/i.exec(text);
+  return gpa ? gpa[1] + (gpa[2] ? gpa[2].replace(/\s/g, '') : '') : '';
+}
+
 export function parseEducation(lines: TextLine[]): Education[] {
   const out: Education[] = [];
   for (const b of entryBlocks(lines)) {
@@ -338,8 +349,7 @@ export function parseEducation(lines: TextLine[]): Education[] {
       }
     }
     for (const l of all) {
-      const gpa = /\b(?:c?gpa|grade point average)\s*[:\-]?\s*(\d(?:\.\d{1,2})?)(\s*\/\s*\d(?:\.\d+)?)?/i.exec(l);
-      if (gpa && !ed.gpa) ed.gpa = gpa[1] + (gpa[2] ? gpa[2].replace(/\s/g, '') : '');
+      if (!ed.gpa) ed.gpa = findGpa(l);
       const major = /\b(?:major|field of study|concentration)\s*[:\-]\s*([^|,;]+)/i.exec(l);
       if (major && !ed.field) ed.field = major[1].trim();
     }

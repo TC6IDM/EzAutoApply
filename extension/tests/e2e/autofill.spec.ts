@@ -1,4 +1,5 @@
 import { type BrowserContext, test as base, chromium, expect, type Page, type Worker } from '@playwright/test';
+import { strToU8, zipSync } from 'fflate';
 import { readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -81,7 +82,7 @@ async function classifierOff(panel: Page): Promise<void> {
 
 async function importResume(panel: Page): Promise<void> {
   await panel.getByRole('tab', { name: 'Profile' }).click();
-  await panel.locator('input[type=file]').setInputFiles(join(PAGES, 'resume.txt'));
+  await panel.locator('.import-card input[type=file]').setInputFiles(join(PAGES, 'resume.txt'));
   await expect(panel.getByText(/Parsed resume\.txt/)).toBeVisible();
   await expect(panel.getByLabel('First name')).toHaveValue('Jordan');
   await expect(panel.getByLabel('Email')).toHaveValue('jordan.rivera@example.com');
@@ -202,6 +203,39 @@ test('sorts a dropped document by type and uploads it under a standard name', as
   const uploaded = (sel: string) => form.locator(sel).evaluate((el: HTMLInputElement) => el.files?.[0]?.name ?? null);
   await expect.poll(() => uploaded('#cover_letter')).toBe('Jordan_Rivera_Cover_Letter.txt');
   expect(await uploaded('#resume')).toBe('Jordan_Rivera_Resume.txt');
+});
+
+test('adds a LinkedIn data export to a profile imported from a resume', async ({ context, extensionId }) => {
+  const panel = await context.newPage();
+  await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+  await importResume(panel);
+
+  const zip = zipSync({
+    'Positions.csv': strToU8(
+      [
+        'Company Name,Title,Description,Location,Started On,Finished On',
+        'Acme Corp,Software Engineer,Owns the billing pipeline,"Austin, Texas",Jun 2021,',
+        'Initech,Junior Developer,,Remote,Jan 2019,Apr 2020',
+      ].join('\n'),
+    ),
+    'Skills.csv': strToU8('Name\nTypeScript\nGo\n'),
+  });
+  // Dropped onto the LinkedIn section, as from the file explorer.
+  const drop = await panel.evaluateHandle((bytes) => {
+    const dt = new DataTransfer();
+    dt.items.add(new File([new Uint8Array(bytes)], 'Basic_LinkedInDataExport.zip', { type: 'application/zip' }));
+    return dt;
+  }, [...zip]);
+  await panel.locator('.linkedin-import').dispatchEvent('drop', { dataTransfer: drop });
+  await expect(panel.getByText(/Imported your LinkedIn data export: 2 jobs, 2 skills\./)).toBeVisible();
+
+  // The resume's jobs stay as they were; the job only LinkedIn knows about is added.
+  await expect(panel.locator('summary', { hasText: 'Work experience' })).toContainText('3');
+  await expect(panel.getByLabel('Job title').nth(0)).toHaveValue('Software Engineer');
+  await expect(panel.getByLabel('Job title').nth(2)).toHaveValue('Junior Developer');
+  await expect(panel.getByLabel('Skills', { exact: true })).toHaveValue('TypeScript, Python, React, PostgreSQL, Go');
+  await panel.getByRole('button', { name: 'Save profile' }).click();
+  await expect(panel.getByText('Saved ✓')).toBeVisible();
 });
 
 test('fills a Workday-style application: account, dropdowns, work history, resume, and asks about the rest', async ({ context, worker, extensionId, site }) => {

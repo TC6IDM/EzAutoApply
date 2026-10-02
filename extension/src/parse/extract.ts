@@ -6,7 +6,7 @@ import { isBulletText, linesFromText, type TextLine } from './resume';
  * bullets) for the resume parser. Runs in the side panel.
  */
 
-interface PdfItem {
+export interface PdfItem {
   str: string;
   x: number;
   y: number;
@@ -15,13 +15,14 @@ interface PdfItem {
   bold: boolean;
 }
 
-async function pdfLines(data: ArrayBuffer): Promise<TextLine[]> {
+/** Positioned text items of each page. */
+async function pdfPages(data: ArrayBuffer): Promise<PdfItem[][]> {
   const pdfjs = await import('pdfjs-dist');
   const workerUrl = (await import('pdfjs-dist/build/pdf.worker.min.mjs?url')).default;
   pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
   const task = pdfjs.getDocument({ data: new Uint8Array(data) });
   const doc = await task.promise;
-  const lines: TextLine[] = [];
+  const pages: PdfItem[][] = [];
   for (let n = 1; n <= doc.numPages; n++) {
     const page = await doc.getPage(n);
     const content = await page.getTextContent();
@@ -39,43 +40,88 @@ async function pdfLines(data: ArrayBuffer): Promise<TextLine[]> {
       }
       items.push({ str: it.str, x, y, width: it.width, size: Math.round(Math.hypot(c, d) * 10) / 10, bold: /bold|black|heavy|semibold/i.test(fontName) });
     }
-    // Rows top to bottom, then left to right; items within half a line height share a row.
-    items.sort((a, b) => b.y - a.y || a.x - b.x);
-    const rows: PdfItem[][] = [];
-    for (const it of items) {
-      const row = rows[rows.length - 1];
-      if (row && Math.abs(row[0].y - it.y) <= Math.max(2, it.size * 0.5)) row.push(it);
-      else rows.push([it]);
-    }
-    for (const row of rows) {
-      row.sort((a, b) => a.x - b.x);
-      // Wide gaps split a row into separate lines (two-column layouts, right-aligned dates stay attached).
-      let parts: PdfItem[] = [];
-      const flush = () => {
-        if (!parts.length) return;
-        let text = '';
-        let prevEnd = parts[0].x;
-        for (const p of parts) {
-          const gap = p.x - prevEnd;
-          text += (text && gap > p.size * 0.15 && !text.endsWith(' ') ? (gap > p.size * 3 ? '   ' : ' ') : '') + p.str;
-          prevEnd = p.x + p.width;
-        }
-        const size = Math.max(...parts.map((p) => p.size));
-        const bold = parts.filter((p) => p.bold).reduce((s, p) => s + p.str.length, 0) > text.length / 2;
-        const clean = text.replace(/\s+$/, '');
-        lines.push({ text: clean, size, bold, bullet: isBulletText(clean) });
-        parts = [];
-      };
-      for (const it of row) {
-        const last = parts[parts.length - 1];
-        if (last && it.x - (last.x + last.width) > it.size * 12) flush();
-        parts.push(it);
-      }
-      flush();
-    }
+    pages.push(items);
   }
   await task.destroy();
+  return pages;
+}
+
+/** One page's items → lines: rows top to bottom, then left to right; items within half a line height share a row. */
+function pageLines(page: PdfItem[], column?: TextLine['column']): TextLine[] {
+  const items = [...page].sort((a, b) => b.y - a.y || a.x - b.x);
+  const rows: PdfItem[][] = [];
+  for (const it of items) {
+    const row = rows[rows.length - 1];
+    if (row && Math.abs(row[0].y - it.y) <= Math.max(2, it.size * 0.5)) row.push(it);
+    else rows.push([it]);
+  }
+  const lines: TextLine[] = [];
+  rows.forEach((row, r) => {
+    row.sort((a, b) => a.x - b.x);
+    const gap = r > 0 ? Math.round((rows[r - 1][0].y - row[0].y) * 10) / 10 : undefined;
+    // Wide gaps split a row into separate lines (two-column layouts, right-aligned dates stay attached).
+    let parts: PdfItem[] = [];
+    const flush = () => {
+      if (!parts.length) return;
+      let text = '';
+      let prevEnd = parts[0].x;
+      for (const p of parts) {
+        const space = p.x - prevEnd;
+        text += (text && space > p.size * 0.15 && !text.endsWith(' ') ? (space > p.size * 3 ? '   ' : ' ') : '') + p.str;
+        prevEnd = p.x + p.width;
+      }
+      const size = Math.max(...parts.map((p) => p.size));
+      const bold = parts.filter((p) => p.bold).reduce((s, p) => s + p.str.length, 0) > text.length / 2;
+      const clean = text.replace(/\s+$/, '');
+      const width = Math.round(prevEnd - parts[0].x);
+      lines.push({ text: clean, size, bold, bullet: isBulletText(clean), width, gap, ...(column && { column }) });
+      parts = [];
+    };
+    for (const it of row) {
+      const last = parts[parts.length - 1];
+      if (last && it.x - (last.x + last.width) > it.size * 12) flush();
+      parts.push(it);
+    }
+    flush();
+  });
+  return lines;
+}
+
+const LINKEDIN_SIDE_HEADING = /^(Contact|Top Skills)$/;
+const LINKEDIN_MAIN_HEADING = /^(Summary|Experience|Education)$/;
+
+/**
+ * Where LinkedIn's "Save to PDF" layout splits into its sidebar and main column,
+ * or null for any other PDF. The sidebar's headings ("Contact", "Top Skills") sit
+ * left of larger main headings, and pages end in a "Page 1 of 2" footer.
+ */
+function linkedInSplit(pages: PdfItem[][]): number | null {
+  const first = pages[0] ?? [];
+  const side = first.find((it) => LINKEDIN_SIDE_HEADING.test(it.str.trim()));
+  if (!side || !first.some((it) => /^Page( \d+ of \d+)?$/.test(it.str.trim()))) return null;
+  const main = pages.flat().find((it) => LINKEDIN_MAIN_HEADING.test(it.str.trim()) && it.x > side.x + 100 && it.size > side.size);
+  return main ? main.x - 4 : null;
+}
+
+/**
+ * Positioned PDF text → lines. A LinkedIn profile PDF is read column by column
+ * (main column first, then the sidebar) instead of row by row, which would
+ * splice sidebar entries into the experience section.
+ */
+export function pdfItemsToLines(pages: PdfItem[][]): TextLine[] {
+  const split = linkedInSplit(pages);
+  const lines =
+    split === null
+      ? pages.flatMap((p) => pageLines(p))
+      : [
+          ...pages.flatMap((p) => pageLines(p.filter((it) => it.x >= split), 'main')),
+          ...pages.flatMap((p) => pageLines(p.filter((it) => it.x < split), 'side')),
+        ];
   return lines.filter((l) => cleanText(l.text));
+}
+
+async function pdfLines(data: ArrayBuffer): Promise<TextLine[]> {
+  return pdfItemsToLines(await pdfPages(data));
 }
 
 async function docxLines(data: ArrayBuffer): Promise<TextLine[]> {
