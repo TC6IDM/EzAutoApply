@@ -1,0 +1,71 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project
+
+EzAutoApply is a Chrome/Edge MV3 extension (WXT + React + TypeScript + Dexie) that parses a resume into a profile, stores the user's documents, and autofills job applications on any site. It uses an optional local classifier, **Laya**, or its hosted twin **Jev**. These are typed *decision* models (`choice` / `noul` / `score` with calibrated probabilities). They are not generative LLMs, and the user doesn't want generative text in this product. See README.md for user-facing docs.
+
+Ground rules:
+- **Never `git commit` or `git push` without the user's explicit approval for that specific commit or push.**
+- The extension never submits forms. Filling only happens when the user acts.
+- The classifier must stay optional. Rules and saved answers must work with it off or unreachable.
+
+## Commands
+
+All extension commands run from `extension/`:
+
+```powershell
+npm run dev                 # browser with the extension loaded + hot reload
+npm run build               # → .output/chrome-mv3 (load unpacked from here)
+npm run compile             # tsc --noEmit (TypeScript 7)
+npm test                    # Vitest unit tests (tests/unit, happy-dom)
+npx vitest run tests/unit/rules.test.ts -t "Phone"    # single file / single test
+npm run test:e2e            # wxt build + Playwright (tests/e2e) with the real extension in Chromium
+npx playwright test -g "side panel"                   # single e2e test (build first)
+npm run smoke:classifier    # live Laya check; needs classifier running
+npm run icons               # regenerate public/icon/*.png (scripts/make-icons.mjs)
+```
+
+Laya server: `classifier\start.ps1` (or `start.sh`). The first run creates `classifier/.venv` (Python 3.12, CPU-only torch, `laya[serve]`) and downloads the model. It serves `http://127.0.0.1:8000` with the `typed-decisions` checkpoint preloaded. There is no linter configured.
+
+## Architecture
+
+### Three contexts, one message protocol (`src/messages.ts`)
+- **Content script** (`entrypoints/content.ts` → `src/content/controller.ts`) runs in *every frame* (`allFrames`). It scans and fills only its own frame. It runs in the page's origin, so it **cannot reach the extension's IndexedDB**. Profile, answers, documents (base64) and classifier calls all go through the background.
+- **Background** (`entrypoints/background.ts`) owns the DB and the classifier client. It routes messages by `sender.url` (extension page vs. web page), **not** by `sender.tab`, because the side panel opened as a tab has a `tab`. Per-tab fill reports live in `storage.session`, keyed by tab and then by frame, and are written through `updateTab()` (a per-tab lock) because frames report concurrently. `tabs.sendMessage({type:'autofill'})` broadcasts to all frames and resolves when the *first* frame responds, so the others may still be running.
+- **Side panel** (`entrypoints/sidepanel` → `src/panel/`) is an extension page. It uses Dexie directly (`useLiveQuery`) and gets tab state via messages and `tabStateChanged` broadcasts.
+
+### Fill pipeline
+`scan.ts` (+ `labels.ts`) turns the DOM into `FieldDescriptor`s. These include radio and checkbox *groups*, ARIA comboboxes, hidden file inputs, and fields in open shadow roots. Ids are stored in the `data-ezaa-id` attribute and stay stable across rescans. `pipeline.ts › resolveFields` is **pure logic over DOM-free `FieldInfo`**, so it's unit-testable. It runs these tiers in order:
+
+1. already has a value → `prefilled`
+2. **rules** (`match/rules.ts`)
+3. **answer bank** (`match/answerBank.ts`), fuzzy match; when a classifier is available, borderline matches are confirmed by it
+4. **classifier** (`match/classify.ts`): `classifyGroups` (one batched `choice` over 10 groups) → `likelyGroups` (top 2, *ignoring "other"*, which Laya over-predicts) → `rankKeys` (one `noul` per candidate key in a single request) → accept if P ≥ `reviewThreshold` and it leads the runner-up by `KEY_MARGIN`
+5. derived yes/no from `profileFacts` (always `review`)
+6. otherwise `needs` (if required) or `skipped`
+
+`fillers.ts` then writes the values. Text goes through `setNativeValue` (the prototype setter, so React's value tracker notices) plus input/change events. Radios and checkboxes are clicked. Comboboxes are opened, typed into and clicked. Files are set via `DataTransfer`.
+
+### `src/core/fieldKeys.ts` is the central registry
+Every canonical field (~60) has label/attr/exclude regexes, an optional `section` / `notSection` gate, `maxWords`, autocomplete tokens, a `valueType`, and a `resolve(ctx)` that returns a value, `null` (not in the profile), or `{ uncertain }` (forces review). Rule scoring is the longest match, plus a bonus when the section gate matches. `kindAccepts` controls which field kinds a key may fill. `repeat` keys (experience/education entries) pick their entry by occurrence order. `noClassify` hides keys from the classifier. `description` doubles as the classifier's criteria text. To add a field, add an entry here and a case in `tests/unit/rules.test.ts`.
+
+Option matching (`core/options.ts`) is deterministic and runs before any model call. It handles yes/no phrasing, country/state canonicalization (`core/geo.ts`), EEO concept groups, degree levels, numeric ranges, and per-key `variants`.
+
+### Laya specifics (verified against live laya-serve 0.3.23)
+- `POST /v1/systemone`. The response is `answers[qid] = { choice, probabilities, answer_confidence }` or `{ noul }`. Gate on `answer_confidence` (see `choiceConfidence`). `/v1/systemone/batch` takes ≤64 states sharing one question set.
+- The checkpoint's confidence is **uncalibrated for `choice` questions with 11 or more options**. Keep every `choice` at 10 or fewer labels; a test enforces this.
+- `model: 'typed-decisions'` is sent only when the provider is `laya`. Default thresholds are 0.85 (auto) and 0.55 (review). CPU latency is ~0.3–0.6 s per request, and ~1–3 s per unknown field including key ranking.
+
+### Resume parsing (`src/parse/`)
+`extract.ts` turns PDF (pdf.js v6, with font size and bold resolved from `commonObjs`), DOCX (mammoth → HTML) or TXT into `TextLine[]`. `resume.ts` is heuristic. It splits sections by heading synonyms or all-caps/bold/larger lines (the first line is the name and is never a heading), splits entries by date ranges and bullets, and only splits "X at Y" when X looks like a job title. Unknown headings can go to the classifier. Results always go through the review screen in `ProfileView` before saving.
+
+### Storage (`src/db/index.ts`)
+Dexie database `ezautoapply`. Documents keep the **original file Blob** plus extracted text, with one `isDefault` per kind. A per-tab `DocSelection` (including `'none'`) overrides the default. Answers are upserted by (normalized question, scope), where scope is `'global'` or a hostname. `exportAll`/`importAll` round-trip everything, with files as base64.
+
+## Testing notes
+- `tests/unit/db.test.ts` uses `// @vitest-environment node` because happy-dom's Blob doesn't survive fake-indexeddb cloning.
+- Combobox no-match tests wait out real timeouts (~3 s).
+- E2E uses Playwright's bundled Chromium (`channel: 'chromium'`), because branded Chrome ignores `--load-extension`. Tests trigger autofill by calling `chrome.tabs.sendMessage` from the service worker (`worker.evaluate`), drive the side panel at `chrome-extension://<id>/sidepanel.html`, and serve fixtures from `tests/e2e/pages`. Run `npx playwright install chromium` once.
+- `tests/unit/fixtures.ts` has DOM fixtures imitating real ATS markup (Greenhouse-like form, react-select-style combobox, React value-tracker shim).

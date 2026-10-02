@@ -1,0 +1,3 @@
+# Laya: the open-weight local decision model EzAutoApply uses as its classifier.
+# PyTorch is installed separately by start.ps1 / start.sh from the CPU-only index.
+laya[serve]>=0.3.23
