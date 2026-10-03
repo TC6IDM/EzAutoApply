@@ -78,6 +78,12 @@ export interface FieldKeyDef {
   resolve(ctx: ResolveContext): Resolved;
   /** Equivalent phrasings to try when matching a resolved text value onto options. */
   variants?(value: string): string[];
+  /**
+   * When the answer isn't one of the options: the options to pick instead, in order ("Other"),
+   * and with `anyOption`, any real option after that. Such picks are always shown for review.
+   */
+  fallbacks?: string[];
+  anyOption?: boolean;
 }
 
 export const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
@@ -116,6 +122,19 @@ function exp(ctx: ResolveContext) {
 
 function edu(ctx: ResolveContext) {
   return educationByRecency(ctx.profile)[ctx.index] ?? null;
+}
+
+/** What "current company" gets when no job in the profile is marked current: the applicant is between jobs. */
+const NOT_EMPLOYED = 'N/A';
+
+/** The job marked current; a past job isn't the current one, however recent. */
+function currentJob(ctx: ResolveContext) {
+  return experienceByRecency(ctx.profile).find((e) => e.current) ?? null;
+}
+
+/** "Most recent employer" asks for the last job even when it has ended; "current employer" doesn't. */
+function asksMostRecent(ctx: ResolveContext): boolean {
+  return /\b(most recent|last|latest|previous)\b/i.test(ctx.label);
 }
 
 function authorizedIn(p: Profile, country: string): boolean {
@@ -415,14 +434,14 @@ export const FIELD_KEYS: FieldKeyDef[] = [
     description: 'Name of the applicant’s current or most recent employer',
     label: [/\bcurrent (company|employer|organi[sz]ation)\b/, /\bmost recent (company|employer)\b/],
     attr: [/\bcurrent ?(company|employer)\b/, /^org$/], maxWords: 6,
-    resolve: (c) => text(experienceByRecency(c.profile)[0]?.company),
+    resolve: (c) => (asksMostRecent(c) ? text(experienceByRecency(c.profile)[0]?.company) : text(currentJob(c)?.company) ?? NOT_EMPLOYED),
   },
   {
     key: 'currentTitle', category: 'experience', title: 'Current title', valueType: 'text',
     description: 'The applicant’s current or most recent job title',
     label: [/\bcurrent (job )?(title|position|role)\b/, /\bmost recent (job )?(title|position|role)\b/],
     attr: [/\bcurrent ?(job ?)?title\b/], maxWords: 6,
-    resolve: (c) => text(experienceByRecency(c.profile)[0]?.title),
+    resolve: (c) => (asksMostRecent(c) ? text(experienceByRecency(c.profile)[0]?.title) : text(currentJob(c)?.title) ?? NOT_EMPLOYED),
   },
   {
     key: 'expCompany', category: 'experience', title: 'Employer', valueType: 'text', repeat: true,
@@ -531,7 +550,8 @@ export const FIELD_KEYS: FieldKeyDef[] = [
   {
     key: 'eduEnd', category: 'education', title: 'School end date', valueType: 'date', repeat: true,
     description: 'Date the applicant finished or will finish at a school',
-    label: [/\bend( date| month| year)?\b/, /^to$/, /\bto (date|month|year)\b/, /\bdate (ended|to)\b/],
+    // "To (Actual or Expected)" on Workday.
+    label: [/\bend( date| month| year)?\b/, /^to$/, /^to (actual|expected|anticipated)\b/, /\bto (date|month|year)\b/, /\bdate (ended|to)\b/],
     attr: [/\b(end|to) ?date\b/, /\blast year attended\b/], section: EDUCATION_SECTION, maxWords: 5,
     resolve: (c) => text(edu(c)?.end),
   },
@@ -579,6 +599,9 @@ export const FIELD_KEYS: FieldKeyDef[] = [
     label: [/\bhow did you (hear|find|learn|come across)\b/, /\bhear about (us|this|the)\b/, /\bwhere did you (hear|find|see|learn)\b/, /\b(referral |lead |application )?source\b/, /\bhow were you referred\b/],
     attr: [/^source$/, /\bhow ?did ?you ?hear\b/, /\breferral ?source\b/], exclude: [/\bopen source\b/], maxWords: 15,
     resolve: (c) => text(c.profile.preferences.howHeard),
+    // Not a question worth leaving blank: "Other", else a generic source, else whatever is offered.
+    fallbacks: ['Other', 'Job Board', 'Job Site', 'Company Website', 'Career Site', 'Website', 'Internet', 'Online', 'Social Media'],
+    anyOption: true,
   },
 
   // ── compensation ───────────────────────────────────────────────────────
@@ -634,7 +657,9 @@ export const FIELD_KEYS: FieldKeyDef[] = [
   {
     key: 'skills', category: 'about', title: 'Skills', valueType: 'list',
     description: 'A list of the applicant’s skills',
-    label: [/^(key |technical |relevant |core )?skills( summary)?$/, /\blist (your )?(key |technical )?skills\b/], maxWords: 6,
+    // "Type to Add Skills" on Workday.
+    label: [/^(key |technical |relevant |core )?skills( summary)?$/, /\blist (your )?(key |technical )?skills\b/, /\badd (your |any )?(key |technical )?skills\b/],
+    attr: [/^skills( skills)?$/], maxWords: 6,
     resolve: (c) => list(c.profile.skills),
   },
   {

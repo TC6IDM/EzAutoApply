@@ -2,12 +2,14 @@ import type { SystemOneResponse } from '../classifier/systemone';
 import { isPlaceholderOption } from '../core/options';
 import type { Settings } from '../core/types';
 import { type FillContext, fillField, isOn, readDropdownOptions } from '../fill/fillers';
+import { sleep } from '../fill/dom';
 import { textOf } from '../fill/labels';
 import type { Classifier } from '../fill/match/classify';
+import { matchRules } from '../fill/match/rules';
 import { resolveFields } from '../fill/pipeline';
 import { acknowledgePrivacyNotices } from '../fill/consent';
 import { expandRepeatingSections } from '../fill/repeat';
-import { scanFields } from '../fill/scan';
+import { isSearchPrompt, promptChoices, scanFields } from '../fill/scan';
 import type { FieldDescriptor, FieldReport, FillStatus, FrameReport, Resolution } from '../fill/types';
 import {
   type AnswerValue,
@@ -24,6 +26,11 @@ export type Send = (msg: ContentToBackground) => Promise<unknown>;
 /** Read what a field currently holds, as the user would describe it. */
 export function readValue(f: FieldDescriptor): AnswerValue {
   const el = f.element;
+  if (f.segments) {
+    const boxes = [f.segments.month, f.segments.day, f.segments.year].filter((x) => x !== undefined);
+    return boxes.some((x) => x.value) ? boxes.map((x) => x.value).join('/') : '';
+  }
+  if (isSearchPrompt(el)) return promptChoices(el).join(', ');
   switch (f.kind) {
     case 'select': {
       const s = el as HTMLSelectElement;
@@ -74,6 +81,25 @@ function shown(v: AnswerValue): string {
   return Array.isArray(v) ? v.join(', ') : typeof v === 'boolean' ? (v ? 'Checked' : 'Unchecked') : v;
 }
 
+/** What a page says while it reads an uploaded resume. */
+const BUSY_TEXT = /\b(parsing|uploading|processing|analy[sz]ing|reading|scanning)\b.{0,20}\b(resumes?|cvs?|files?|documents?)\b|\bplease wait\b/i;
+
+/**
+ * Wait for the page to finish reacting to an upload (a site reading the resume and filling the
+ * form): nothing added, removed or re-worded for `quietMs`, and no "Parsing your resume…" showing.
+ */
+async function settle(doc: Document, quietMs = 1500, maxMs = 15_000): Promise<void> {
+  let last = Date.now();
+  const obs = new MutationObserver(() => (last = Date.now()));
+  obs.observe(doc.body, { childList: true, subtree: true, characterData: true });
+  const end = Date.now() + maxMs;
+  try {
+    while (Date.now() < end && (Date.now() - last < quietMs || BUSY_TEXT.test(doc.body.innerText ?? ''))) await sleep(250);
+  } finally {
+    obs.disconnect();
+  }
+}
+
 /**
  * Runs in every frame. Scans the frame's fields, resolves them through the
  * pipeline, fills them, outlines them and reports to the background.
@@ -81,6 +107,8 @@ function shown(v: AnswerValue): string {
 export class AutofillController {
   private fields = new Map<string, FieldDescriptor>();
   private reports = new Map<string, FieldReport>();
+  /** Fields being filled from the panel right now; their change events are ours, not the user's. */
+  private filling = new Set<string>();
   private running = false;
   private watchers = new AbortController();
   private observer?: MutationObserver;
@@ -88,10 +116,33 @@ export class AutofillController {
   private classifierError?: string;
   settings: Settings | null = null;
 
+  /** Fields the user typed in, picked or clicked on the page, or answered in the panel: their values are theirs. */
+  private userOwned = new WeakSet<Element>();
+
   constructor(
     private readonly send: Send,
     private readonly ui: () => FloatingUi | null,
-  ) {}
+  ) {
+    for (const type of ['input', 'change', 'click', 'keydown']) document.addEventListener(type, (e) => this.noteUser(e), true);
+  }
+
+  /** Only real input counts (isTrusted): EzAutoApply's own events and the site's scripts don't. */
+  private noteUser(e: Event): void {
+    if (!e.isTrusted || !(e.target instanceof Element)) return;
+    const t = e.target;
+    const owned = [
+      t,
+      t.closest('[data-automation-id^="formField"]'),
+      t.closest('label')?.control ?? null,
+      t.closest('[role="combobox"], [aria-haspopup="listbox"], [role="radiogroup"], fieldset'),
+    ];
+    for (const el of owned) if (el) this.userOwned.add(el);
+  }
+
+  private touchedByUser(f: FieldDescriptor): boolean {
+    const parts = [f.element, f.element.closest('[data-automation-id^="formField"]'), ...f.members, ...Object.values(f.segments ?? {})];
+    return parts.some((x) => !!x && this.userOwned.has(x));
+  }
 
   private fillContext(): FillContext {
     return {
@@ -150,6 +201,29 @@ export class AutofillController {
             note: 'EzAutoApply opened this privacy notice and pressed Acknowledge',
           });
         });
+      }
+
+      // Pass 0, documents. Many sites read an uploaded resume and fill the form from it, which would
+      // overwrite anything filled before. So upload first, let the page finish, and then fill the
+      // rest, correcting what the site got wrong.
+      const files = fields.filter((f) => f.kind === 'file');
+      if (files.length) {
+        const res = await resolveFields(files, { ...deps, classifier: null });
+        await this.fillAll(files, res, used);
+        const uploaded = new Set(files.flatMap((f, i) => (['filled', 'review'].includes(this.reports.get(f.id)?.status ?? '') && res[i].key ? [res[i].key!] : [])));
+        if (uploaded.size && fields.length > files.length) {
+          this.ui()?.setBusy(true, 'Waiting for the page…');
+          await settle(document);
+          this.ui()?.setBusy(true);
+          // The page may have re-drawn its upload box; the same document isn't uploaded twice.
+          fields = scanFields(document).filter((f) => !(f.kind === 'file' && uploaded.has(matchRules(f)?.key ?? '')));
+        }
+        fields = fields.filter((f) => !this.reports.has(f.id));
+      }
+      for (const f of fields) {
+        if (!f.hasValue) continue;
+        f.current = shown(readValue(f));
+        f.touched = this.touchedByUser(f);
       }
 
       // Pass 1, instant: rules and saved answers.
@@ -214,6 +288,7 @@ export class AutofillController {
         if (out.ok) {
           text = out.valueText;
           if (r.answerId) used.push(r.answerId);
+          if (out.note) note = out.note;
           if (out.uncertain && status === 'filled') {
             status = 'review';
             note = note ?? 'The page didn’t clearly confirm this choice; check it';
@@ -250,16 +325,22 @@ export class AutofillController {
     if (status !== 'filled' && status !== 'prefilled' && f.kind !== 'password') this.watch(f);
   }
 
-  /** Notice when the user answers a flagged field on the page, so the panel can offer to remember it. */
+  /**
+   * Notice when the user answers a flagged field on the page, so the panel can offer to remember it.
+   * Changes EzAutoApply makes itself (an answer given in the panel) don't count.
+   */
   private watch(f: FieldDescriptor): void {
     const targets: HTMLElement[] = f.members.length ? f.members : [f.element];
     let timer: number | undefined;
     const onChange = () => {
       window.clearTimeout(timer);
+      if (this.filling.has(f.id)) return;
       timer = window.setTimeout(() => {
         const v = readValue(f);
         const report = this.reports.get(f.id);
-        if (!report || (Array.isArray(v) ? !v.length : v === '')) return;
+        if (!report || this.filling.has(f.id) || (Array.isArray(v) ? !v.length : v === '')) return;
+        // Still what was filled: a late event from the fill, not the user.
+        if (report.current !== undefined && shown(v) === shown(report.current)) return;
         report.userValue = v;
         highlight(f, 'user');
         this.send({ type: 'fieldEdited', fieldId: f.id, userValue: v }).catch(() => {});
@@ -326,13 +407,21 @@ export class AutofillController {
     }
     const prev = this.reports.get(fieldId);
     const res: Resolution = { fieldId, key: prev?.key, value: answer, source: 'answerBank', confidence: 1, status: 'filled' };
-    const out = await fillField(f, res, this.fillContext());
-    if (out.ok) {
-      this.track(f, res, 'filled', out.valueText, 'Answered in the side panel');
-      await this.publish();
-      this.updateUi();
+    this.filling.add(fieldId);
+    // The user chose this answer, so a later autofill keeps it even if the profile says otherwise.
+    for (const el of [f.element, ...f.members]) this.userOwned.add(el);
+    try {
+      const out = await fillField(f, res, this.fillContext());
+      if (out.ok) {
+        this.track(f, res, 'filled', out.valueText, 'Answered in the side panel');
+        await this.publish();
+        this.updateUi();
+      }
+      return out;
+    } finally {
+      // Late input/change events from the fill land within the watcher's debounce; let them pass first.
+      window.setTimeout(() => this.filling.delete(fieldId), 600);
     }
-    return out;
   }
 
   /** Scroll the page to a field (from the side panel), flash it and put the cursor in it. */

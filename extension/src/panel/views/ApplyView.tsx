@@ -4,7 +4,7 @@ import { FIELD_KEY_MAP } from '../../core/fieldKeys';
 import { type AnswerValue, DOC_KIND_LABELS, type DocKind, type DocumentMeta } from '../../core/types';
 import { hasProfile, listDocuments, saveAnswer } from '../../db';
 import type { FieldReport, FillStatus } from '../../fill/types';
-import type { SaveAnswerRequest } from '../../messages';
+import type { AdvanceTarget, SaveAnswerRequest } from '../../messages';
 import type { View } from '../App';
 import { type ActiveTab, send, setDocSelection, useTabState } from '../api';
 import { Banner, Button, Empty, Section } from '../ui';
@@ -321,6 +321,57 @@ function DocPicker(props: { kind: DocKind; docs: DocumentMeta[]; value: string |
 
 const ORDER: FillStatus[] = ['needs', 'review', 'skipped', 'filled', 'prefilled'];
 
+/**
+ * Presses the page's own Next / Submit / Sign In / Apply button. Off when the page has none.
+ * The page is asked every couple of seconds, since its buttons change as the user goes.
+ */
+function AdvanceButton(props: { tabId: number; enabled: boolean; onError(message: string): void }) {
+  const { tabId, enabled, onError } = props;
+  const [target, setTarget] = useState<AdvanceTarget | null>(null);
+  const [pressing, setPressing] = useState(false);
+
+  useEffect(() => {
+    setTarget(null);
+    if (!enabled) return;
+    let alive = true;
+    const look = () => {
+      send<AdvanceTarget | null>({ type: 'findAdvance', tabId })
+        .then((t) => alive && setTarget(t))
+        .catch(() => alive && setTarget(null));
+    };
+    look();
+    const timer = window.setInterval(look, 2000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [tabId, enabled]);
+
+  const advance = async () => {
+    if (!target) return;
+    setPressing(true);
+    try {
+      const out = await send<{ ok: boolean; reason?: string }>({ type: 'advance', tabId, frameId: target.frameId });
+      if (!out?.ok) onError(out?.reason ?? 'Couldn’t press that button');
+      setTarget(null);
+    } catch (e) {
+      onError((e as Error).message);
+    } finally {
+      setPressing(false);
+    }
+  };
+
+  return (
+    <Button
+      onClick={advance}
+      disabled={!target || pressing}
+      title={target ? `Presses the page’s “${target.label}” button` : 'Nothing on this page to sign in, continue or submit with'}
+    >
+      {target ? `Advance: ${target.label}` : 'Advance'}
+    </Button>
+  );
+}
+
 export function ApplyView(props: { tab: ActiveTab | null; goto(v: View, opts?: { importDocId?: string }): void }) {
   const { tab, goto } = props;
   const docs = useLiveQuery(listDocuments, [], [] as DocumentMeta[]);
@@ -393,6 +444,7 @@ export function ApplyView(props: { tab: ActiveTab | null; goto(v: View, opts?: {
         <Button kind="primary" onClick={autofill} disabled={!webPage || busy}>
           {busy ? 'Filling…' : fields.length ? 'Autofill again' : 'Autofill this page'}
         </Button>
+        {tab && <AdvanceButton tabId={tab.id} enabled={webPage && !busy} onError={setError} />}
         {!webPage && <p className="hint">Open a job application in this tab to autofill it.</p>}
         {fields.length > 0 && (
           <p className="counts" aria-live="polite">

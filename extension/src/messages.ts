@@ -1,6 +1,7 @@
 import type { SystemOneBatchRequest, SystemOneRequest, SystemOneResponse } from './classifier/systemone';
 import type { Profile } from './core/profile';
 import type { AnswerValue, DocKind, DocSelection, FieldKind, SavedAnswer, Settings } from './core/types';
+import type { AdvanceKind } from './fill/advance';
 import type { DocumentPayload } from './fill/fillers';
 import type { FrameReport } from './fill/types';
 
@@ -42,6 +43,8 @@ export type PanelToBackground =
   | { type: 'setDocSelection'; tabId: number; selection: DocSelection }
   | { type: 'answerField'; tabId: number; frameId: number; fieldId: string; answer: AnswerValue; save: SaveAnswerRequest | null }
   | { type: 'focusField'; tabId: number; frameId: number; fieldId: string }
+  | { type: 'findAdvance'; tabId: number }
+  | { type: 'advance'; tabId: number; frameId: number }
   | { type: 'classifierHealth' }
   | { type: 'settingsChanged' };
 
@@ -51,7 +54,17 @@ export type BackgroundToContent =
   | { type: 'applyAnswer'; fieldId: string; answer: AnswerValue }
   | { type: 'clearHighlights' }
   | { type: 'focusField'; fieldId: string }
+  | { type: 'findAdvance' }
+  | { type: 'advance' }
   | { type: 'settingsChanged'; settings: Settings };
+
+/** The page button the side panel's Advance button presses: Next, Submit, Sign In, Apply. */
+export interface AdvanceTarget {
+  frameId: number;
+  label: string;
+  kind: AdvanceKind;
+  score: number;
+}
 
 /** Broadcast by the background to extension pages (the side panel). */
 export type BackgroundBroadcast = { type: 'tabStateChanged'; tabId: number } | { type: 'autofillStarted'; tabId: number };

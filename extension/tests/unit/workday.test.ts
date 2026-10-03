@@ -4,7 +4,7 @@ import { matchRules } from '../../src/fill/match/rules';
 import { resolveFields } from '../../src/fill/pipeline';
 import { scanFields } from '../../src/fill/scan';
 import type { FieldDescriptor, Resolution } from '../../src/fill/types';
-import { mountWorkdaySearchPrompt, mountWorkdaySelect } from './fixtures';
+import { mountWorkdayPrompt, mountWorkdaySearchPrompt, mountWorkdaySelect } from './fixtures';
 import { field, sampleProfile, settings } from './helpers';
 
 const noDocs = { getDocument: async () => null, getSecret: async () => null };
@@ -232,6 +232,18 @@ describe('Workday dropdowns as they appear on real pages', () => {
     expect(age.chosen()).toBe('');
   });
 
+  it('doesn’t give one dropdown another’s options when that list pops up again late', { timeout: 15000 }, async () => {
+    const age = mountWorkdaySelect(document.body, 'Please select your age category:*', ['Under 18', '18 and over'], { workdayNaming: true });
+    const sms = mountWorkdaySelect(document.body, 'Text message updates:*', ['Opt-In', 'Opt-Out'], { workdayNaming: true });
+    // While the second list opens, the first one shows up again, as a slow list closing late does.
+    sms.button.addEventListener('mousedown', () => setTimeout(() => (age.list.hidden = false), 20));
+    const fields = scanFields(document);
+    const { readDropdownOptions } = await import('../../src/fill/fillers');
+    // In page order, as the side panel's options are read.
+    expect(await readDropdownOptions(fields[0])).toEqual(['Under 18', '18 and over']);
+    expect(await readDropdownOptions(fields[1])).toEqual(['Opt-In', 'Opt-Out']);
+  });
+
   it('recognizes work-experience dates from Workday container ids when there is no heading', async () => {
     document.body.innerHTML = `
       <div data-automation-id="workExperience-1">
@@ -248,6 +260,161 @@ describe('Workday dropdowns as they appear on real pages', () => {
     expect(f).toMatchObject({ kind: 'month', label: 'From*', name: 'formField-startDate' });
     expect(matchRules(f)?.key).toBe('expStart');
     expect(await fillField(f, filled(f, '2020-05', 'expStart'), noDocs)).toEqual({ ok: true, valueText: '05/2020' });
+  });
+});
+
+describe('Workday My Experience: education and skills, as live pages build them', () => {
+  /** A year-only date ("From YYYY"), built like Workday's month/year dates. */
+  const yearBox = (field: string, label: string) => `
+    <div data-automation-id="formField-${field}"><fieldset><legend><label><span>${label}</span></label></legend>
+      <div><div>
+        <div aria-hidden="true" id="helpText-education-1--${field}">current value is YYYY</div>
+        <div id="education-1--${field}" role="group" data-automation-id="dateInputWrapper"><div tabindex="-1">
+          <div id="education-1--${field}-dateSectionYear">
+            <div aria-hidden="true" data-automation-id="dateSectionYear-display">YYYY</div>
+            <input role="spinbutton" aria-label="Year" aria-valuemax="9999" aria-valuemin="1" aria-valuetext="YYYY"
+              id="education-1--${field}-dateSectionYear-input" data-automation-id="dateSectionYear-input">
+          </div>
+        </div><div aria-label="Calendar" data-automation-id="dateIcon" role="button" tabindex="0"></div></div>
+      </div></div>
+    </fieldset></div>`;
+  const DEGREE = `
+    <div data-automation-id="formField-degree"><label for="education-1--degree"><span>Degree<abbr aria-hidden="true">*</abbr></span></label>
+      <div><div><button aria-haspopup="listbox" type="button" aria-label="Degree Select One Required" name="degree" id="education-1--degree">Select One</button><input type="text" value=""><span></span></div></div>
+    </div>`;
+  const SCHOOLS = ['Aalto University', 'University of York', 'York College of Pennsylvania', 'York University', 'York University - Glendon Campus', 'Yorkville University'];
+  const STUDIES = ['Computer Science', 'Software Testing', 'Systems Software Engineering'];
+
+  function mountEducation() {
+    document.body.innerHTML = `
+      <div role="group" aria-labelledby="Education-section"><h4 id="Education-section">Education</h4>
+        <div role="group" aria-labelledby="Education-1-panel"><div><h5 id="Education-1-panel">Education 1</h5></div><div id="edu"></div></div>
+      </div>`;
+    const edu = document.querySelector<HTMLElement>('#edu')!;
+    // Opening the School prompt lists schools alphabetically before anything is searched.
+    const school = mountWorkdayPrompt(edu, 'School or University<abbr aria-hidden="true">*</abbr>', SCHOOLS, {
+      field: 'school',
+      delay: 400,
+      focusList: ['Aalto University', 'University of York'],
+    });
+    edu.insertAdjacentHTML('beforeend', DEGREE);
+    const study = mountWorkdayPrompt(edu, 'Field of Study', STUDIES, { field: 'fieldOfStudy' });
+    edu.insertAdjacentHTML('beforeend', yearBox('firstYearAttended', 'From') + yearBox('lastYearAttended', 'To (Actual or Expected)'));
+    return { school, study };
+  }
+
+  const yorkProfile = () => {
+    const p = sampleProfile();
+    p.education = [{ id: 'd1', school: 'York University', degree: "Bachelor's Degree", field: 'Software Engineering', gpa: '', location: '', start: '2025-09', end: '2029-04' }];
+    return p;
+  };
+
+  it('finds the School and Field of Study prompts, the Degree button (not its hidden id box) and year-only dates', async () => {
+    mountEducation();
+    const fields = scanFields(document);
+    expect(fields.map((f) => [f.label, f.kind])).toEqual([
+      ['School or University*', 'combobox'],
+      ['Degree*', 'combobox'],
+      ['Field of Study', 'combobox'],
+      ['From', 'month'],
+      ['To (Actual or Expected)', 'month'],
+    ]);
+    expect(fields.map((f) => matchRules(f)?.key)).toEqual(['school', 'degree', 'fieldOfStudy', 'eduStart', 'eduEnd']);
+    const res = await resolveFields(fields, { profile: yorkProfile(), answers: [], host: 'x.myworkdayjobs.com', settings: settings({ provider: 'none' }), classifier: null });
+    expect(res.map((r) => r.value)).toEqual(['York University', "Bachelor's Degree", 'Software Engineering', '2025-09', '2029-04']);
+  });
+
+  it('types only the year into year-only date boxes', async () => {
+    mountEducation();
+    const fields = scanFields(document);
+    const from = fields.find((f) => f.label === 'From')!;
+    const to = fields.find((f) => f.label.startsWith('To'))!;
+    expect(await fillField(from, filled(from, '2025-09', 'eduStart'), noDocs)).toEqual({ ok: true, valueText: '2025' });
+    expect(await fillField(to, filled(to, '2029-04', 'eduEnd'), noDocs)).toEqual({ ok: true, valueText: '2029' });
+    expect((document.querySelector('#education-1--firstYearAttended-dateSectionYear-input') as HTMLInputElement).value).toBe('2025');
+    expect((document.querySelector('#education-1--lastYearAttended-dateSectionYear-input') as HTMLInputElement).value).toBe('2029');
+  });
+
+  it('searches the School prompt with Enter, waits for the results and picks the exact one', { timeout: 15000 }, async () => {
+    const { school } = mountEducation();
+    const f = scanFields(document)[0];
+    const out = await fillField(f, filled(f, 'York University', 'school'), noDocs);
+    expect(out).toEqual({ ok: true, valueText: 'York University' });
+    expect(school.chosen()).toEqual(['York University']);
+    expect(school.input.value).toBe('');
+    // The prompt is reported as filled once a pill shows, and its pill isn't offered as an option.
+    expect(scanFields(document)[0].hasValue).toBe(true);
+  });
+
+  it('accepts the result Workday picks by itself, and flags it when it is only close', { timeout: 15000 }, async () => {
+    const { study } = mountEducation();
+    const f = scanFields(document).find((x) => x.label === 'Field of Study')!;
+    const out = await fillField(f, filled(f, 'Software Engineering', 'fieldOfStudy'), noDocs);
+    expect(out).toMatchObject({ ok: true, valueText: 'Systems Software Engineering', uncertain: true });
+    expect(out.ok && out.note).toContain('No exact match for "Software Engineering"');
+    expect(study.chosen()).toEqual(['Systems Software Engineering']);
+  });
+
+  it('says what the search found when nothing matches', { timeout: 15000 }, async () => {
+    const { school } = mountEducation();
+    const f = scanFields(document)[0];
+    const out = await fillField(f, filled(f, 'Yale University', 'school'), noDocs);
+    expect(out.ok).toBe(false);
+    expect(school.chosen()).toEqual([]);
+  });
+
+  it('adds each saved skill to "Type to Add Skills", keeping the ones already there', { timeout: 30000 }, async () => {
+    document.body.innerHTML = '<div role="group" aria-labelledby="Skills-section"><h4 id="Skills-section">Skills</h4><div id="skills"></div></div>';
+    const skills = mountWorkdayPrompt(
+      document.querySelector<HTMLElement>('#skills')!,
+      'Type to Add Skills',
+      ['Machine Learning', 'Python', 'Python Scripting', 'React', 'React Native', 'TypeScript'],
+      { field: 'skills', multi: true, pills: ['Machine Learning'] },
+    );
+    const [f] = scanFields(document);
+    expect(f).toMatchObject({ kind: 'combobox', multiple: true, hasValue: true });
+    expect(matchRules(f)?.key).toBe('skills');
+
+    // Workday's own guesses don't stop the saved skills from being added.
+    const profile = sampleProfile();
+    profile.skills = ['TypeScript', 'React', 'Python', 'Machine Learning', 'Cobol'];
+    const [r] = await resolveFields([f], { profile, answers: [], host: 'x.myworkdayjobs.com', settings: settings({ provider: 'none' }), classifier: null });
+    expect(r).toMatchObject({ key: 'skills', status: 'filled', value: profile.skills });
+
+    const out = await fillField(f, r, noDocs);
+    expect(skills.chosen()).toEqual(['Machine Learning', 'TypeScript', 'React', 'Python']);
+    expect(out).toMatchObject({ ok: true, valueText: 'Machine Learning, TypeScript, React, Python', uncertain: true, note: 'Not found: Cobol' });
+  });
+
+  it('answers "How did you hear" with Other when LinkedIn isn’t offered', { timeout: 15000 }, async () => {
+    const heard = mountWorkdayPrompt(document.body, 'How Did You Hear About Us?*', ['Glassdoor', 'Indeed', 'Other'], { field: 'source' });
+    const [f] = scanFields(document);
+    const out = await fillField(f, filled(f, 'LinkedIn', 'howHeard'), noDocs);
+    expect(out).toMatchObject({ ok: true, valueText: 'Other', uncertain: true, note: '"LinkedIn" isn\'t an option here, so "Other" was picked' });
+    expect(heard.chosen()).toEqual(['Other']);
+  });
+
+  it('answers it with whatever is offered when there’s no Other either', { timeout: 20000 }, async () => {
+    const heard = mountWorkdayPrompt(document.body, 'How Did You Hear About Us?*', ['Glassdoor', 'Indeed'], { field: 'source', focusList: ['Glassdoor', 'Indeed'] });
+    const [f] = scanFields(document);
+    const out = await fillField(f, filled(f, 'LinkedIn', 'howHeard'), noDocs);
+    expect(out).toMatchObject({ ok: true, valueText: 'Glassdoor', uncertain: true });
+    expect(heard.chosen()).toEqual(['Glassdoor']);
+  });
+
+  it('labels split dates by their Workday label, not the screen-reader help before the boxes', () => {
+    document.body.innerHTML = `
+      <div data-automation-id="formField-startDate"><fieldset><legend><label id="label13"><span>From<abbr aria-hidden="true">*</abbr></span></label></legend>
+        <div><div><div aria-hidden="true" id="helpText-workExperience-9--startDate">current value is MM/YYYY</div>
+          <div id="workExperience-9--startDate" role="group" data-automation-id="dateInputWrapper"><div tabindex="-1">
+            <div><div aria-hidden="true" data-automation-id="dateSectionMonth-display">MM</div><input role="spinbutton" aria-label="Month" id="workExperience-9--startDate-dateSectionMonth-input" data-automation-id="dateSectionMonth-input"></div>
+            <div>/</div>
+            <div><div aria-hidden="true" data-automation-id="dateSectionYear-display">YYYY</div><input role="spinbutton" aria-label="Year" id="workExperience-9--startDate-dateSectionYear-input" data-automation-id="dateSectionYear-input"></div>
+          </div></div>
+        </div></div>
+      </fieldset></div>`;
+    const [f] = scanFields(document);
+    expect(f).toMatchObject({ kind: 'month', label: 'From*', required: true });
   });
 });
 

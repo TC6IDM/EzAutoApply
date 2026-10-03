@@ -4,7 +4,7 @@ A browser extension that fills out job applications for you.
 
 You give it your resume once. It parses it into a profile and keeps the original files of your resumes, cover letters and transcripts so it can upload them for you. Then it fills in the application on whatever site you're on when you click **Autofill**. Questions it can't answer are flagged. You answer them once, and from then on those answers fill automatically too.
 
-It works on any site: Greenhouse, Lever, Ashby, Workday, LinkedIn, Indeed and one-off company forms. **It never submits anything.** You review the page and click Submit yourself.
+It works on any site: Greenhouse, Lever, Ashby, Workday, LinkedIn, Indeed and one-off company forms. **It never submits or moves on by itself.** You review the page, then click Submit yourself, or press **Advance** in the side panel, which presses the page's own Next, Submit or Sign In button for you.
 
 Everything runs on your computer. Your profile and documents are stored in your browser, and the optional classifier (Laya) runs locally too.
 
@@ -102,18 +102,24 @@ Values go in the way a person would enter them:
 - **Text:** the browser's native value setter followed by real input and change events, which React, Vue and Angular forms all accept. Masked inputs that ignore a pasted value (dates like `MM/YYYY`) are typed one character at a time.
 - **Choices:** made by clicking.
 - **Custom dropdowns:** these are where Workday and react-select differ most. EzAutoApply opens the list (retrying with mousedown or the keyboard for lists that toggle shut on a click), picks the matching option, and confirms the page took it. If the option isn't shown, it types the value and presses **Enter**. That runs Workday's "How did you hear about us?" search, or selects the match in a long "Select One" list. A state abbreviation is typed as the full name ("TX" → "Texas").
-- **Split dates:** Workday's separate month and year boxes are filled as one date.
+- **Search prompts:** Workday's School, Field of Study, Skills and "How did you hear" boxes search when you press Enter. EzAutoApply types the value, presses Enter, waits for that search's results and picks the matching one. When Workday picks the only result by itself, that's kept; if it's only close ("Systems Software Engineering" for "Software Engineering") it's listed under *Check these*. Skills are added one by one, and skills already in the box are left as they are.
+- **Split dates:** Workday's separate month and year boxes are filled as one date, and year-only boxes ("From YYYY" in Education) get just the year.
+- **Current company:** your job marked current, or **N/A** if you're between jobs. A question about your *most recent* employer still gets your last job.
+- **"How did you hear about us?":** if your usual answer (say LinkedIn) isn't offered, **Other** is picked, else a general source like "Job Board", else whatever is first. It's listed under *Check these*.
+- **Sites that read your resume:** many sites fill the form from the resume you upload, and often get it wrong. EzAutoApply uploads your documents first, waits for the site to finish, and then fills the rest. Anything the site filled that disagrees with your profile is replaced with your profile's answer and listed under *Check these* with what the site had put. Fields you typed in or clicked yourself are never replaced. If the site adds a job or school that isn't in your profile, it's flagged so you can delete it. Turn this off in **Settings → Correct what the site filled in from your resume**.
 - **Locations:** search-as-you-type boxes (Greenhouse's "Location (City)") get your city typed in, and the suggestion matching your city and province or country is picked. If none matches and there's a **Locate me** button, it's clicked, and Chrome asks you once whether the site may use your location.
 - **Yes/No buttons:** pairs of toggle buttons (Ashby) are answered like any other yes/no question.
 - **Privacy notices:** links like "Click to read and acknowledge the privacy notice" are opened, and the dialog's **Acknowledge** button is pressed. Each one is listed under *Check these*. Turn this off in Settings.
 - **Files:** attached to the upload input. If the widget doesn't react, the file is dropped onto the drop zone instead.
-- **Repeating sections:** before filling, EzAutoApply clicks **Add / Add Another** in the Work Experience and Education sections until there's one entry per job and school in your profile, then fills them most recent first. It only clicks buttons that say "Add…" inside those sections, never Save, Next, Continue or Submit.
+- **Repeating sections:** before filling, EzAutoApply clicks **Add / Add Another** in the Work Experience and Education sections until there's one entry per job and school in your profile, then fills them most recent first. It only clicks buttons that say "Add…" inside those sections. Autofill never clicks Save, Next, Continue or Submit.
+
+**Advance**, under the Autofill button in the side panel, is on whenever the page has a button that moves the application along: **Sign In** or **Create Account**, **Apply** (on Workday, **Apply Manually**, so Workday doesn't read your resume), **Next**, **Save and Continue**, or **Submit**. It shows that button's name ("Advance: Save and Continue") and presses it when you press Advance, never otherwise. Buttons like Back, Cancel, Add, Upload and "Sign in with Google" are never chosen.
 
 Fields are outlined by outcome: **green** = filled, **amber** = filled but worth a check, **red dashed** = needs you, **blue** = you changed it.
 
 ### 3. Learning answers
 
-Each red field shows up on the side panel's **Apply** tab with an input that matches it (a dropdown for a dropdown, checkboxes for checkboxes, and so on). Every unanswered dropdown, radio and checkbox question is listed, even when the page doesn't mark it required. Workday's "Select One" lists only load their options when opened, so EzAutoApply opens each one briefly to read its options, then closes it without choosing, so you can pick from the real list. **Fill & remember** fills the field and saves the answer. Saved answers are global by default or, if you choose, limited to that one site. If you type an answer directly into the page, the panel offers **Remember this answer** instead.
+Each red field shows up on the side panel's **Apply** tab with an input that matches it (a dropdown for a dropdown, checkboxes for checkboxes, and so on). Every unanswered dropdown, radio and checkbox question is listed, even when the page doesn't mark it required. Workday's "Select One" lists only load their options when opened, so EzAutoApply opens each one briefly to read its options, then closes it without choosing, so you can pick from the real list. **Fill & remember** fills the field and saves the answer in one step. Saved answers are global by default or, if you choose, limited to that one site. If you type an answer directly into the page, the panel offers **Remember this answer** instead.
 
 On later applications, that question, or a rephrasing of it, fills automatically. All saved answers can be edited on the **Answers** tab.
 
@@ -220,7 +226,7 @@ In **Settings → Classifier**, choose **Jev (TypeSafe cloud)**, enter the API U
 3. **Documents:** drag in cover letters, transcripts and extra resumes. The original files are stored, the ★ default of each type is what gets uploaded, and uploads get standard names (see [Documents](#documents)). For Workday-style sites, also set a password under **Profile → Job site accounts**.
 4. **Go to a job application** and click **Autofill**. You can use the floating ⚡ button on the page, **Alt+Shift+F**, or the button on the side panel's Apply tab.
 5. **Apply tab:** answer anything under *Needs your answer*, look over *Check these*, and pick a different resume or cover letter for this application if you want.
-6. **Review the page and submit it yourself.**
+6. **Review the page, then submit it yourself** or press **Advance** to press the page's Next or Submit button.
 
 > If you installed or reloaded the extension while a tab was already open, reload that tab once. Chrome only injects the extension into pages loaded after installation.
 

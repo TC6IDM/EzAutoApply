@@ -2,7 +2,7 @@ import { isPlaceholderOption, type OptionLike } from '../core/options';
 import { cleanText, normalize, splitIdentifier } from '../core/normalize';
 import type { FieldKind } from '../core/types';
 import { byId, commonAncestor, deepQueryAll, isOwnUi, isVisible } from './dom';
-import { CONTROL_SELECTOR, contextLabel, groupLabel, helpText, labelFor, optionLabel, sectionOf, textOf, uploadLabel } from './labels';
+import { CONTROL_SELECTOR, contextLabel, fieldContainerLabel, groupLabel, helpText, labelFor, optionLabel, sectionOf, textOf, uploadLabel } from './labels';
 import type { DateSegments, FieldDescriptor } from './types';
 
 /**
@@ -13,13 +13,19 @@ import type { DateSegments, FieldDescriptor } from './types';
 
 const ID_ATTR = 'data-ezaa-id';
 let nextId = 1;
+/** Ids handed out in the current scan, to catch an id that two elements carry. */
+let taken = new Map<string, Element>();
 
 function fieldId(el: Element): string {
   let id = el.getAttribute(ID_ATTR);
-  if (!id) {
-    id = `f${nextId++}`;
+  // A page that copies a block ("Add Another" cloning the first entry) copies our id with it; the
+  // copy gets its own, or the two fields would share one report in the side panel.
+  if (!id || (taken.get(id) ?? el) !== el) {
+    do id = `f${nextId++}`;
+    while (el.ownerDocument.querySelector(`[${ID_ATTR}="${id}"]`));
     el.setAttribute(ID_ATTR, id);
   }
+  taken.set(id, el);
   return id;
 }
 
@@ -28,6 +34,32 @@ export function elementForField(id: string, root: ParentNode = document): HTMLEl
 }
 
 const SKIP_INPUT_TYPES = new Set(['hidden', 'submit', 'button', 'reset', 'image', 'search', 'range', 'color']);
+
+const PROMPT_SELECTOR = '[data-automation-id="multiSelectContainer"], [data-uxi-widget-type="multiselect"]';
+
+/**
+ * Workday's search prompts (School, Field of Study, Skills, "How did you hear"): a plain
+ * input in a multiSelectContainer that searches on Enter. Each choice becomes a pill.
+ */
+export function isSearchPrompt(el: Element): boolean {
+  return el instanceof HTMLInputElement && (el.getAttribute('data-uxi-widget-type') === 'selectinput' || !!el.closest(PROMPT_SELECTOR));
+}
+
+function pillText(pill: Element): string {
+  const labelled = pill.matches('[data-automation-label]') ? pill : pill.querySelector('[data-automation-label]');
+  return cleanText(labelled?.getAttribute('data-automation-label') ?? '') || cleanText(pill.getAttribute('title') ?? '') || textOf(pill);
+}
+
+/** What a search prompt holds: the text of its pills. */
+export function promptChoices(el: Element): string[] {
+  const scope = el.closest('[data-automation-id^="formField"]') ?? el.closest(PROMPT_SELECTOR) ?? el.parentElement;
+  return Array.from(scope?.querySelectorAll('[data-automation-id="selectedItem"]') ?? []).map(pillText).filter(Boolean);
+}
+
+/** Workday puts an unlabelled, visually hidden input after each "Select One" button to hold the choice's id. */
+function isListboxValueShim(el: Element): boolean {
+  return el instanceof HTMLInputElement && !el.id && !el.name && !!el.previousElementSibling?.matches('button[aria-haspopup="listbox"]');
+}
 
 function isRequired(el: Element, label: string): boolean {
   return (
@@ -50,7 +82,7 @@ function inputKind(el: HTMLInputElement): FieldKind | null {
   if (t === 'number') return 'number';
   if (el.getAttribute('role') === 'combobox' && !el.hasAttribute('list')) return 'combobox';
   // Workday's multi-select prompts ("Disability", "How did you hear") are search boxes over a list.
-  if (/searchBox|multiSelect|monikerSearch/i.test(el.getAttribute('data-automation-id') ?? '')) return 'combobox';
+  if (/searchBox|multiSelect|monikerSearch/i.test(el.getAttribute('data-automation-id') ?? '') || isSearchPrompt(el)) return 'combobox';
   if (el.getAttribute('aria-autocomplete') === 'list' && (el.hasAttribute('aria-controls') || el.hasAttribute('aria-owns'))) {
     return 'combobox';
   }
@@ -81,6 +113,8 @@ function comboboxOptions(el: Element): OptionLike[] {
 }
 
 function comboboxHasValue(el: Element): boolean {
+  // Text typed into a search prompt isn't a choice until it becomes a pill.
+  if (isSearchPrompt(el)) return promptChoices(el).length > 0;
   if (el instanceof HTMLInputElement) return el.value.trim() !== '';
   // "–Select–", "Select One", "Please choose…" all mean empty.
   const t = textOf(el);
@@ -229,28 +263,44 @@ function segmentOf(el: Element): Segment | null {
   return null;
 }
 
-/** Month/day/year inputs that sit together form one date field; returns them grouped by their container. */
+/**
+ * Month/day/year inputs that sit together form one date field; returns them grouped by their container.
+ * Workday wraps each date in a dateInputWrapper, and its boxes are the whole date, even a lone
+ * year ("From YYYY" in Education).
+ */
 function dateSegmentGroups(controls: HTMLElement[]): { container: HTMLElement; segments: DateSegments; inputs: HTMLInputElement[] }[] {
   const out: { container: HTMLElement; segments: DateSegments; inputs: HTMLInputElement[] }[] = [];
   const used = new Set<Element>();
   for (const el of controls) {
     if (used.has(el) || !segmentOf(el)) continue;
-    let container = el.parentElement;
-    for (let i = 0; container && i < 4; i++, container = container.parentElement) {
+    const wrapper = el.closest<HTMLElement>('[data-automation-id="dateInputWrapper"]');
+    const containers: HTMLElement[] = [];
+    if (wrapper) containers.push(wrapper);
+    else for (let c = el.parentElement, i = 0; c && i < 4; i++, c = c.parentElement) containers.push(c);
+    let grouped = false;
+    for (const container of containers) {
       const inputs = Array.from(container.querySelectorAll('input')).filter((x) => segmentOf(x) && !used.has(x));
       const segments: DateSegments = {};
       for (const x of inputs) segments[segmentOf(x)!] ??= x;
-      if (segments.month && segments.year) {
+      const yearOnly = wrapper && segments.year && !segments.month && !segments.day;
+      if ((segments.month && segments.year) || yearOnly) {
         inputs.forEach((x) => used.add(x));
         out.push({ container, segments, inputs });
+        grouped = true;
         break;
       }
+    }
+    // A Workday year box with no month anywhere near it.
+    if (!grouped && el.parentElement && /dateSectionYear/i.test(el.getAttribute('data-automation-id') ?? '')) {
+      used.add(el);
+      out.push({ container: el.parentElement, segments: { year: el as HTMLInputElement }, inputs: [el as HTMLInputElement] });
     }
   }
   return out;
 }
 
 export function scanFields(root: ParentNode = document): FieldDescriptor[] {
+  taken = new Map();
   const headings = headingsIn(root);
   const toggles = toggleGroups(root);
   const controls = deepQueryAll<HTMLElement>(root, `${CONTROL_SELECTOR}, ${TOGGLE_SELECTOR}`).filter((el) => !isOwnUi(el));
@@ -289,9 +339,11 @@ export function scanFields(root: ParentNode = document): FieldDescriptor[] {
       // One field for the whole widget, labelled by the text before it ("From", not "Month").
       const { container, segments, inputs } = dateGroup;
       // The nearest text is often just the "MM" hint, so keep looking outward until a real label remains.
+      // Workday's own label comes first: the text just before its boxes is screen-reader help
+      // ("current value is MM/YYYY").
       const stripHints = (t: string) => cleanText(t.replace(/\b(MM|DD|YYYY|YY)\b|\//g, ' '));
       let raw = '';
-      let label = '';
+      let label = stripHints(fieldContainerLabel(inputs[0]));
       for (let node: HTMLElement | null = inputs[0], i = 0; node && i < 4 && !label; node = node.parentElement, i++) {
         raw = contextLabel(node, inputs);
         label = stripHints(raw);
@@ -357,11 +409,13 @@ export function scanFields(root: ParentNode = document): FieldDescriptor[] {
         fields.push(f);
         continue;
       }
-      if (!isVisible(el) || (el as HTMLInputElement).readOnly && kind !== 'combobox') continue;
+      if (!isVisible(el) || (el as HTMLInputElement).readOnly && kind !== 'combobox' || isListboxValueShim(el)) continue;
       const f = base(el, kind, labelFor(el));
       if (kind === 'combobox') {
         f.options = comboboxOptions(el);
         f.hasValue = comboboxHasValue(el);
+        // Search prompts can hold several choices (Skills).
+        f.multiple = isSearchPrompt(el);
       } else {
         f.hasValue = (el as HTMLInputElement).value.trim() !== '';
       }

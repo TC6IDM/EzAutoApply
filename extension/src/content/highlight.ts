@@ -21,7 +21,8 @@ function ensureStyle(root: Document | ShadowRoot): void {
   const style = document.createElement('style');
   style.id = STYLE_ID;
   style.textContent = CSS;
-  (root instanceof Document ? root.head ?? root.documentElement : root).appendChild(style);
+  const isDoc = (r: Document | ShadowRoot): r is Document => r.nodeType === Node.DOCUMENT_NODE;
+  (isDoc(root) ? root.head ?? root.documentElement : root).appendChild(style);
 }
 
 /** The element to outline: hidden file inputs and radios are outlined via a visible container. */

@@ -2,6 +2,7 @@ import { browser } from 'wxt/browser';
 import { defineContentScript } from 'wxt/utils/define-content-script';
 import { AutofillController } from '../src/content/controller';
 import { FloatingUi } from '../src/content/floatingUi';
+import { findAdvanceButton, pressAdvance } from '../src/fill/advance';
 import type { Settings } from '../src/core/types';
 import { type BackgroundToContent, call, type ContentToBackground } from '../src/messages';
 
@@ -64,6 +65,18 @@ export default defineContentScript({
         case 'focusField':
           sendResponse(controller.focusField(msg.fieldId));
           return false;
+        case 'findAdvance': {
+          const b = findAdvanceButton(document);
+          sendResponse(b ? { label: b.label, kind: b.kind, score: b.score } : null);
+          return false;
+        }
+        case 'advance': {
+          // Looked up again: the page may have changed since the panel last asked.
+          const b = findAdvanceButton(document);
+          if (b) pressAdvance(b);
+          sendResponse(b ? { ok: true, label: b.label } : { ok: false, reason: 'That button is no longer on the page' });
+          return false;
+        }
         case 'settingsChanged':
           applySettings(msg.settings);
           sendResponse(null);

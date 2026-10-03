@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Apply: Associate, My Experience (Workday-style test page)</title>
+    <!--
+      Built like Workday's live "My Experience" step: School, Field of Study and Skills are
+      multiSelectContainer prompts whose input has no role or automation id; Enter searches and
+      the results come back a moment later in a popup at the end of <body>; a lone result is chosen
+      without asking; only a result's inner promptOption takes clicks; choices become selectedItem
+      pills. Education dates are year-only boxes. Degree is a "Select One" button with Workday's
+      hidden id box beside it.
+    -->
+    <style>
+      body { font: 14px system-ui, sans-serif; max-width: 700px; margin: 30px auto; }
+      [data-automation-id^="formField"] { margin: 12px 0; }
+      label { display: block; }
+      [data-automation-widget="wd-popup"] ul { border: 1px solid #999; margin: 0; padding: 0; list-style: none; background: #fff; }
+      [role="option"] { padding: 4px 8px; }
+      [data-automation-id="selectedItemList"] { display: flex; gap: 4px; margin: 0; padding: 0; list-style: none; }
+      [data-automation-id="selectedItem"] { background: #def; padding: 2px 6px; border-radius: 10px; }
+      button[aria-haspopup="listbox"] + input[type="text"] { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }
+      .year { display: inline-flex; border: 1px solid #999; padding: 2px 6px; }
+      .year input { width: 4em; border: 0; }
+    </style>
+  </head>
+  <body>
+    <h3>My Experience</h3>
+    <div role="group" aria-labelledby="Education-section">
+      <h4 id="Education-section">Education</h4>
+      <div role="group" aria-labelledby="Education-1-panel">
+        <div><h5 id="Education-1-panel">Education 1</h5></div>
+        <div id="edu"></div>
+      </div>
+    </div>
+    <div role="group" aria-labelledby="Skills-section">
+      <h4 id="Skills-section">Skills</h4>
+      <div id="skills"></div>
+    </div>
+    <div data-automation-id="pageFooter">
+      <button data-automation-id="pageFooterBackButton">Back</button>
+      <button data-automation-id="pageFooterNextButton" onclick="document.body.dataset.advanced = 'yes'">Save and Continue</button>
+    </div>
+
+    <script>
+      const SCHOOLS = ['Texas A&M University', 'University of Texas at Arlington', 'University of Texas at Austin', 'University of Texas at Austin - McCombs School of Business', 'Other'];
+      const STUDIES = ['Computer Engineering', 'Computer Science', 'Computer Science and Engineering'];
+      const SKILLS = ['Go', 'PostgreSQL', 'Python', 'Python (Programming Language)', 'React', 'React Native', 'TypeScript'];
+      const DEGREES = ['High School or Equivalent', "Associate's Degree", "Bachelor's Degree", "Master's Degree", 'Doctorate'];
+
+      let popup = null;
+      const closePopup = () => { popup?.remove(); popup = null; };
+      function showPopup(rows, onPick, isChosen) {
+        closePopup();
+        popup = document.createElement('div');
+        popup.setAttribute('data-automation-widget', 'wd-popup');
+        const ul = document.createElement('ul');
+        ul.setAttribute('role', 'listbox');
+        if (!rows.length) ul.innerHTML = '<li>No Items.</li>';
+        for (const r of rows) {
+          const li = document.createElement('li');
+          li.setAttribute('role', 'option');
+          li.setAttribute('aria-selected', String(isChosen(r)));
+          const inner = document.createElement('div');
+          inner.setAttribute('data-automation-id', 'promptOption');
+          inner.setAttribute('data-automation-label', r);
+          inner.textContent = r;
+          inner.addEventListener('click', () => onPick(r));
+          li.append(inner);
+          ul.append(li);
+        }
+        popup.append(ul);
+        document.body.append(popup);
+      }
+
+      function prompt(host, field, label, items, multi) {
+        const id = field === 'skills' ? 'skills--skills' : `education-7--${field}`;
+        host.insertAdjacentHTML('beforeend', `
+          <div data-automation-id="formField-${field}">
+            <label for="${id}"><span>${label}</span></label>
+            <div><div data-automation-id="multiSelectContainer" data-uxi-widget-type="multiselect">
+              <div data-automation-id="multiselectInputContainer">
+                <div data-automation-hiddensearch="false">
+                  <input enterkeyhint="search" placeholder="Search" autocomplete="off" data-uxi-widget-type="selectinput" id="${id}">
+                  <div data-automation-id="promptAriaInstruction" aria-hidden="true">0 items selected</div>
+                </div>
+                <span data-automation-id="promptIcon" aria-hidden="true"></span>
+              </div>
+            </div></div>
+          </div>`);
+        const input = document.getElementById(id);
+        const box = input.closest('[data-automation-id="multiselectInputContainer"]');
+        const chosen = [];
+        let rows = [];
+        const pills = () => {
+          box.querySelector('[data-automation-id="selectedItemList"]')?.remove();
+          if (!chosen.length) return;
+          const ul = document.createElement('ul');
+          ul.setAttribute('role', 'listbox');
+          ul.setAttribute('data-automation-id', 'selectedItemList');
+          ul.innerHTML = chosen.map((c) => `<li role="presentation"><div data-automation-id="selectedItem" role="option" aria-selected="false" title="${c}">${c}</div></li>`).join('');
+          box.append(ul);
+        };
+        const pick = (item) => {
+          const at = chosen.indexOf(item);
+          if (!multi) chosen.splice(0, chosen.length, item);
+          else if (at >= 0) chosen.splice(at, 1);
+          else chosen.push(item);
+          pills();
+          input.value = '';
+          if (multi && popup) showPopup(rows, pick, (r) => chosen.includes(r));
+          else closePopup();
+        };
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape') closePopup();
+          if (e.key !== 'Enter') return;
+          const q = input.value.trim().toLowerCase();
+          const found = items.filter((i) => i.toLowerCase().includes(q));
+          setTimeout(() => {
+            rows = found;
+            if (found.length === 1 && !chosen.includes(found[0])) { closePopup(); pick(found[0]); }
+            else showPopup(found, pick, (r) => chosen.includes(r));
+          }, 300);
+        });
+      }
+
+      function yearBox(host, field, label) {
+        host.insertAdjacentHTML('beforeend', `
+          <div data-automation-id="formField-${field}"><fieldset><legend><label><span>${label}</span></label></legend>
+            <div><div aria-hidden="true">current value is YYYY</div>
+              <div id="education-7--${field}" role="group" data-automation-id="dateInputWrapper" class="year"><div tabindex="-1">
+                <div><div aria-hidden="true" data-automation-id="dateSectionYear-display" hidden>YYYY</div>
+                  <input role="spinbutton" aria-label="Year" aria-valuemin="1" aria-valuemax="9999" id="education-7--${field}-dateSectionYear-input" data-automation-id="dateSectionYear-input">
+                </div>
+              </div></div>
+            </div>
+          </fieldset></div>`);
+      }
+
+      const edu = document.getElementById('edu');
+      prompt(edu, 'school', 'School or University<abbr aria-hidden="true">*</abbr>', SCHOOLS, false);
+      edu.insertAdjacentHTML('beforeend', `
+        <div data-automation-id="formField-degree"><label for="education-7--degree"><span>Degree<abbr aria-hidden="true">*</abbr></span></label>
+          <div><button aria-haspopup="listbox" type="button" aria-label="Degree Select One Required" name="degree" id="education-7--degree">Select One</button><input type="text" value=""></div>
+        </div>`);
+      const degree = document.getElementById('education-7--degree');
+      degree.addEventListener('click', () =>
+        showPopup(DEGREES, (d) => { degree.textContent = d; degree.nextElementSibling.value = d; closePopup(); }, () => false),
+      );
+      prompt(edu, 'fieldOfStudy', 'Field of Study', STUDIES, false);
+      yearBox(edu, 'firstYearAttended', 'From');
+      yearBox(edu, 'lastYearAttended', 'To (Actual or Expected)');
+      prompt(document.getElementById('skills'), 'skills', 'Type to Add Skills', SKILLS, true);
+    </script>
+  </body>
+</html>

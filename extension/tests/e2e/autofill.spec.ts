@@ -333,6 +333,42 @@ test('fills a Workday-style application: account, dropdowns, work history, resum
   await expect(selectText('Please select your age category:*')).toHaveText('18 and over');
 });
 
+test('fills Workday’s education prompts, year-only dates and skills, then Advance presses Save and Continue', async ({ context, worker, extensionId, site }) => {
+  test.setTimeout(120_000);
+  const panel = await context.newPage();
+  await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+  await importResume(panel);
+  await classifierOff(panel);
+
+  const form = await context.newPage();
+  const url = `${site}/workday-experience.html`;
+  await form.goto(url);
+  await autofill(worker, url);
+
+  const pills = (field: string) => form.locator(`[data-automation-id="formField-${field}"] [data-automation-id="selectedItem"]`);
+  await expect(pills('school')).toHaveText(['University of Texas at Austin']);
+  await expect(form.locator('#education-7--degree')).toHaveText("Bachelor's Degree");
+  await expect(pills('fieldOfStudy')).toHaveText(['Computer Science']);
+  await expect(form.locator('#education-7--firstYearAttended-dateSectionYear-input')).toHaveValue('2017');
+  await expect(form.locator('#education-7--lastYearAttended-dateSectionYear-input')).toHaveValue('2021');
+  await expect(pills('skills')).toHaveText(['TypeScript', 'Python', 'React', 'PostgreSQL']);
+  // Search text isn't left behind in the prompts.
+  await expect(form.locator('#education-7--school')).toHaveValue('');
+
+  // Autofill never advances; the Advance button does, when pressed.
+  expect(await form.evaluate(() => document.body.dataset.advanced)).toBeUndefined();
+  const tabId = await worker.evaluate(async (u) => (await chrome.tabs.query({ url: u }))[0].id!, url);
+  expect(await panel.evaluate((id) => chrome.runtime.sendMessage({ type: 'findAdvance', tabId: id }), tabId)).toMatchObject({
+    frameId: 0,
+    label: 'Save and Continue',
+    kind: 'next',
+  });
+  // The panel follows the active tab, so put the application in front.
+  await form.bringToFront();
+  await panel.getByRole('button', { name: 'Advance: Save and Continue' }).click();
+  await expect.poll(() => form.evaluate(() => document.body.dataset.advanced)).toBe('yes');
+});
+
 test('with Laya running: rules fill instantly, then leftovers go to the classifier', async ({ context, worker, extensionId, site }) => {
   const laya = await fetch('http://127.0.0.1:8000/health').then((r) => r.ok).catch(() => false);
   test.skip(!laya, 'needs a Laya server on 127.0.0.1:8000 (classifier\start.ps1)');

@@ -106,6 +106,11 @@ export interface Settings {
   autoFillNextStep: boolean;
   /** Overwrite fields that already contain a value. */
   overwriteFilled: boolean;
+  /**
+   * Replace values the site filled in itself (usually from reading the uploaded resume) when they
+   * disagree with the profile. Fields the user typed in or clicked are never replaced.
+   */
+  fixSiteValues: boolean;
   showFloatingButton: boolean;
   fileNameFormat: FileNameFormat;
   /** Fill the account password on any site, not just known job-account sites (Workday, iCIMS, …). */
@@ -128,6 +133,7 @@ export function defaultSettings(): Settings {
     },
     autoFillNextStep: false,
     overwriteFilled: false,
+    fixSiteValues: true,
     showFloatingButton: true,
     fileNameFormat: 'underscore',
     passwordOnAnySite: false,

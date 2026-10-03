@@ -1,11 +1,12 @@
 import { FIELD_KEY_MAP } from '../core/fieldKeys';
 import { canonicalCountry, canonicalRegion } from '../core/geo';
 import { cleanText, normalize } from '../core/normalize';
-import { isPlaceholderOption, matchOption, type OptionLike } from '../core/options';
+import { fallbackOption, isPlaceholderOption, matchOption, type OptionLike, scoreOption } from '../core/options';
 import { type DocKind, type FieldValue, isFileRef, isSecretRef, type SecretRef } from '../core/types';
 import { byId, isVisible, sleep, waitFor } from './dom';
 import { textOf } from './labels';
-import { valueText } from './pipeline';
+import { fallbackNote, valueText } from './pipeline';
+import { isSearchPrompt, promptChoices } from './scan';
 import type { FieldDescriptor, Resolution } from './types';
 
 /**
@@ -28,8 +29,8 @@ export interface FillContext {
   getSecret(name: SecretRef['secret']): Promise<string | null>;
 }
 
-/** `uncertain`: filled, but the page didn't clearly confirm it, so it should be checked. */
-export type FillOutcome = { ok: true; valueText: string; uncertain?: boolean } | { ok: false; reason: string };
+/** `uncertain`: filled, but the page didn't clearly confirm it (or chose something close), so it should be checked. */
+export type FillOutcome = { ok: true; valueText: string; uncertain?: boolean; note?: string } | { ok: false; reason: string };
 
 type ValueElement = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
 
@@ -213,16 +214,25 @@ function segmentDisplay(input: HTMLInputElement): HTMLElement | null {
   return id && wrap ? wrap.querySelector<HTMLElement>(`[data-automation-id="${CSS.escape(id)}"]`) : null;
 }
 
-/** Workday-style dates: separate month, day and year boxes. `iso` is "YYYY-MM" or "YYYY-MM-DD". */
-async function fillSegments(field: FieldDescriptor, iso: string): Promise<FillOutcome> {
-  const m = /^(\d{4})(?:-(\d{1,2}))?(?:-(\d{1,2}))?$/.exec(iso.trim());
-  if (!m) return { ok: false, reason: `"${iso}" isn't a date` };
-  const parts = { year: m[1], month: pad(Number(m[2] ?? 1)), day: pad(Number(m[3] ?? 1)) };
+/** "2021-06", "2021-06-15", "2021", "06/2021" or "06/15/2021" as year, month and day. */
+function dateParts(text: string): { year: string; month: string; day: string } | null {
+  const t = text.trim();
+  const iso = /^(\d{4})(?:-(\d{1,2}))?(?:-(\d{1,2}))?$/.exec(t);
+  const us = /^(\d{1,2})\/(?:(\d{1,2})\/)?(\d{4})$/.exec(t);
+  if (!iso && !us) return null;
+  const [year, month, day] = iso ? [iso[1], iso[2], iso[3]] : [us![3], us![1], us![2]];
+  return { year, month: pad(Number(month ?? 1)), day: pad(Number(day ?? 1)) };
+}
+
+/** Workday-style dates: separate month, day and year boxes, or a year box on its own ("From YYYY"). */
+async function fillSegments(field: FieldDescriptor, date: string): Promise<FillOutcome> {
+  const parts = dateParts(date);
+  if (!parts) return { ok: false, reason: `"${date}" isn't a date` };
   const segs = field.segments!;
+  const names = (['month', 'day', 'year'] as const).filter((name) => segs[name]);
   let ok = true;
-  for (const name of ['month', 'day', 'year'] as const) {
-    const input = segs[name];
-    if (!input) continue;
+  for (const name of names) {
+    const input = segs[name]!;
     const took = () => sameText(input.value, parts[name]) || (input.value !== '' && Number(input.value) === Number(parts[name]));
     enterText(input, parts[name]);
     leaveField(input);
@@ -237,7 +247,7 @@ async function fillSegments(field: FieldDescriptor, iso: string): Promise<FillOu
     }
     if (!took()) ok = false;
   }
-  return ok ? { ok: true, valueText: `${parts.month}/${parts.year}` } : { ok: false, reason: 'The date boxes rejected the value' };
+  return ok ? { ok: true, valueText: names.map((name) => parts[name]).join('/') } : { ok: false, reason: 'The date boxes rejected the value' };
 }
 
 async function fillText(field: FieldDescriptor, text: string): Promise<FillOutcome> {
@@ -399,9 +409,11 @@ function isShown(o: HTMLElement): boolean {
   return r.width > 0 && r.height > 0;
 }
 
-/** Every option showing anywhere on the page right now. */
+/** Every option showing anywhere on the page right now. Workday's chosen pills sit in a listbox of their own; they aren't choices. */
 function pageOptions(doc: Document): HTMLElement[] {
-  return (Array.from(doc.querySelectorAll('[role="option"]')) as HTMLElement[]).filter(isShown);
+  return (Array.from(doc.querySelectorAll('[role="option"]')) as HTMLElement[]).filter(
+    (o) => isShown(o) && !o.closest('[data-automation-id="selectedItemList"], [data-automation-id="selectedItem"]'),
+  );
 }
 
 /**
@@ -412,7 +424,53 @@ function pageOptions(doc: Document): HTMLElement[] {
 function optionsOf(el: HTMLElement, before: Set<Element>): HTMLElement[] {
   const own = (listboxFor(el) as HTMLElement[]).filter(isShown);
   if (own.length) return own;
-  return pageOptions(el.ownerDocument).filter((o) => !before.has(o));
+  return nearestList(el, pageOptions(el.ownerDocument).filter((o) => !before.has(o) && !heldByOther(el, o)));
+}
+
+const listOf = (o: Element): Element => o.closest('[role="listbox"]') ?? o.parentElement ?? o;
+const listTexts = (list: Element) => Array.from(list.querySelectorAll('[role="option"]')).map(optionText).join('\n');
+
+/** Lists whose options were read for a dropdown, with what they said then. */
+const listOwners = new WeakMap<Element, { owner: Element; texts: string }>();
+
+/** Remember that these options are `el`'s, so a list that shows up again later isn't taken for another dropdown's. */
+function claimOptions(el: HTMLElement, options: HTMLElement[]): void {
+  for (const list of new Set(options.map(listOf))) listOwners.set(list, { owner: el, texts: listTexts(list) });
+}
+
+/**
+ * An option in a list read for another dropdown that still shows that dropdown's options (a list
+ * reopening late). A list a site reuses for every dropdown shows different options, so it passes.
+ */
+function heldByOther(el: HTMLElement, o: Element): boolean {
+  const list = listOf(o);
+  const held = listOwners.get(list);
+  return !!held && held.owner !== el && held.texts === listTexts(list);
+}
+
+/**
+ * When new options show in more than one list (another dropdown's list closing late, or
+ * reopening), keep the list that belongs to this field: the one nearest it on screen, else
+ * the one added last.
+ */
+function nearestList(el: HTMLElement, options: HTMLElement[]): HTMLElement[] {
+  const groups = new Map<Element, HTMLElement[]>();
+  for (const o of options) {
+    const list = o.closest('[role="listbox"]') ?? o.parentElement ?? o;
+    groups.set(list, [...(groups.get(list) ?? []), o]);
+  }
+  if (groups.size <= 1) return options;
+  const r = el.getBoundingClientRect();
+  const distance = (list: Element) => {
+    const b = list.getBoundingClientRect();
+    if (!b.width && !b.height) return Infinity;
+    const dy = Math.max(b.top - r.bottom, r.top - b.bottom, 0);
+    const dx = Math.max(b.left - r.right, r.left - b.right, 0);
+    return Math.hypot(dx, dy);
+  };
+  const ranked = [...groups.values()].map((opts, i) => ({ opts, d: distance(opts[0].closest('[role="listbox"]') ?? opts[0]), i }));
+  ranked.sort((a, b) => a.d - b.d || b.i - a.i);
+  return ranked[0].opts;
 }
 
 /** Close lists something else left open, then record what's still showing, so it isn't mistaken for this field's list. */
@@ -421,7 +479,8 @@ async function closeStrayLists(el: HTMLElement): Promise<Set<Element>> {
   if (pageOptions(doc).length) {
     const active = doc.activeElement as HTMLElement | null;
     if (active && active !== doc.body) key(active, 'Escape');
-    await sleep(100);
+    // Lists fade out; wait for them to go rather than catching one halfway.
+    await waitFor(() => !pageOptions(doc).length, 400);
   }
   return new Set(pageOptions(doc));
 }
@@ -474,13 +533,14 @@ async function closeList(el: HTMLElement, before: Set<Element>): Promise<void> {
     key(el, 'Escape');
     const active = keyTarget(el);
     if (active !== el) key(active, 'Escape');
-    await sleep(100);
+    // A list that's fading out still shows its options; toggling the button then would open it again.
+    await waitFor(() => !open(), 300);
   }
   if (el.getAttribute('aria-haspopup')) {
     for (const toggle of [() => realClick(el), () => mouse(el, 'mousedown'), () => el.click()]) {
       if (!open()) break;
       toggle();
-      await sleep(100);
+      await waitFor(() => !open(), 250);
     }
   }
   fire(el, 'blur', { bubbles: false });
@@ -594,11 +654,12 @@ function looksChosen(el: HTMLElement, label: string, before: string, option?: HT
  */
 export async function readDropdownOptions(field: FieldDescriptor): Promise<string[]> {
   const el = field.element;
-  // Workday's "Search" boxes open on a menu of categories, not answers; everything else
-  // (react-select on Greenhouse, Material-UI, Workday "Select One") shows the real options.
-  if (el instanceof HTMLInputElement && /^search$/i.test(el.placeholder.trim())) return [];
+  // Workday's "Search" boxes open on a menu of categories (or the first 100 schools), not answers;
+  // everything else (react-select on Greenhouse, Material-UI, Workday "Select One") shows the real options.
+  if (isSearchPrompt(el) || (el instanceof HTMLInputElement && /^search$/i.test(el.placeholder.trim()))) return [];
   const before = await closeStrayLists(el);
   const opts = await openList(el, el instanceof HTMLInputElement ? el : null, before);
+  claimOptions(el, opts);
   const labels = [...new Set(opts.map(optionText).filter((l) => l && !isPlaceholderOption({ label: l, value: '' })))];
   await closeList(el, before);
   return labels;
@@ -614,10 +675,11 @@ function searchTextFor(want: string): string {
   return normalize(full).split(' ').slice(0, 2).join(' ');
 }
 
-async function fillCombobox(field: FieldDescriptor, res: Resolution): Promise<FillOutcome> {
+async function fillCombobox(field: FieldDescriptor, res: Resolution, allowFallback = true): Promise<FillOutcome> {
   const el = field.element;
   const value = res.value;
   if (value === undefined || isFileRef(value) || isSecretRef(value)) return { ok: false, reason: 'Nothing to choose' };
+  if (el instanceof HTMLInputElement && isSearchPrompt(el)) return fillPrompt(el, res, value);
   const want = Array.isArray(value) ? value[0] : value;
   const variants = typeof want === 'string' && res.key ? (FIELD_KEY_MAP[res.key]?.variants?.(want) ?? []) : [];
   const input = el instanceof HTMLInputElement ? el : null;
@@ -632,6 +694,8 @@ async function fillCombobox(field: FieldDescriptor, res: Resolution): Promise<Fi
   };
 
   let seen = await openList(el, input, known);
+  claimOptions(el, seen);
+  const opened = seen;
   let choice = pick(seen);
 
   // Not in the visible list: type it and press Enter. Workday's search boxes only search on Enter,
@@ -667,6 +731,20 @@ async function fillCombobox(field: FieldDescriptor, res: Resolution): Promise<Fi
   if (!choice) {
     if (input) setNativeValue(input, '');
     await closeList(el, known);
+    // Questions that shouldn't be left blank: pick the stand-in ("Other") from the list as it opened.
+    const def = res.key ? FIELD_KEY_MAP[res.key] : undefined;
+    if (allowFallback && def && (def.fallbacks || def.anyOption)) {
+      const pool = [...new Set([...opened, ...seen].map(optionText))].filter((l) => l && !isPlaceholderOption({ label: l, value: '' }));
+      const fb = fallbackOption(
+        pool.map((l) => ({ label: l, value: l })),
+        def.fallbacks ?? [],
+        !!def.anyOption,
+      );
+      if (fb) {
+        const out = await fillCombobox(field, { ...res, value: pool[fb.index] }, false);
+        return out.ok ? { ...out, uncertain: true, note: fallbackNote(wantText, out.valueText) } : out;
+      }
+    }
     // Location boxes with a "Locate me" button: let the site look the location up instead.
     const locate = res.key === 'location' || res.key === 'city' ? locateMeButton(el) : null;
     if (locate) {
@@ -687,7 +765,7 @@ async function fillCombobox(field: FieldDescriptor, res: Resolution): Promise<Fi
   const selectedBefore = markedSelected(choice.el);
   const chosen = () => looksChosen(el, choice!.label, before, choice!.el, selectedBefore, typed);
   choice.el.scrollIntoView?.({ block: 'nearest' });
-  realClick(choice.el);
+  realClick(clickTarget(choice.el));
   await sleep(150);
   // Some lists ignore synthetic clicks but accept the keyboard.
   if (!chosen() && choice.el.isConnected && optionsOf(el, known).includes(choice.el)) {
@@ -707,6 +785,216 @@ async function fillCombobox(field: FieldDescriptor, res: Resolution): Promise<Fi
   const confirmed = chosen() || !optionsOf(el, known).includes(choice.el);
   await closeList(el, known);
   return confirmed ? { ok: true, valueText: choice.label } : { ok: true, valueText: choice.label, uncertain: true };
+}
+
+/** Where a click on an option lands. Workday listens on the inner promptOption, not on the row around it. */
+function clickTarget(option: HTMLElement): HTMLElement {
+  return option.querySelector<HTMLElement>('[data-automation-id="promptOption"]') ?? option;
+}
+
+// ── Workday search prompts (School, Field of Study, Skills) ─────────────
+
+/** Rows a list shows while it searches, or when nothing matched; never choices. */
+const STATUS_ROW = /^(loading|searching|no (items|results|matches|options))\b/i;
+const NO_RESULTS = /^no (items|results|matches|options)\b/i;
+/** A search result only counts as the value when it's at least this close ("Software Engineering" in "Systems Software Engineering"). */
+const PROMPT_MIN_SCORE = 0.8;
+/** Below this, what got chosen is close but not the same, so it's flagged for review. */
+const PROMPT_EXACT_SCORE = 0.9;
+
+interface PromptPick {
+  label: string;
+  score: number;
+}
+
+/**
+ * Choose a result: click it, and if the prompt ignores the click, arrow down to it and press
+ * Enter in the box. A new pill (or the list closing on it) means it was chosen.
+ */
+async function choosePromptOption(input: HTMLInputElement, option: HTMLElement, label: string, known: Set<Element>, typed: string): Promise<boolean> {
+  const pills = promptChoices(input);
+  const before = fieldText(input, typed);
+  const selectedBefore = markedSelected(option);
+  const chosen = () => promptChoices(input).some((p) => !pills.includes(p)) || looksChosen(input, label, before, option, selectedBefore, typed);
+  const gone = () => !option.isConnected || !isShown(option);
+  option.scrollIntoView?.({ block: 'nearest' });
+  realClick(clickTarget(option));
+  if (await waitFor(() => chosen() || gone(), 800)) return true;
+  // Pressing Enter on a result that the click did choose would toggle it off again, so only
+  // use the keyboard while the result still shows as unchosen.
+  const index = optionsOf(input, known).indexOf(option);
+  if (index < 0 || markedSelected(option) !== selectedBefore) return false;
+  input.focus();
+  for (let i = 0; i < index; i++) key(input, 'ArrowDown');
+  pressEnter(input);
+  return !!(await waitFor(() => chosen() || gone(), 800));
+}
+
+/**
+ * Search a prompt for one value: type it, press Enter, and choose the result that matches.
+ * Workday chooses a lone result by itself, so a new pill with no list also counts. When the
+ * full value finds nothing, a shorter search is tried ("Toronto, ON" → "toronto").
+ */
+async function searchPrompt(
+  input: HTMLInputElement,
+  want: string,
+  variants: string[],
+  known: Set<Element>,
+  timeoutMs: number,
+): Promise<{ pick?: PromptPick; seen: string[] }> {
+  const queries = [cleanText(want)];
+  const short = searchTextFor(want);
+  if (short.length >= 2 && short !== normalize(want)) queries.push(short);
+  const best = (opts: HTMLElement[]) => {
+    const labels = opts.map((o) => ({ label: optionText(o), value: optionText(o) }));
+    const m = matchOption(labels, want, variants);
+    return m && m.score >= PROMPT_MIN_SCORE ? { el: opts[m.index], label: labels[m.index].label, score: m.score } : null;
+  };
+  // "No Items." isn't always a row of its own; a list that says only that also means no results.
+  const emptyLists = () =>
+    Array.from(input.ownerDocument.querySelectorAll<HTMLElement>('[role="listbox"]')).filter((l) => NO_RESULTS.test(textOf(l)) && isVisible(l));
+  let seen: string[] = [];
+  for (const query of queries) {
+    const pills = promptChoices(input);
+    const stale = new Set(optionsOf(input, known));
+    const staleEmpty = new Set(emptyLists());
+    typeSearch(input, query);
+    pressEnter(input);
+    // Wait for this search's answer: a pill when Workday chose the only result itself, a "No Items"
+    // row, or new rows. New rows that don't match only count once they've stopped changing, so a
+    // list that was still loading when Enter was pressed isn't taken for the results.
+    let shape = '';
+    let since = Date.now();
+    const outcome = await waitFor(
+      () => {
+        const added = promptChoices(input).filter((p) => !pills.includes(p));
+        if (added.length) return { pill: added[added.length - 1] };
+        const rows = optionsOf(input, known).filter((o) => !stale.has(o));
+        if (rows.some((o) => NO_RESULTS.test(optionText(o))) || emptyLists().some((l) => !staleEmpty.has(l))) return { done: true };
+        const fresh = rows.filter((o) => !STATUS_ROW.test(optionText(o)));
+        if (best(fresh)) return { done: true };
+        const now = `${fresh.length}|${fresh.map(optionText).join('|')}`;
+        if (now !== shape) [shape, since] = [now, Date.now()];
+        return fresh.length && Date.now() - since >= 1200 ? { done: true } : null;
+      },
+      timeoutMs,
+      100,
+    );
+    if (outcome?.pill) return { pick: { label: outcome.pill, score: scoreOption(outcome.pill, want) }, seen };
+    // Lists re-render in place, so a result that was also in the last search's list can be an old node.
+    const options = optionsOf(input, known).filter((o) => !STATUS_ROW.test(optionText(o)));
+    if (options.length) seen = options.map(optionText);
+    const choice = best(options);
+    if (!choice) continue;
+    const ok = await choosePromptOption(input, choice.el, choice.label, known, query);
+    return ok ? { pick: { label: choice.label, score: choice.score }, seen } : { seen };
+  }
+  return { seen };
+}
+
+/**
+ * Choose whatever a prompt offers first, going into categories ("Job Board ›") until something
+ * is chosen. Only for questions where any answer beats none.
+ */
+async function browsePrompt(input: HTMLInputElement, known: Set<Element>): Promise<string | null> {
+  const pills = promptChoices(input);
+  const added = () => promptChoices(input).find((p) => !pills.includes(p)) ?? null;
+  if (input.value) {
+    setNativeValue(input, '');
+    fire(input, 'input');
+  }
+  await closeList(input, known);
+  let options = await openList(input, input, known);
+  for (let level = 0; level < 3; level++) {
+    const first = options.find((o) => !STATUS_ROW.test(optionText(o)) && !isPlaceholderOption({ label: optionText(o), value: '' }));
+    if (!first) break;
+    const stale = new Set(options);
+    realClick(clickTarget(first));
+    // Either it's chosen (a pill), or it was a category and its own options replace the list.
+    const next = await waitFor<HTMLElement[] | true>(() => {
+      if (added()) return true;
+      const now = optionsOf(input, known).filter((o) => !stale.has(o));
+      return now.length ? now : null;
+    }, 1500);
+    if (next === true || !next) break;
+    options = next;
+  }
+  return added();
+}
+
+/**
+ * Workday's search prompts: type the value, press Enter, pick the matching result. A list
+ * (Skills) adds each item that's found, skipping ones already chosen, since choosing them
+ * again would remove them.
+ */
+async function fillPrompt(input: HTMLInputElement, res: Resolution, value: string | boolean | string[]): Promise<FillOutcome> {
+  const wants = (Array.isArray(value) ? value : [value]).map((v) => (typeof v === 'boolean' ? (v ? 'Yes' : 'No') : cleanText(v))).filter(Boolean);
+  const variantsOf = (w: string) => (res.key ? (FIELD_KEY_MAP[res.key]?.variants?.(w) ?? []) : []);
+  const known = await closeStrayLists(input);
+  const picks: { want: string; pick: PromptPick }[] = [];
+  const missed: string[] = [];
+  let seen: string[] = [];
+  for (const want of wants) {
+    if (promptChoices(input).some((p) => scoreOption(p, want) >= PROMPT_EXACT_SCORE)) continue;
+    // A list of skills can be long, so each search waits less than a lone School search does.
+    const out = await searchPrompt(input, want, variantsOf(want), known, wants.length > 1 ? 3000 : 5000);
+    if (out.pick) picks.push({ want, pick: out.pick });
+    else missed.push(want);
+    seen = out.seen;
+  }
+
+  // Questions that shouldn't be left blank: search for the stand-in ("Other"), else take what's offered.
+  const def = res.key ? FIELD_KEY_MAP[res.key] : undefined;
+  let stand: string | null = null;
+  const unanswered = () => !picks.length && !promptChoices(input).some((p) => scoreOption(p, wants[0]) >= PROMPT_EXACT_SCORE);
+  if (!Array.isArray(value) && unanswered() && def && (def.fallbacks || def.anyOption)) {
+    // Each search that finds nothing takes a few seconds, so only the first few stand-ins are searched.
+    for (const fb of (def.fallbacks ?? []).slice(0, 3)) {
+      stand = (await searchPrompt(input, fb, [], known, 3000)).pick?.label ?? null;
+      if (stand) break;
+    }
+    if (!stand && def.anyOption) stand = await browsePrompt(input, known);
+  }
+
+  if (input.value) {
+    setNativeValue(input, '');
+    fire(input, 'input');
+  }
+  await closeList(input, known);
+
+  const chosen = promptChoices(input);
+  if (!Array.isArray(value)) {
+    const got = picks[0];
+    if (!got) {
+      const have = chosen.find((p) => scoreOption(p, wants[0]) >= PROMPT_EXACT_SCORE);
+      if (have) return { ok: true, valueText: have };
+      if (stand) return { ok: true, valueText: stand, uncertain: true, note: fallbackNote(wants[0], stand) };
+      return {
+        ok: false,
+        reason: `No search result matched "${wants[0]}"${seen.length ? ` (results: ${seen.slice(0, 6).join(', ')})` : ' (the search found nothing)'}`,
+      };
+    }
+    const close = got.pick.score < PROMPT_EXACT_SCORE;
+    // No pill means the page didn't show the choice; the controller's default note covers that.
+    return {
+      ok: true,
+      valueText: got.pick.label,
+      uncertain: close || !chosen.length || undefined,
+      note: close ? `No exact match for "${got.want}"; this is the closest` : undefined,
+    };
+  }
+  if (!picks.length && !chosen.length) return { ok: false, reason: `None of these were found: ${wants.join(', ')}` };
+  const close = picks.filter((p) => p.pick.score < PROMPT_EXACT_SCORE);
+  const notes = [
+    missed.length ? `Not found: ${missed.join(', ')}` : '',
+    close.length ? `Closest matches: ${close.map((p) => `"${p.want}" → "${p.pick.label}"`).join(', ')}` : '',
+  ].filter(Boolean);
+  return {
+    ok: true,
+    valueText: (chosen.length ? chosen : picks.map((p) => p.pick.label)).join(', '),
+    uncertain: notes.length > 0 || undefined,
+    note: notes.join('. ') || undefined,
+  };
 }
 
 // ── entry point ─────────────────────────────────────────────────────────

@@ -146,7 +146,7 @@ export function uploadLabel(input: Element): string {
 }
 
 /** Workday wraps each field in a data-automation-id="formField-…" container whose <label> holds the question. */
-function fieldContainerLabel(el: Element): string {
+export function fieldContainerLabel(el: Element): string {
   const container = el.closest('[data-automation-id^="formField"]');
   const label = container?.querySelector('label, legend');
   return label && !label.contains(el) ? textOf(label) : '';

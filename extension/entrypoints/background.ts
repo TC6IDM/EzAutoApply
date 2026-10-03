@@ -17,6 +17,7 @@ import {
 } from '../src/db';
 import type { FrameReport } from '../src/fill/types';
 import type {
+  AdvanceTarget,
   BackgroundBroadcast,
   BackgroundToContent,
   ContentContext,
@@ -79,6 +80,38 @@ async function autofillTab(tabId: number): Promise<void> {
   await toTab(tabId, { type: 'autofill' }).catch(() => {
     throw new Error('This page can’t be autofilled. Reload it, or open a regular website tab.');
   });
+}
+
+/**
+ * The frames of a tab. tabs.sendMessage to a whole tab only returns the first frame's answer, so
+ * questions every frame must answer go to each one. The list is kept briefly; the panel asks often.
+ */
+const frameCache = new Map<number, { ids: number[]; at: number }>();
+async function frameIds(tabId: number): Promise<number[]> {
+  const hit = frameCache.get(tabId);
+  if (hit && Date.now() - hit.at < 5000) return hit.ids;
+  let ids = [0];
+  try {
+    const found = await browser.scripting.executeScript({ target: { tabId, allFrames: true }, func: () => 0 });
+    ids = [...new Set(found.map((r) => r.frameId))];
+  } catch {
+    // Pages scripts can't run on (the Web Store, chrome://): only the top frame is asked.
+  }
+  frameCache.set(tabId, { ids, at: Date.now() });
+  return ids;
+}
+
+/** The page's Next / Submit / Sign In / Apply button, from whichever frame has the strongest one. */
+async function findAdvance(tabId: number): Promise<AdvanceTarget | null> {
+  const ids = await frameIds(tabId);
+  const found = await Promise.all(
+    ids.map((frameId) =>
+      toTab(tabId, { type: 'findAdvance' }, frameId)
+        .then((r) => (r ? { ...(r as Omit<AdvanceTarget, 'frameId'>), frameId } : null))
+        .catch(() => null),
+    ),
+  );
+  return found.filter((t): t is AdvanceTarget => !!t).sort((a, b) => b.score - a.score)[0] ?? null;
 }
 
 async function classifier() {
@@ -199,6 +232,10 @@ async function handlePanel(msg: PanelToBackground): Promise<unknown> {
     }
     case 'focusField':
       return toTab(msg.tabId, { type: 'focusField', fieldId: msg.fieldId }, msg.frameId);
+    case 'findAdvance':
+      return findAdvance(msg.tabId);
+    case 'advance':
+      return toTab(msg.tabId, { type: 'advance' }, msg.frameId);
     case 'classifierHealth':
       return new SystemOneClient((await getSettings()).classifier).health();
     case 'settingsChanged': {
@@ -234,6 +271,7 @@ export default defineBackground(() => {
   // A new page in the tab means the old report no longer applies.
   browser.tabs.onUpdated.addListener((tabId, info) => {
     if (info.status === 'loading' && info.url) {
+      frameCache.delete(tabId);
       updateTab(tabId, (s) => {
         s.reports = {};
       }).catch(() => {});
@@ -241,5 +279,6 @@ export default defineBackground(() => {
   });
   browser.tabs.onRemoved.addListener((tabId) => {
     browser.storage.session.remove(tabKey(tabId)).catch(() => {});
+    frameCache.delete(tabId);
   });
 });

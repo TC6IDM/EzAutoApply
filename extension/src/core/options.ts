@@ -182,6 +182,20 @@ export function matchTextOption(options: OptionLike[], want: string, minScore = 
   return best;
 }
 
+/**
+ * What to pick when the wanted answer isn't offered: the first of `fallbacks` that is ("Other"),
+ * else, with `any`, the first real option. The low score marks it as a stand-in.
+ */
+export function fallbackOption(options: OptionLike[], fallbacks: string[], any: boolean): OptionMatch | null {
+  for (const f of fallbacks) {
+    const m = matchTextOption(options, f, 0.8);
+    if (m) return { index: m.index, score: 0.5 };
+  }
+  if (!any) return null;
+  const i = options.findIndex((o) => !isPlaceholderOption(o));
+  return i >= 0 ? { index: i, score: 0.5 } : null;
+}
+
 export function matchBoolOption(options: OptionLike[], want: boolean): OptionMatch | null {
   const hits = options
     .map((o, index) => ({ index, b: isPlaceholderOption(o) ? null : boolOf(o.label) }))

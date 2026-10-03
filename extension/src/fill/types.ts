@@ -18,6 +18,10 @@ export interface FieldInfo {
   section: string;
   multiple: boolean;
   hasValue: boolean;
+  /** What a field that already has a value holds, as text (for checking what the site filled in). */
+  current?: string;
+  /** The user typed in or clicked this field on the page; its value is theirs and stays. */
+  touched?: boolean;
 }
 
 /** A field plus the live elements needed to fill it. Only exists inside the content script. */

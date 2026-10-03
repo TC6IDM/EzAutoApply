@@ -178,6 +178,12 @@ export function SettingsView(props: { onSaved(): void; health: Health | null }) 
           onChange={(v) => change((x) => (x.acknowledgePrivacyNotices = v))}
         />
         <Toggle
+          label="Correct what the site filled in from your resume"
+          hint="Sites that read your resume often get it wrong. Where they disagree with your profile, your profile wins; shown under “Check these”. Fields you typed in yourself are left alone."
+          checked={s.fixSiteValues}
+          onChange={(v) => change((x) => (x.fixSiteValues = v))}
+        />
+        <Toggle
           label="Overwrite fields that already have a value"
           checked={s.overwriteFilled}
           onChange={(v) => change((x) => (x.overwriteFilled = v))}

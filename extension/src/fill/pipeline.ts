@@ -1,6 +1,7 @@
 import { profileFacts } from '../core/facts';
-import { FIELD_KEY_MAP, isUncertain } from '../core/fieldKeys';
-import { boolOf, matchBoolOption, matchOption } from '../core/options';
+import { type Category, FIELD_KEY_MAP, isUncertain } from '../core/fieldKeys';
+import { cleanText, normalize, truncate } from '../core/normalize';
+import { boolOf, fallbackOption, matchBoolOption, matchOption, scoreOption } from '../core/options';
 import type { Profile } from '../core/profile';
 import { CHOICE_KINDS, type FieldValue, isFileRef, isSecretRef, type SavedAnswer, type Settings } from '../core/types';
 import { type BankHit, findAnswers } from './match/answerBank';
@@ -45,6 +46,37 @@ interface PlanMeta {
 
 /** Groups where a yes/no question can sensibly be answered from the profile. */
 const DERIVABLE: GroupId[] = ['experience', 'education', 'about', 'workAuth', 'logistics'];
+
+export const fallbackNote = (wanted: string, picked: string) => `"${wanted}" isn't an option here, so "${picked}" was picked`;
+
+/** What sites fill in by themselves from a resume they read, so what's worth checking against the profile. */
+const SITE_FILLED: Category[] = ['contact', 'address', 'links', 'experience', 'education', 'about'];
+/** The field that names a job or school; the one flagged when the site added an entry the profile doesn't have. */
+const ENTRY_NAMES = ['expCompany', 'school'];
+
+/** Whether what a field holds already says what the profile says, in the field's own format. */
+export function agrees(current: string, want: FieldValue): boolean {
+  const c = cleanText(current);
+  const w = valueText(want).trim();
+  if (!c) return false;
+  if (!w || normalize(c) === normalize(w)) return true;
+  const nums = (s: string) => (s.match(/\d+/g) ?? []).map(Number);
+  // Dates: the same year, and the same month where the box shows one ("06/2021" for 2021-06).
+  if (/^\d{4}(-\d{1,2}){0,2}$/.test(w)) {
+    const wn = nums(w);
+    const cn = nums(c);
+    return cn.includes(wn[0]) && cn.every((n) => wn.includes(n) || n === 1);
+  }
+  // Phone numbers: the same digits, with or without a country code.
+  const numeric = /^[\d\s()+.-]+$/;
+  if (numeric.test(c) && numeric.test(w)) {
+    const dc = c.replace(/\D/g, '');
+    const dw = w.replace(/\D/g, '');
+    const n = Math.min(dc.length, dw.length, 10);
+    return n > 0 && dc.slice(-n) === dw.slice(-n);
+  }
+  return scoreOption(c, w) >= 0.85;
+}
 
 export function valueText(v: FieldValue | undefined): string {
   if (v === undefined) return '';
@@ -134,6 +166,14 @@ export async function resolveFields(fields: FieldInfo[], deps: PipelineDeps): Pr
       return { ...base, optionIndex: m.index, value: f.options[m.index].label, confidence: conf, status: statusFor(conf, meta.forceReview) };
     }
 
+    // Questions that shouldn't be left blank ("How did you hear about us?" → "Other").
+    const def = meta.key ? FIELD_KEY_MAP[meta.key] : undefined;
+    const fb = def && (def.fallbacks || def.anyOption) ? fallbackOption(f.options, def.fallbacks ?? [], !!def.anyOption) : null;
+    if (fb) {
+      const label = f.options[fb.index].label;
+      return { ...base, optionIndex: fb.index, value: label, status: 'review', note: fallbackNote(valueText(want), label) };
+    }
+
     const picked = await ask((c) => chooseOption(f, valueText(want), c));
     if (picked && picked.value !== null && picked.confidence >= review) {
       const conf = Math.min(meta.confidence, picked.confidence);
@@ -192,10 +232,48 @@ export async function resolveFields(fields: FieldInfo[], deps: PipelineDeps): Pr
   const results = new Map<string, Resolution>();
   const leftovers: FieldInfo[] = [];
 
+  /** A multi-choice prompt that already holds some pills (skills Workday guessed from the resume) still gets the rest of a list. */
+  const addsToList = (f: FieldInfo) => {
+    if (f.kind !== 'combobox' || !f.multiple) return false;
+    const key = matchRules(f)?.key;
+    return !!key && FIELD_KEY_MAP[key]?.valueType === 'list';
+  };
+
+  /**
+   * A field that already has a value. Sites that read the uploaded resume fill fields themselves,
+   * often wrongly: where the profile has a different answer and the user hasn't touched the field,
+   * the profile's answer replaces the site's, for review. Repeating entries still count, so the
+   * next empty "Work Experience" block gets the next job, not the first one again.
+   */
+  const prefilled = async (f: FieldInfo): Promise<Resolution> => {
+    const keep: Resolution = { fieldId: f.id, source: 'none', confidence: 1, status: 'prefilled' };
+    const rule = matchRules(f);
+    if (!rule) return keep;
+    const def = FIELD_KEY_MAP[rule.key];
+    const correctable =
+      settings.fixSiteValues && !f.touched && f.current !== undefined && SITE_FILLED.includes(def.category) && (def.valueType === 'text' || def.valueType === 'date');
+    if (!correctable) {
+      if (def.repeat) nextIndex(rule.key);
+      return { ...keep, key: rule.key };
+    }
+    const index = counters.get(rule.key) ?? 0;
+    const r = await fromKey(f, rule.key, { source: 'rule', confidence: 1, forceReview: true });
+    if (!r || r.value === undefined || r.status === 'needs' || r.status === 'skipped') {
+      // An entry beyond the profile's jobs or schools came from the site, not the user's profile.
+      const entries = def.category === 'experience' ? profile.experience.length : profile.education.length;
+      if (ENTRY_NAMES.includes(rule.key) && index >= entries) {
+        return { ...keep, key: rule.key, status: 'review', note: 'This entry isn’t in your profile; the site may have added it from your resume. Delete it if it’s wrong' };
+      }
+      return { ...keep, key: rule.key };
+    }
+    if (agrees(f.current!, r.value)) return { ...keep, key: rule.key };
+    return { ...r, status: 'review', note: `Replaced “${truncate(f.current!, 80)}”, which the site filled in, with your profile` };
+  };
+
   // Tiers 2–3: rules, then the answer bank.
   for (const f of fields) {
-    if (f.hasValue && !settings.overwriteFilled) {
-      results.set(f.id, { fieldId: f.id, source: 'none', confidence: 1, status: 'prefilled' });
+    if (f.hasValue && !settings.overwriteFilled && !addsToList(f)) {
+      results.set(f.id, await prefilled(f));
       continue;
     }
     const rule = matchRules(f);

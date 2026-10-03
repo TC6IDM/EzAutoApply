@@ -190,6 +190,114 @@ export function mountWorkdaySearchPrompt(container: HTMLElement, label: string, 
 }
 
 /**
+ * Workday's search prompt as live "My Experience" pages build it (School, Field of Study,
+ * Skills): a plain input in a multiSelectContainer, with no role or automation id of its own.
+ * Enter searches; the results come back `delay` ms later in a popup at the end of <body>,
+ * replacing whatever list was showing; a lone result is chosen without asking; clicks only
+ * register on a result's inner promptOption; each choice becomes a selectedItem pill in a
+ * listbox of its own. `focusList` imitates a list that shows up on focus before any search.
+ */
+let promptCount = 0;
+export function mountWorkdayPrompt(
+  container: HTMLElement,
+  label: string,
+  items: string[],
+  opts: { field?: string; delay?: number; multi?: boolean; pills?: string[]; focusList?: string[] } = {},
+) {
+  const field = opts.field ?? `prompt${++promptCount}`;
+  const id = `education-${promptCount}--${field}`;
+  const wrap = document.createElement('div');
+  wrap.innerHTML = `
+    <div data-automation-id="formField-${field}">
+      <label for="${id}"><span>${label}</span></label>
+      <div><div data-automation-id="multiSelectContainer" data-uxi-widget-type="multiselect">
+        <div data-automation-id="multiselectInputContainer">
+          <div data-automation-hiddensearch="false">
+            <input enterkeyhint="search" placeholder="Search" autocomplete="off" data-uxi-widget-type="selectinput" id="${id}">
+            <div data-automation-id="promptSelectionLabel"></div>
+            <div aria-hidden="true" data-automation-id="promptAriaInstruction">0 items selected</div>
+          </div>
+          <span data-automation-id="promptIcon" aria-hidden="true"></span>
+        </div>
+      </div></div>
+    </div>`;
+  container.appendChild(wrap);
+  const input = wrap.querySelector('input')!;
+  const box = wrap.querySelector('[data-automation-id="multiselectInputContainer"]')!;
+  const chosen: string[] = [...(opts.pills ?? [])];
+  let popup: HTMLElement | null = null;
+  let lastRows: string[] = [];
+
+  const renderPills = () => {
+    box.querySelector('[data-automation-id="selectedItemList"]')?.remove();
+    if (!chosen.length) return;
+    const ul = document.createElement('ul');
+    ul.setAttribute('role', 'listbox');
+    ul.setAttribute('data-automation-id', 'selectedItemList');
+    ul.innerHTML = chosen
+      .map((c) => `<li role="presentation"><div data-automation-id="selectedItem" role="option" aria-selected="false" title="${c}"><p data-automation-id="promptOption" data-automation-label="${c}">${c}</p></div></li>`)
+      .join('');
+    box.append(ul);
+  };
+  const close = () => {
+    popup?.remove();
+    popup = null;
+  };
+  const show = (rows: string[]) => {
+    close();
+    lastRows = rows;
+    popup = document.createElement('div');
+    popup.setAttribute('data-automation-widget', 'wd-popup');
+    const ul = document.createElement('ul');
+    ul.setAttribute('role', 'listbox');
+    if (!rows.length) ul.innerHTML = '<li>No Items.</li>';
+    for (const r of rows) {
+      const li = document.createElement('li');
+      li.setAttribute('role', 'option');
+      li.setAttribute('aria-selected', String(chosen.includes(r)));
+      const inner = document.createElement('div');
+      inner.setAttribute('data-automation-id', 'promptOption');
+      inner.setAttribute('data-automation-label', r);
+      inner.textContent = r;
+      inner.addEventListener('click', () => choose(r));
+      li.append(inner);
+      ul.append(li);
+    }
+    popup.append(ul);
+    document.body.append(popup);
+  };
+  const choose = (item: string) => {
+    const at = chosen.indexOf(item);
+    if (!opts.multi) chosen.splice(0, chosen.length, item);
+    else if (at >= 0) chosen.splice(at, 1);
+    else chosen.push(item);
+    renderPills();
+    input.value = '';
+    if (opts.multi && popup) show(lastRows);
+    else close();
+  };
+
+  renderPills();
+  if (opts.focusList) {
+    input.addEventListener('focus', () => setTimeout(() => !popup && show(opts.focusList!), 50));
+    input.addEventListener('mousedown', () => show(opts.focusList!));
+  }
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') close();
+    if (e.key !== 'Enter') return;
+    const q = input.value.trim().toLowerCase();
+    const rows = items.filter((i) => i.toLowerCase().includes(q));
+    setTimeout(() => {
+      if (rows.length === 1 && !chosen.includes(rows[0])) {
+        close();
+        choose(rows[0]);
+      } else show(rows);
+    }, opts.delay ?? 300);
+  });
+  return { input, chosen: () => [...chosen] };
+}
+
+/**
  * Workday's "Select One" dropdown, at its most awkward: it toggles open on
  * mousedown *and* on click (so a full click leaves it closed), ignores clicks on
  * options, and selects with the keyboard: type-ahead, then Enter. `rendered`
