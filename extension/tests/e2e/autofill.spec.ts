@@ -76,7 +76,8 @@ async function autofill(worker: Worker, url: string): Promise<void> {
 async function classifierOff(panel: Page): Promise<void> {
   await panel.getByRole('tab', { name: 'Settings' }).click();
   await panel.getByLabel('Classifier', { exact: true }).selectOption('Off (rules and saved answers only)');
-  await panel.getByRole('button', { name: 'Save settings' }).click();
+  // Settings save as they change; the header reads the stored setting back.
+  await expect(panel.getByRole('button', { name: 'Classifier off' })).toBeVisible();
   await panel.getByRole('tab', { name: 'Apply' }).click();
 }
 
@@ -90,7 +91,7 @@ async function importResume(panel: Page): Promise<void> {
   await panel.getByLabel('Countries you can work in without sponsorship').fill('United States');
   await panel.getByRole('group', { name: 'Will you need visa sponsorship?' }).getByText('No', { exact: true }).click();
   await panel.getByRole('button', { name: 'Save profile' }).click();
-  await expect(panel.getByText('Saved ✓')).toBeVisible();
+  await expect(panel.getByText('Saved', { exact: true })).toBeVisible();
 }
 
 test('imports a resume, autofills a form across frames, and learns a new answer', async ({ context, worker, extensionId, site }) => {
@@ -120,10 +121,9 @@ test('imports a resume, autofills a form across frames, and learns a new answer'
   await expect(frame.locator('#gh')).toHaveValue('https://github.com/jrivera');
   await expect(frame.locator('#years')).toHaveValue('5+');
 
-  // The open-ended question is outlined for the user and left empty.
+  // The open-ended question is left empty for the user, and nothing is drawn around the fields.
   await expect(form.locator('#why')).toHaveValue('');
-  await expect(form.locator('#why')).toHaveAttribute('data-ezaa-status', 'needs');
-  await expect(form.locator('#first_name')).toHaveAttribute('data-ezaa-status', 'filled');
+  await expect(form.locator('[data-ezaa-status]')).toHaveCount(0);
   expect(await form.evaluate(() => document.body.dataset.submitted)).toBeUndefined();
 
   // Answer it the way the side panel does, and remember it.
@@ -148,7 +148,6 @@ test('imports a resume, autofills a form across frames, and learns a new answer'
   await form.reload();
   await autofill(worker, url);
   await expect(form.locator('#why')).toHaveValue('I like what Initech is building.');
-  await expect(form.locator('#why')).toHaveAttribute('data-ezaa-status', 'filled');
 });
 
 test('the side panel lists what needs an answer', async ({ context, worker, extensionId, site }) => {
@@ -191,7 +190,7 @@ test('sorts a dropped document by type and uploads it under a standard name', as
     return dt;
   });
   await panel.locator('.drop-main').dispatchEvent('drop', { dataTransfer: drop });
-  await expect(panel.getByText('acme-application.txt → cover letter')).toBeVisible();
+  await expect(panel.getByText('acme-application.txt added to Cover letters')).toBeVisible();
   const coverLetters = panel.locator('details', { hasText: 'Cover letters' });
   await expect(coverLetters.getByText('Jordan_Rivera_Cover_Letter.txt')).toBeVisible();
   await expect(panel.getByText('Jordan_Rivera_Resume.txt')).toBeVisible();
@@ -235,7 +234,7 @@ test('adds a LinkedIn data export to a profile imported from a resume', async ({
   await expect(panel.getByLabel('Job title').nth(2)).toHaveValue('Junior Developer');
   await expect(panel.getByLabel('Skills', { exact: true })).toHaveValue('TypeScript, Python, React, PostgreSQL, Go');
   await panel.getByRole('button', { name: 'Save profile' }).click();
-  await expect(panel.getByText('Saved ✓')).toBeVisible();
+  await expect(panel.getByText('Saved', { exact: true })).toBeVisible();
 });
 
 test('fills a Workday-style application: account, dropdowns, work history, resume, and asks about the rest', async ({ context, worker, extensionId, site }) => {
@@ -250,12 +249,14 @@ test('fills a Workday-style application: account, dropdowns, work history, resum
   await panel.locator('summary', { hasText: 'Job preferences' }).click();
   await panel.getByLabel('How you usually find jobs').fill('LinkedIn');
   await panel.getByRole('button', { name: 'Save profile' }).click();
-  await expect(panel.getByText('Saved ✓').first()).toBeVisible();
+  await expect(panel.getByText('Saved', { exact: true })).toBeVisible();
   await panel.locator('summary', { hasText: 'Job site accounts' }).click();
   await panel.getByLabel('Password', { exact: true }).fill('Tr0ub4dor&3xyz');
   // The test page is on 127.0.0.1, not a known job site, so allow it explicitly.
   await panel.getByLabel(/Also fill it on sites that aren/).check();
-  await panel.getByRole('button', { name: 'Save password' }).click();
+  // The password is saved with the profile.
+  await panel.getByRole('button', { name: 'Save profile' }).click();
+  await expect(panel.getByText('Saved', { exact: true })).toBeVisible();
 
   const form = await context.newPage();
   const url = `${site}/workday.html`;

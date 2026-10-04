@@ -2,7 +2,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { useEffect, useRef, useState } from 'react';
 import { FILE_NAME_FORMATS, uploadFileName } from '../../core/documents';
 import { type ClassifierSettings, LAYA_DEFAULT_URL, type Settings } from '../../core/types';
-import { db, type ExportFile, exportAll, getProfile, getSettings, importAll, listApplications, saveSettings } from '../../db';
+import { db, type ExportFile, exportAll, getProfile, getSettings, importAll, listApplications, updateSettings } from '../../db';
 import type { Health } from '../App';
 import { send } from '../api';
 import { Banner, Button, Empty, formatDate, Section, SelectInput, TextInput } from '../ui';
@@ -25,6 +25,44 @@ function Toggle(props: { label: string; hint?: string; checked: boolean; onChang
   );
 }
 
+/** A text setting saved when the field loses focus, not on every keystroke. */
+function SettingText(props: { label: string; value: string; onCommit(v: string): void; type?: string; placeholder?: string; hint?: string }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  return (
+    <TextInput
+      label={props.label}
+      type={props.type}
+      placeholder={props.placeholder}
+      hint={props.hint}
+      spellCheck={false}
+      wide
+      value={draft ?? props.value}
+      onChange={setDraft}
+      onBlur={() => {
+        if (draft !== null && draft.trim() !== props.value) props.onCommit(draft.trim());
+        setDraft(null);
+      }}
+    />
+  );
+}
+
+/** A 0–1 confidence threshold, shown and set as a percentage. */
+function Threshold(props: { label: string; hint: string; value: number; min: number; onChange(v: number): void }) {
+  const pct = Math.round(props.value * 100);
+  return (
+    <div className="field threshold">
+      <label>
+        <span className="threshold-head">
+          {props.label}
+          <output>{pct}%</output>
+        </span>
+        <input type="range" min={props.min} max={99} step={1} value={pct} onChange={(e) => props.onChange(Number(e.target.value) / 100)} />
+      </label>
+      <small className="hint">{props.hint}</small>
+    </div>
+  );
+}
+
 function download(name: string, text: string) {
   const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
   const a = document.createElement('a');
@@ -34,41 +72,59 @@ function download(name: string, text: string) {
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
-export function SettingsView(props: { onSaved(): void; health: Health | null }) {
-  const [s, setS] = useState<Settings | null>(null);
-  const [dirty, setDirty] = useState(false);
+/** Settings save as they change. Each change is applied to what's stored, so nothing set elsewhere is lost. */
+export function SettingsView(props: { active: boolean; onSaved(): void; health: Health | null }) {
+  const stored = useLiveQuery(getSettings);
+  /** Shown at once while the write is in flight (and while a slider is being dragged). */
+  const [local, setLocal] = useState<Settings | null>(null);
   const [testing, setTesting] = useState<Health | null | 'busy'>(null);
   const [backupMsg, setBackupMsg] = useState('');
   const importRef = useRef<HTMLInputElement>(null);
+  const lastWrite = useRef<Promise<unknown>>(Promise.resolve());
+  const thresholdTimer = useRef<number | undefined>(undefined);
   const apps = useLiveQuery(() => listApplications(50), [], []);
   const person = useLiveQuery(async () => (await getProfile()).personal, [], null);
 
-  useEffect(() => {
-    getSettings().then(setS);
-  }, []);
+  useEffect(() => setLocal(null), [stored]);
+  useEffect(() => setTesting(null), [props.active]);
+  const s = local ?? stored;
   if (!s) return <div className="view">Loading…</div>;
 
+  const persist = (fn: (x: Settings) => void) => {
+    lastWrite.current = updateSettings(fn)
+      .then(() => send({ type: 'settingsChanged' }).catch(() => {}))
+      .then(() => props.onSaved());
+  };
   const change = (fn: (x: Settings) => void) => {
     const next = structuredClone(s);
     fn(next);
-    setS(next);
-    setDirty(true);
+    setLocal(next);
+    setTesting(null);
+    persist(fn);
   };
-
-  const save = async () => {
-    await saveSettings(s);
-    setDirty(false);
-    await send({ type: 'settingsChanged' }).catch(() => {});
-    props.onSaved();
+  /** Sliders show every step but save once the value stops changing. */
+  const changeThresholds = (auto: number, review: number) => {
+    const next = structuredClone(s);
+    next.classifier.autoThreshold = auto;
+    next.classifier.reviewThreshold = review;
+    setLocal(next);
+    window.clearTimeout(thresholdTimer.current);
+    thresholdTimer.current = window.setTimeout(() => {
+      persist((x) => {
+        x.classifier.autoThreshold = auto;
+        x.classifier.reviewThreshold = review;
+      });
+    }, 300);
   };
 
   const test = async () => {
-    await save();
     setTesting('busy');
+    await lastWrite.current;
     setTesting(await send<Health>({ type: 'classifierHealth' }).catch((e: Error) => ({ ok: false, detail: e.message })));
   };
 
   const c = s.classifier;
+  const status = testing && testing !== 'busy' ? testing : props.health;
   /** Each naming format, shown with the user's own name when the profile has one. */
   const formatLabel = (format: Settings['fileNameFormat']) => {
     if (format === 'original') return 'Keep the original file name';
@@ -103,20 +159,19 @@ export function SettingsView(props: { onSaved(): void; health: Health | null }) 
         {c.provider !== 'none' && (
           <>
             <div className="grid">
-              <TextInput
+              <SettingText
                 label="Server URL"
+                type="url"
                 value={c.baseUrl}
                 placeholder={c.provider === 'laya' ? LAYA_DEFAULT_URL : 'https://… (from your Jev account)'}
-                onChange={(v) => change((x) => (x.classifier.baseUrl = v.trim()))}
-                wide
+                onCommit={(v) => change((x) => (x.classifier.baseUrl = v))}
               />
-              <TextInput
+              <SettingText
                 label="API key"
                 type="password"
                 value={c.apiKey}
                 hint={c.provider === 'laya' ? 'The LAYA_API_KEY you started laya-serve with (optional)' : 'Your Jev API key'}
-                onChange={(v) => change((x) => (x.classifier.apiKey = v.trim()))}
-                wide
+                onCommit={(v) => change((x) => (x.classifier.apiKey = v))}
               />
               {c.provider === 'laya' && (
                 <SelectInput
@@ -127,27 +182,30 @@ export function SettingsView(props: { onSaved(): void; health: Health | null }) 
                 />
               )}
             </div>
-            <div className="grid">
-              <TextInput
-                label="Fill automatically at"
-                type="number"
-                hint="Confidence 0–1. Answers at or above this are filled without asking."
-                value={String(c.autoThreshold)}
-                onChange={(v) => change((x) => (x.classifier.autoThreshold = Math.min(1, Math.max(0, Number(v) || 0))))}
-              />
-              <TextInput
-                label="Fill for review at"
-                type="number"
-                hint="Between this and the line above: filled, but marked for you to check."
-                value={String(c.reviewThreshold)}
-                onChange={(v) => change((x) => (x.classifier.reviewThreshold = Math.min(1, Math.max(0, Number(v) || 0))))}
-              />
-            </div>
+            <Threshold
+              label="Fill automatically at"
+              hint="Answers at least this confident are filled without asking."
+              value={c.autoThreshold}
+              min={30}
+              onChange={(v) => changeThresholds(v, Math.min(c.reviewThreshold, v))}
+            />
+            <Threshold
+              label="Fill for review at"
+              hint="From here up to the line above: filled, but listed under “Check these”."
+              value={c.reviewThreshold}
+              min={30}
+              onChange={(v) => changeThresholds(c.autoThreshold, Math.min(v, c.autoThreshold))}
+            />
             <div className="row">
               <Button onClick={test} disabled={testing === 'busy'}>
-                {testing === 'busy' ? 'Testing…' : 'Save & test connection'}
+                {testing === 'busy' ? 'Testing…' : 'Test connection'}
               </Button>
-              {testing && testing !== 'busy' && <span className={testing.ok ? 'saved' : 'error-text'}>{testing.detail}</span>}
+              {status && !status.off && testing !== 'busy' && (
+                <span className={`status-line ${status.ok ? 'ok' : 'down'}`} role="status">
+                  <span className="dot" aria-hidden="true" />
+                  {status.detail}
+                </span>
+              )}
             </div>
             {c.provider === 'laya' && props.health && !props.health.ok && (
               <Banner tone="info">
@@ -198,15 +256,11 @@ export function SettingsView(props: { onSaved(): void; health: Health | null }) 
         />
       </Section>
 
-      <div className="savebar">
-        {dirty && <span className="hint">Unsaved changes</span>}
-        <Button kind="primary" disabled={!dirty} onClick={save}>
-          Save settings
-        </Button>
-      </div>
-
       <Section title="Backup" defaultOpen={false}>
-        <p className="hint">Your data lives only in this browser profile. Export a backup to move it or keep it safe.</p>
+        <p className="hint">
+          Your data lives only in this browser profile. A backup holds your profile, documents, saved answers and settings, but not the job-site
+          password.
+        </p>
         <div className="row">
           <Button
             onClick={async () => {
@@ -229,7 +283,6 @@ export function SettingsView(props: { onSaved(): void; health: Health | null }) 
               try {
                 await importAll(JSON.parse(await f.text()) as ExportFile);
                 setBackupMsg('Backup imported.');
-                setS(await getSettings());
               } catch (err) {
                 setBackupMsg(`Import failed: ${(err as Error).message}`);
               }
@@ -244,7 +297,6 @@ export function SettingsView(props: { onSaved(): void; health: Health | null }) 
             if (!confirm('Delete your profile, documents, saved answers and history from this browser? Export a backup first if unsure.')) return;
             await Promise.all([db.kv.clear(), db.documents.clear(), db.answers.clear(), db.applications.clear()]);
             setBackupMsg('All data deleted.');
-            setS(await getSettings());
           }}
         >
           Delete all data
@@ -253,7 +305,7 @@ export function SettingsView(props: { onSaved(): void; health: Health | null }) 
 
       <Section title="Recent applications" count={apps.length} defaultOpen={false}>
         {apps.length ? (
-          <ul className="history">
+          <ul className="history rows">
             {apps.map((a) => (
               <li key={a.id}>
                 <a href={a.url} target="_blank" rel="noreferrer">

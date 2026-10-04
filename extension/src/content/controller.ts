@@ -19,7 +19,7 @@ import {
   type DocumentResponse,
 } from '../messages';
 import type { FloatingUi } from './floatingUi';
-import { clearAllHighlights, flash, highlight } from './highlight';
+import { flash } from './highlight';
 
 export type Send = (msg: ContentToBackground) => Promise<unknown>;
 
@@ -102,7 +102,7 @@ async function settle(doc: Document, quietMs = 1500, maxMs = 15_000): Promise<vo
 
 /**
  * Runs in every frame. Scans the frame's fields, resolves them through the
- * pipeline, fills them, outlines them and reports to the background.
+ * pipeline, fills them and reports to the background.
  */
 export class AutofillController {
   private fields = new Map<string, FieldDescriptor>();
@@ -320,7 +320,6 @@ export class AutofillController {
       current: readValue(f),
       debug: status === 'needs' || status === 'review' ? debugHtml(f) : undefined,
     });
-    highlight(f, status);
     // Passwords typed on the page are never reported or offered for "remember this answer".
     if (status !== 'filled' && status !== 'prefilled' && f.kind !== 'password') this.watch(f);
   }
@@ -342,7 +341,6 @@ export class AutofillController {
         // Still what was filled: a late event from the fill, not the user.
         if (report.current !== undefined && shown(v) === shown(report.current)) return;
         report.userValue = v;
-        highlight(f, 'user');
         this.send({ type: 'fieldEdited', fieldId: f.id, userValue: v }).catch(() => {});
       }, 400);
     };
@@ -437,8 +435,8 @@ export class AutofillController {
     return true;
   }
 
-  clearHighlights(): void {
-    clearAllHighlights(document);
+  /** Forget this page's results (the side panel cleared them). */
+  clearReports(): void {
     this.watchers.abort();
     this.reports.clear();
     this.fields.clear();

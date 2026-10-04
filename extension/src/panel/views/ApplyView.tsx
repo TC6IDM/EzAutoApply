@@ -1,13 +1,14 @@
 import { useLiveQuery } from 'dexie-react-hooks';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { FIELD_KEY_MAP } from '../../core/fieldKeys';
 import { type AnswerValue, DOC_KIND_LABELS, type DocKind, type DocumentMeta } from '../../core/types';
 import { hasProfile, listDocuments, saveAnswer } from '../../db';
 import type { FieldReport, FillStatus } from '../../fill/types';
 import type { AdvanceTarget, SaveAnswerRequest } from '../../messages';
-import type { View } from '../App';
+import type { Goto } from '../App';
 import { type ActiveTab, send, setDocSelection, useTabState } from '../api';
-import { Banner, Button, Empty, Section } from '../ui';
+import { LocateIcon } from '../icons';
+import { Banner, Button, Empty, Saved, Section } from '../ui';
 
 function hostOf(url: string): string {
   try {
@@ -33,12 +34,13 @@ function shown(v: AnswerValue | undefined): string {
 /** An input matching the field's kind, for answering it from the panel. */
 function AnswerInput(props: { field: FieldReport; value: AnswerValue; onChange(v: AnswerValue): void }) {
   const { field, value, onChange } = props;
+  const name = useId();
   if (field.kind === 'checkbox') {
     return (
       <div className="segmented" role="radiogroup" aria-label={field.label}>
         {[true, false].map((b) => (
           <label key={String(b)} className={value === b ? 'on' : ''}>
-            <input type="radio" checked={value === b} onChange={() => onChange(b)} />
+            <input type="radio" name={name} checked={value === b} onChange={() => onChange(b)} />
             {b ? 'Check it' : 'Leave unchecked'}
           </label>
         ))}
@@ -83,7 +85,7 @@ function AnswerInput(props: { field: FieldReport; value: AnswerValue; onChange(v
       type={field.kind === 'number' ? 'number' : field.kind === 'date' ? 'date' : 'text'}
       value={String(value)}
       onChange={(e) => onChange(e.target.value)}
-      placeholder={field.kind === 'combobox' ? 'Type the option to pick' : ''}
+      placeholder={field.kind === 'combobox' ? 'Type the option to pick…' : ''}
     />
   );
 }
@@ -108,21 +110,24 @@ function QuestionTitle(props: { field: FieldReport; tabId: number; compact?: boo
   const jump = () => {
     send({ type: 'focusField', tabId: props.tabId, frameId: field.frameId, fieldId: field.id }).catch(() => {});
   };
+  const label = field.label.trimEnd();
+  const marked = /\*$/.test(label);
+  const lastWord = label.match(/\S{1,30}$/)?.[0] ?? '';
   return (
     <button type="button" className={`q q-link${props.compact ? ' compact' : ''}`} onClick={jump} title="Show this question on the page">
-      {field.label}
-      {field.required && !/\*\s*$/.test(field.label) && (
-        <span className="req" title="Required">
-          {' '}
-          *
-        </span>
-      )}
+      {label.slice(0, label.length - lastWord.length)}
+      <span className="q-end">
+        {lastWord}
+        {field.required && !marked && <span aria-hidden="true"> *</span>}
+        {!props.compact && <LocateIcon className="q-icon" />}
+      </span>
+      {field.required && <span className="sr-only"> (required)</span>}
     </button>
   );
 }
 
 /** One field that needs an answer (or a second look). */
-function FieldCard(props: { field: FieldReport; tabId: number; host: string; goto(v: View): void }) {
+function FieldCard(props: { field: FieldReport; tabId: number; host: string; goto: Goto }) {
   const { field, tabId, host } = props;
   const [editing, setEditing] = useState(field.status === 'needs' || field.status === 'skipped');
   const [value, setValue] = useState<AnswerValue>(field.current !== undefined && !isBlank(field.current) ? field.current : emptyAnswer(field));
@@ -173,7 +178,7 @@ function FieldCard(props: { field: FieldReport; tabId: number; host: string; got
         <QuestionTitle field={field} tabId={tabId} />
         {field.status === 'filled' ? <p className="val">Filled with your job-site account password</p> : <p className="note">{field.note ?? 'Not filled.'}</p>}
         {field.status !== 'filled' && (
-          <Button small onClick={() => props.goto('profile')}>
+          <Button small onClick={() => props.goto('profile', { section: 'account' })}>
             Set account password
           </Button>
         )}
@@ -216,7 +221,7 @@ function FieldCard(props: { field: FieldReport; tabId: number; host: string; got
         </p>
       )}
       {field.note && <p className="note">{field.note}</p>}
-      {keyTitle && field.status === 'needs' && !typed && <p className="note">Recognized as: {keyTitle}</p>}
+      {keyTitle && field.status === 'needs' && !typed && !field.note && <p className="note">Recognized as: {keyTitle}</p>}
 
       {editing ? (
         <div className="answer">
@@ -245,7 +250,7 @@ function FieldCard(props: { field: FieldReport; tabId: number; host: string; got
       ) : (
         <div className="row">
           {state === 'saved' ? (
-            <span className="saved">Saved ✓</span>
+            <Saved />
           ) : typed ? (
             <Button kind="primary" small onClick={() => rememberCurrent(field.userValue!)}>
               Remember this answer
@@ -290,10 +295,11 @@ function CopyDetails(props: { field: FieldReport; host: string }) {
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
+  // A reporting tool, so it sits quietly at the end of the row.
   return (
-    <Button kind="ghost" small onClick={copy} title="Copy what EzAutoApply saw for this field (no values) to report a problem">
-      {copied ? 'Copied ✓' : 'Copy details'}
-    </Button>
+    <button type="button" className="link-btn quiet push-end" onClick={copy} title="Copy what EzAutoApply saw for this field (no values) to report a problem">
+      {copied ? 'Copied' : 'Copy details'}
+    </button>
   );
 }
 
@@ -327,16 +333,17 @@ const ORDER: FillStatus[] = ['needs', 'review', 'skipped', 'filled', 'prefilled'
  */
 function AdvanceButton(props: { tabId: number; enabled: boolean; onError(message: string): void }) {
   const { tabId, enabled, onError } = props;
-  const [target, setTarget] = useState<AdvanceTarget | null>(null);
+  /** undefined while still looking; null when the page has nothing to press. */
+  const [target, setTarget] = useState<AdvanceTarget | null | undefined>(undefined);
   const [pressing, setPressing] = useState(false);
 
   useEffect(() => {
-    setTarget(null);
+    setTarget(undefined);
     if (!enabled) return;
     let alive = true;
     const look = () => {
       send<AdvanceTarget | null>({ type: 'findAdvance', tabId })
-        .then((t) => alive && setTarget(t))
+        .then((t) => alive && setTarget(t ?? null))
         .catch(() => alive && setTarget(null));
     };
     look();
@@ -353,7 +360,7 @@ function AdvanceButton(props: { tabId: number; enabled: boolean; onError(message
     try {
       const out = await send<{ ok: boolean; reason?: string }>({ type: 'advance', tabId, frameId: target.frameId });
       if (!out?.ok) onError(out?.reason ?? 'Couldn’t press that button');
-      setTarget(null);
+      setTarget(undefined);
     } catch (e) {
       onError((e as Error).message);
     } finally {
@@ -361,18 +368,28 @@ function AdvanceButton(props: { tabId: number; enabled: boolean; onError(message
     }
   };
 
+  // The label is the page's own button text, of any length, so it's cut to one line (full text in the title).
   return (
     <Button
+      className="advance"
       onClick={advance}
       disabled={!target || pressing}
-      title={target ? `Presses the page’s “${target.label}” button` : 'Nothing on this page to sign in, continue or submit with'}
+      title={target ? `Presses the page’s “${target.label}” button` : undefined}
     >
-      {target ? `Advance: ${target.label}` : 'Advance'}
+      {target ? `Advance: ${target.label}` : target === null ? 'Advance: no Next or Submit button here' : 'Advance'}
     </Button>
   );
 }
 
-export function ApplyView(props: { tab: ActiveTab | null; goto(v: View, opts?: { importDocId?: string }): void }) {
+/** "1 needs you", "2 need you". */
+function countLabel(status: FillStatus, n: number): string {
+  if (status === 'needs') return n === 1 ? 'needs you' : 'need you';
+  if (status === 'review') return 'to check';
+  if (status === 'prefilled') return 'already filled';
+  return 'filled';
+}
+
+export function ApplyView(props: { tab: ActiveTab | null; goto: Goto; active: boolean }) {
   const { tab, goto } = props;
   const docs = useLiveQuery(listDocuments, [], [] as DocumentMeta[]);
   const profileSaved = useLiveQuery(hasProfile, [], true);
@@ -413,20 +430,19 @@ export function ApplyView(props: { tab: ActiveTab | null; goto(v: View, opts?: {
   return (
     <div className="view apply">
       {!profileSaved && (
-        <Banner tone="info">
-          <strong>Welcome!</strong> Start by importing your resume. EzAutoApply parses it into your profile, which you can review and edit.
-          <div className="row">
-            <Button kind="primary" small onClick={() => goto('profile')}>
-              Import my resume
-            </Button>
-          </div>
-        </Banner>
+        <div className="start">
+          <h2>Start with your resume</h2>
+          <p>It becomes the profile every application is filled from. You can check and edit everything before it’s saved.</p>
+          <Button kind="primary" onClick={() => goto('profile')}>
+            Import my resume
+          </Button>
+        </div>
       )}
 
       <div className="page-card">
         <div className="page-title" title={tab?.url}>
           {tab?.title || 'No page'}
-          <small>{host}</small>
+          {webPage && <small>{host}</small>}
         </div>
         {docs.length > 0 && (
           <div className="doc-picks">
@@ -444,14 +460,17 @@ export function ApplyView(props: { tab: ActiveTab | null; goto(v: View, opts?: {
         <Button kind="primary" onClick={autofill} disabled={!webPage || busy}>
           {busy ? 'Filling…' : fields.length ? 'Autofill again' : 'Autofill this page'}
         </Button>
-        {tab && <AdvanceButton tabId={tab.id} enabled={webPage && !busy} onError={setError} />}
+        {tab && webPage && <AdvanceButton tabId={tab.id} enabled={props.active && !busy} onError={setError} />}
         {!webPage && <p className="hint">Open a job application in this tab to autofill it.</p>}
         {fields.length > 0 && (
           <p className="counts" aria-live="polite">
-            <span className="c filled">{counts.filled} filled</span>
-            <span className="c review">{counts.review} to check</span>
-            <span className="c needs">{counts.needs} need you</span>
-            {counts.prefilled > 0 && <span className="c prefilled">{counts.prefilled} already filled</span>}
+            {(['needs', 'review', 'filled', 'prefilled'] as FillStatus[])
+              .filter((s) => counts[s] > 0)
+              .map((s) => (
+                <span key={s} className={`c ${s}`}>
+                  {counts[s]} {countLabel(s, counts[s])}
+                </span>
+              ))}
           </p>
         )}
       </div>
@@ -480,7 +499,7 @@ export function ApplyView(props: { tab: ActiveTab | null; goto(v: View, opts?: {
         <>
           <Section title="Needs your answer" count={counts.needs} defaultOpen>
             {counts.needs ? (
-              <ul className="cards">
+              <ul className="cards rows">
                 {byStatus('needs').map((f) => (
                   <FieldCard key={`${f.frameId}:${f.id}`} field={f} tabId={tab.id} host={host} goto={goto} />
                 ))}
@@ -491,7 +510,7 @@ export function ApplyView(props: { tab: ActiveTab | null; goto(v: View, opts?: {
           </Section>
           {counts.review > 0 && (
             <Section title="Check these" count={counts.review} defaultOpen>
-              <ul className="cards">
+              <ul className="cards rows">
                 {byStatus('review').map((f) => (
                   <FieldCard key={`${f.frameId}:${f.id}`} field={f} tabId={tab.id} host={host} goto={goto} />
                 ))}
@@ -500,7 +519,7 @@ export function ApplyView(props: { tab: ActiveTab | null; goto(v: View, opts?: {
           )}
           {typedElsewhere.length > 0 && (
             <Section title="Changed on the page" count={typedElsewhere.length}>
-              <ul className="cards">
+              <ul className="cards rows">
                 {typedElsewhere.map((f) => (
                   <FieldCard key={`${f.frameId}:${f.id}`} field={f} tabId={tab.id} host={host} goto={goto} />
                 ))}
@@ -509,7 +528,7 @@ export function ApplyView(props: { tab: ActiveTab | null; goto(v: View, opts?: {
           )}
           {counts.skipped > 0 && (
             <Section title="Optional, left blank" count={counts.skipped} defaultOpen={false}>
-              <ul className="cards">
+              <ul className="cards rows">
                 {byStatus('skipped').map((f) => (
                   <FieldCard key={`${f.frameId}:${f.id}`} field={f} tabId={tab.id} host={host} goto={goto} />
                 ))}
@@ -526,7 +545,7 @@ export function ApplyView(props: { tab: ActiveTab | null; goto(v: View, opts?: {
               ))}
             </ul>
           </Section>
-          <p className="hint center">EzAutoApply never submits. Review the page, then submit it yourself.</p>
+          <p className="hint center">EzAutoApply never submits on its own. Review the page, then submit it yourself or press Advance.</p>
         </>
       )}
     </div>

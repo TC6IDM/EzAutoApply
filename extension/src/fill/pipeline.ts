@@ -286,7 +286,7 @@ export async function resolveFields(fields: FieldInfo[], deps: PipelineDeps): Pr
       }
       const saved = await fromBank(f);
       const def = FIELD_KEY_MAP[rule.key];
-      results.set(f.id, saved ?? unresolved(f, rule.key, `Add your ${def.title.toLowerCase()} to your profile, or answer here`));
+      results.set(f.id, saved ?? unresolved(f, rule.key, `Your profile has no “${def.title}” yet. Answer here, or add it on the Profile tab.`));
       continue;
     }
     const saved = await fromBank(f);

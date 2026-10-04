@@ -7,6 +7,12 @@
       "skillPath": "skills/chrome-extensions/SKILL.md",
       "computedHash": "4b7e7beb7711c75ba267dcd5e3483d56aaa49d4670db88fd8619afea970cbccc"
     },
+    "impeccable": {
+      "source": "pbakaus/impeccable",
+      "sourceType": "github",
+      "skillPath": ".agents/skills/impeccable/SKILL.md",
+      "computedHash": "9290e72b74d64023803957614a6c773c4f45deefd444ce667e258f843ff69980"
+    },
     "playwright-best-practices": {
       "source": "currents-dev/playwright-best-practices-skill",
       "sourceType": "github",

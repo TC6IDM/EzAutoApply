@@ -123,8 +123,9 @@ export class SystemOneClient {
     return out;
   }
 
-  async health(timeoutMs = 4000): Promise<{ ok: boolean; detail: string }> {
-    if (this.settings.provider === 'none') return { ok: false, detail: 'Classifier disabled' };
+  /** `off` means the user turned the classifier off, as opposed to it being unreachable. */
+  async health(timeoutMs = 4000): Promise<{ ok: boolean; off?: boolean; detail: string }> {
+    if (this.settings.provider === 'none') return { ok: false, off: true, detail: 'Classifier disabled' };
     if (this.settings.provider === 'jev') {
       // Jev has no public health route; a tiny prediction proves the key works.
       try {

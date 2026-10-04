@@ -219,7 +219,7 @@ async function handlePanel(msg: PanelToBackground): Promise<unknown> {
       await updateTab(msg.tabId, (s) => {
         s.reports = {};
       });
-      await toTab(msg.tabId, { type: 'clearHighlights' }).catch(() => {});
+      await toTab(msg.tabId, { type: 'clearReports' }).catch(() => {});
       return null;
     case 'setDocSelection':
       await updateTab(msg.tabId, (s) => {

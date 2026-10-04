@@ -1,34 +1,34 @@
-// Draws the extension icon (a lightning bolt on a rounded square) into
-// public/icon/{16,32,48,128}.png. Dependency-free: rasterizes with 4x4
-// supersampling and writes PNGs with node:zlib. Run: node scripts/make-icons.mjs
+// Draws the extension icon (a text field with typed text and a caret, on a
+// rounded square) into public/icon/{16,32,48,128}.png.
+// Dependency-free: rasterizes with 4x4 supersampling and writes PNGs with
+// node:zlib. Run: node scripts/make-icons.mjs
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deflateSync } from 'node:zlib';
 
 const OUT = join(dirname(fileURLToPath(import.meta.url)), '..', 'public', 'icon');
-const BG = [36, 86, 214];
-const FG = [255, 255, 255];
+// The panel's accent, oklch(50.5% 0.19 264), and its text-on-accent colour.
+const BG = [41, 89, 207];
+const FG = [250, 252, 255];
 
-// Lightning bolt in a 0..1 unit square.
-const BOLT = [
-  [0.58, 0.12], [0.26, 0.56], [0.47, 0.56], [0.4, 0.88], [0.74, 0.42], [0.53, 0.42], [0.62, 0.12],
-];
-
-function inPolygon(x, y, poly) {
-  let inside = false;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const [xi, yi] = poly[i];
-    const [xj, yj] = poly[j];
-    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
-  }
-  return inside;
+function inRoundedRect(x, y, x0, y0, x1, y1, r) {
+  if (x < x0 || x > x1 || y < y0 || y > y1) return false;
+  const cx = Math.min(Math.max(x, x0 + r), x1 - r);
+  const cy = Math.min(Math.max(y, y0 + r), y1 - r);
+  return (x - cx) ** 2 + (y - cy) ** 2 <= r * r;
 }
 
-function inRoundedSquare(x, y, r) {
-  const cx = Math.min(Math.max(x, r), 1 - r);
-  const cy = Math.min(Math.max(y, r), 1 - r);
-  return (x - cx) ** 2 + (y - cy) ** 2 <= r * r;
+const inRoundedSquare = (x, y, r) => inRoundedRect(x, y, 0, 0, 1, 1, r);
+
+// A text field in a 0..1 unit square: typed text, then a text caret (I-beam).
+const STROKE = 0.065;
+
+function inMark(x, y) {
+  const field = inRoundedRect(x, y, 0.14, 0.32, 0.86, 0.68, 0.1) && !inRoundedRect(x, y, 0.14 + STROKE, 0.32 + STROKE, 0.86 - STROKE, 0.68 - STROKE, 0.04);
+  const text = inRoundedRect(x, y, 0.25, 0.45, 0.5, 0.55, 0.05);
+  const beam = (x >= 0.6 && x <= 0.66 && y >= 0.22 && y <= 0.78) || ((y >= 0.22 && y <= 0.27) || (y >= 0.73 && y <= 0.78)) && x >= 0.54 && x <= 0.72;
+  return field || text || beam;
 }
 
 function crc32(buf) {
@@ -64,7 +64,7 @@ function png(size) {
           const x = (px + (sx + 0.5) / S) / size;
           const y = (py + (sy + 0.5) / S) / size;
           if (!inRoundedSquare(x, y, 0.22)) continue;
-          if (inPolygon(x, y, BOLT)) fg++;
+          if (inMark(x, y)) fg++;
           else bg++;
         }
       }

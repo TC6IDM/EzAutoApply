@@ -9,13 +9,15 @@ import {
   type Profile,
   type Project,
 } from '../../core/profile';
-import { addDocument, getAccountPassword, getDocument, getProfile, getSettings, hasProfile, saveAccountPassword, saveProfile, saveSettings } from '../../db';
+import { addDocument, getAccountPassword, getDocument, getProfile, getSettings, hasProfile, saveAccountPassword, saveProfile, updateSettings } from '../../db';
 import { extractLines, fileKindOf } from '../../parse/extract';
 import { isLinkedInExport, isLinkedInPdf, type LinkedInImport, parseLinkedInExport, parseLinkedInPdf, readExportFiles } from '../../parse/linkedin';
 import { mergeParsed, type ParsedProfile } from '../../parse/merge';
 import { parseResume, type RawSection } from '../../parse/resume';
+import type { GotoOptions } from '../App';
 import { classifyHeading } from '../api';
-import { Banner, Button, DropZone, Empty, ListInput, Section, SelectInput, TextInput, TriInput } from '../ui';
+import { CheckIcon, CircleIcon, PlusIcon } from '../icons';
+import { Banner, Button, DropZone, Empty, ListInput, Saved, Section, SelectInput, TextInput, TriInput } from '../ui';
 
 const GENDERS = ['Male', 'Female', 'Non-binary', DECLINE];
 const RACES = [
@@ -73,12 +75,13 @@ async function mergeLinkedIn(result: LinkedInImport, source: string, current: Pr
   return { profile, note: note.join(' ') };
 }
 
-function ImportCard(props: { profile: Profile; importDocId: string | null; onParsed(p: Profile, note: string, unknown: RawSection[]): void }) {
+function ImportCard(props: { profile: Profile; nav: GotoOptions; onParsed(p: Profile, note: string, unknown: RawSection[]): void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [keepFile, setKeepFile] = useState(true);
   const fileRef = useRef<HTMLInputElement>(null);
-  const started = useRef<string | null>(null);
+  /** The navigation that asked for a parse, so each "Parse into profile" click parses once. */
+  const started = useRef<GotoOptions | null>(null);
 
   const run = async (file: File, saveAsDocument: boolean) => {
     setBusy(true);
@@ -114,13 +117,14 @@ function ImportCard(props: { profile: Profile; importDocId: string | null; onPar
 
   // Parse a stored document when opened from the Documents view.
   useEffect(() => {
-    if (!props.importDocId || started.current === props.importDocId) return;
-    started.current = props.importDocId;
-    getDocument(props.importDocId).then((d) => {
+    const id = props.nav.importDocId;
+    if (!id || started.current === props.nav) return;
+    started.current = props.nav;
+    getDocument(id).then((d) => {
       if (d) run(new File([d.blob], d.fileName, { type: d.mime }), false);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.importDocId]);
+  }, [props.nav]);
 
   const pick = (f: File | undefined) => {
     if (!f) return;
@@ -130,11 +134,8 @@ function ImportCard(props: { profile: Profile; importDocId: string | null; onPar
 
   return (
     <DropZone className="import-card" disabled={busy} onFiles={(files) => pick(files[0])}>
-      <p>
-        <strong>Import from a resume</strong>
-        <br />
-        Drop a PDF, DOCX or TXT here, or choose one. The text is parsed on your computer; nothing is uploaded.
-      </p>
+      <h2>Import from a resume</h2>
+      <p>Drop a PDF, DOCX or TXT here, or choose one. The text is parsed on your computer; nothing is uploaded.</p>
       <input
         ref={fileRef}
         type="file"
@@ -239,33 +240,39 @@ function ExperienceEditor(props: { items: Experience[]; onChange(items: Experien
   const set = (i: number, patch: Partial<Experience>) => props.onChange(props.items.map((e, j) => (j === i ? { ...e, ...patch } : e)));
   return (
     <>
-      {props.items.length === 0 && <Empty>No jobs yet.</Empty>}
-      {props.items.map((e, i) => (
-        <div className="entry" key={e.id}>
-          <div className="grid">
-            <TextInput label="Job title" value={e.title} onChange={(v) => set(i, { title: v })} />
-            <TextInput label="Company" value={e.company} onChange={(v) => set(i, { company: v })} />
-            <TextInput label="Location" value={e.location} onChange={(v) => set(i, { location: v })} />
-            <TextInput label="Start" placeholder="YYYY-MM" value={e.start} onChange={(v) => set(i, { start: v })} />
-            {!e.current && <TextInput label="End" placeholder="YYYY-MM" value={e.end} onChange={(v) => set(i, { end: v })} />}
-            <label className="inline">
-              <input type="checkbox" checked={e.current} onChange={(ev) => set(i, { current: ev.target.checked })} />I work here now
-            </label>
-          </div>
-          <TextInput
-            label="Highlights"
-            hint="One per line"
-            multiline
-            value={e.bullets.join('\n')}
-            onChange={(v) => set(i, { bullets: v.split('\n') })}
-          />
-          <Button kind="danger" small onClick={() => props.onChange(props.items.filter((_, j) => j !== i))}>
-            Remove job
-          </Button>
+      {props.items.length === 0 ? (
+        <Empty>No jobs yet.</Empty>
+      ) : (
+        <div className="rows">
+          {props.items.map((e, i) => (
+            <div className="entry" key={e.id}>
+              <div className="grid">
+                <TextInput label="Job title" value={e.title} onChange={(v) => set(i, { title: v })} />
+                <TextInput label="Company" value={e.company} onChange={(v) => set(i, { company: v })} />
+                <TextInput label="Location" value={e.location} onChange={(v) => set(i, { location: v })} />
+                <TextInput label="Start" placeholder="YYYY-MM" value={e.start} onChange={(v) => set(i, { start: v })} />
+                {!e.current && <TextInput label="End" placeholder="YYYY-MM" value={e.end} onChange={(v) => set(i, { end: v })} />}
+                <label className="inline">
+                  <input type="checkbox" checked={e.current} onChange={(ev) => set(i, { current: ev.target.checked })} />I work here now
+                </label>
+              </div>
+              <TextInput
+                label="Highlights"
+                hint="One per line"
+                multiline
+                value={e.bullets.join('\n')}
+                onChange={(v) => set(i, { bullets: v.split('\n') })}
+              />
+              <Button kind="danger" small onClick={() => props.onChange(props.items.filter((_, j) => j !== i))}>
+                Remove job
+              </Button>
+            </div>
+          ))}
         </div>
-      ))}
+      )}
       <Button small onClick={() => props.onChange([...props.items, emptyExperience()])}>
-        + Add job
+        <PlusIcon />
+        Add job
       </Button>
     </>
   );
@@ -275,25 +282,31 @@ function EducationEditor(props: { items: Education[]; onChange(items: Education[
   const set = (i: number, patch: Partial<Education>) => props.onChange(props.items.map((e, j) => (j === i ? { ...e, ...patch } : e)));
   return (
     <>
-      {props.items.length === 0 && <Empty>No schools yet.</Empty>}
-      {props.items.map((e, i) => (
-        <div className="entry" key={e.id}>
-          <div className="grid">
-            <TextInput label="School" value={e.school} onChange={(v) => set(i, { school: v })} wide />
-            <TextInput label="Degree" placeholder="Bachelor of Science" value={e.degree} onChange={(v) => set(i, { degree: v })} />
-            <TextInput label="Field of study" value={e.field} onChange={(v) => set(i, { field: v })} />
-            <TextInput label="GPA" value={e.gpa} onChange={(v) => set(i, { gpa: v })} />
-            <TextInput label="Location" value={e.location} onChange={(v) => set(i, { location: v })} />
-            <TextInput label="Start" placeholder="YYYY-MM" value={e.start} onChange={(v) => set(i, { start: v })} />
-            <TextInput label="End / graduation" placeholder="YYYY-MM" value={e.end} onChange={(v) => set(i, { end: v })} />
-          </div>
-          <Button kind="danger" small onClick={() => props.onChange(props.items.filter((_, j) => j !== i))}>
-            Remove school
-          </Button>
+      {props.items.length === 0 ? (
+        <Empty>No schools yet.</Empty>
+      ) : (
+        <div className="rows">
+          {props.items.map((e, i) => (
+            <div className="entry" key={e.id}>
+              <div className="grid">
+                <TextInput label="School" value={e.school} onChange={(v) => set(i, { school: v })} wide />
+                <TextInput label="Degree" placeholder="Bachelor of Science" value={e.degree} onChange={(v) => set(i, { degree: v })} />
+                <TextInput label="Field of study" value={e.field} onChange={(v) => set(i, { field: v })} />
+                <TextInput label="GPA" value={e.gpa} onChange={(v) => set(i, { gpa: v })} />
+                <TextInput label="Location" value={e.location} onChange={(v) => set(i, { location: v })} />
+                <TextInput label="Start" placeholder="YYYY-MM" value={e.start} onChange={(v) => set(i, { start: v })} />
+                <TextInput label="End / graduation" placeholder="YYYY-MM" value={e.end} onChange={(v) => set(i, { end: v })} />
+              </div>
+              <Button kind="danger" small onClick={() => props.onChange(props.items.filter((_, j) => j !== i))}>
+                Remove school
+              </Button>
+            </div>
+          ))}
         </div>
-      ))}
+      )}
       <Button small onClick={() => props.onChange([...props.items, emptyEducation()])}>
-        + Add school
+        <PlusIcon />
+        Add school
       </Button>
     </>
   );
@@ -303,22 +316,28 @@ function ProjectEditor(props: { items: Project[]; onChange(items: Project[]): vo
   const set = (i: number, patch: Partial<Project>) => props.onChange(props.items.map((e, j) => (j === i ? { ...e, ...patch } : e)));
   return (
     <>
-      {props.items.length === 0 && <Empty>No projects yet.</Empty>}
-      {props.items.map((p, i) => (
-        <div className="entry" key={p.id}>
-          <div className="grid">
-            <TextInput label="Name" value={p.name} onChange={(v) => set(i, { name: v })} />
-            <TextInput label="Link" value={p.url} onChange={(v) => set(i, { url: v })} />
-          </div>
-          <ListInput label="Technologies" value={p.tech} onChange={(v) => set(i, { tech: v })} />
-          <TextInput label="Highlights" hint="One per line" multiline value={p.bullets.join('\n')} onChange={(v) => set(i, { bullets: v.split('\n') })} />
-          <Button kind="danger" small onClick={() => props.onChange(props.items.filter((_, j) => j !== i))}>
-            Remove project
-          </Button>
+      {props.items.length === 0 ? (
+        <Empty>No projects yet.</Empty>
+      ) : (
+        <div className="rows">
+          {props.items.map((p, i) => (
+            <div className="entry" key={p.id}>
+              <div className="grid">
+                <TextInput label="Name" value={p.name} onChange={(v) => set(i, { name: v })} />
+                <TextInput label="Link" type="url" spellCheck={false} value={p.url} onChange={(v) => set(i, { url: v })} />
+              </div>
+              <ListInput label="Technologies" value={p.tech} onChange={(v) => set(i, { tech: v })} />
+              <TextInput label="Highlights" hint="One per line" multiline value={p.bullets.join('\n')} onChange={(v) => set(i, { bullets: v.split('\n') })} />
+              <Button kind="danger" small onClick={() => props.onChange(props.items.filter((_, j) => j !== i))}>
+                Remove project
+              </Button>
+            </div>
+          ))}
         </div>
-      ))}
+      )}
       <Button small onClick={() => props.onChange([...props.items, emptyProject()])}>
-        + Add project
+        <PlusIcon />
+        Add project
       </Button>
     </>
   );
@@ -348,39 +367,26 @@ function generatePassword(): string {
   return chars.join('');
 }
 
+/** The job-site account password and whether it may go to any site. Saved with the profile, stored apart from it. */
+interface Account {
+  password: string;
+  anySite: boolean;
+}
+
 /**
  * The password used to create and sign in to accounts on job sites like Workday.
- * Saved on its own (not with the profile), never exported in backups.
+ * Stored on its own (not in the profile), never exported in backups.
  */
-function AccountSection() {
-  const [password, setPassword] = useState<string | null>(null);
-  const [anySite, setAnySite] = useState(false);
+function AccountSection(props: { account: Account; onChange(a: Account): void }) {
+  const { password, anySite } = props.account;
   const [show, setShow] = useState(false);
-  const [saved, setSaved] = useState<'idle' | 'saved'>('idle');
-
-  useEffect(() => {
-    getAccountPassword().then(setPassword);
-    getSettings().then((s) => setAnySite(s.passwordOnAnySite));
-  }, []);
-  if (password === null) return null;
-
-  const save = async () => {
-    await saveAccountPassword(password);
-    const s = await getSettings();
-    await saveSettings({ ...s, passwordOnAnySite: anySite });
-    setSaved('saved');
-  };
-  const edit = (fn: () => void) => {
-    fn();
-    setSaved('idle');
-  };
+  const set = (patch: Partial<Account>) => props.onChange({ ...props.account, ...patch });
 
   return (
-    <Section title="Job site accounts" defaultOpen={false}>
+    <Section id="section-account" title="Job site accounts" defaultOpen={false}>
       <p className="hint">
-        Sites like Workday, iCIMS and Taleo make you create an account to apply. EzAutoApply fills this password into their “Password” and
-        “Verify password” fields, both when creating an account and when signing in. It’s stored only in this browser and never included in
-        backups.
+        Workday, iCIMS, Taleo and similar sites make you create an account to apply. This password goes into their “Password” and “Verify
+        password” fields when you create an account or sign in. It stays in this browser and is never included in backups.
       </p>
       <div className="field wide">
         <label htmlFor="account-password">Password</label>
@@ -388,9 +394,10 @@ function AccountSection() {
           <input
             id="account-password"
             type={show ? 'text' : 'password'}
-            autoComplete="off"
+            autoComplete="new-password"
+            spellCheck={false}
             value={password}
-            onChange={(e) => edit(() => setPassword(e.target.value))}
+            onChange={(e) => set({ password: e.target.value })}
           />
           <Button small kind="ghost" onClick={() => setShow((v) => !v)}>
             {show ? 'Hide' : 'Show'}
@@ -400,46 +407,69 @@ function AccountSection() {
       <ul className="rules" aria-label="Password requirements">
         {PASSWORD_RULES.map(([label, ok]) => (
           <li key={label} className={ok(password) ? 'ok' : ''}>
-            {ok(password) ? '✓' : '○'} {label}
+            {ok(password) ? <CheckIcon /> : <CircleIcon />}
+            {label}
+            <span className="sr-only">{ok(password) ? ' (met)' : ' (not met)'}</span>
           </li>
         ))}
       </ul>
       <label className="inline">
-        <input type="checkbox" checked={anySite} onChange={(e) => edit(() => setAnySite(e.target.checked))} />
+        <input type="checkbox" checked={anySite} onChange={(e) => set({ anySite: e.target.checked })} />
         Also fill it on sites that aren’t known job-account sites
       </label>
       {anySite && <Banner tone="warn">Only autofill pages you trust: with this on, any page you autofill can receive the password.</Banner>}
       <div className="row">
         <Button
           small
-          onClick={() =>
-            edit(() => {
-              setPassword(generatePassword());
-              setShow(true);
-            })
-          }
+          onClick={() => {
+            set({ password: generatePassword() });
+            setShow(true);
+          }}
         >
           Generate a strong password
         </Button>
-        <Button kind="primary" small onClick={save}>
-          Save password
-        </Button>
-        {saved === 'saved' && <span className="saved">Saved ✓</span>}
       </div>
     </Section>
   );
 }
 
-export function ProfileView(props: { importDocId: string | null; onImported(): void }) {
+export function ProfileView(props: { active: boolean; nav: GotoOptions }) {
   const [profile, setProfile] = useState<Profile | null>(null);
-  const [dirty, setDirty] = useState(false);
+  const [account, setAccount] = useState<Account>({ password: '', anySite: false });
+  const [dirty, setDirtyState] = useState(false);
   const [note, setNote] = useState('');
   const [unknown, setUnknown] = useState<RawSection[]>([]);
   const [saved, setSaved] = useState(false);
+  // Read when a load finishes, so a load that started before an edit doesn't overwrite it.
+  const dirtyRef = useRef(false);
+  const setDirty = (d: boolean) => {
+    dirtyRef.current = d;
+    setDirtyState(d);
+  };
 
+  // Load when shown, unless there are unsaved edits; a backup import or "Delete all data"
+  // elsewhere changes what's stored.
   useEffect(() => {
-    getProfile().then(setProfile);
-  }, []);
+    if (!props.active || dirtyRef.current) return;
+    Promise.all([getProfile(), getAccountPassword(), getSettings()]).then(([p, password, s]) => {
+      if (dirtyRef.current) return;
+      setProfile(p);
+      setAccount({ password, anySite: s.passwordOnAnySite });
+    });
+  }, [props.active]);
+
+  // "Set account password" on the Apply tab lands on that section, open, with the cursor in it.
+  const handledNav = useRef<GotoOptions | null>(null);
+  const loaded = profile !== null;
+  useEffect(() => {
+    if (!loaded || props.nav.section !== 'account' || handledNav.current === props.nav) return;
+    handledNav.current = props.nav;
+    const section = document.getElementById('section-account') as HTMLDetailsElement | null;
+    if (!section) return;
+    section.open = true;
+    section.scrollIntoView({ block: 'start' });
+    document.getElementById('account-password')?.focus({ preventScroll: true });
+  }, [loaded, props.nav]);
 
   if (!profile) return <div className="view">Loading…</div>;
 
@@ -457,6 +487,8 @@ export function ProfileView(props: { importDocId: string | null; onImported(): v
     for (const e of clean.experience) e.bullets = e.bullets.map((b) => b.trim()).filter(Boolean);
     for (const p of clean.projects) p.bullets = p.bullets.map((b) => b.trim()).filter(Boolean);
     await saveProfile(clean);
+    await saveAccountPassword(account.password);
+    await updateSettings((s) => (s.passwordOnAnySite = account.anySite));
     setProfile(clean);
     setDirty(false);
     setSaved(true);
@@ -469,13 +501,13 @@ export function ProfileView(props: { importDocId: string | null; onImported(): v
     <div className="view profile">
       <ImportCard
         profile={profile}
-        importDocId={props.importDocId}
+        nav={props.nav}
         onParsed={(next, msg, unk) => {
           setProfile(next);
           setDirty(true);
+          setSaved(false);
           setNote(msg);
           setUnknown(unk);
-          props.onImported();
         }}
       />
       <LinkedInSection
@@ -483,6 +515,7 @@ export function ProfileView(props: { importDocId: string | null; onImported(): v
         onParsed={(next, msg) => {
           setProfile(next);
           setDirty(true);
+          setSaved(false);
           setNote(msg);
           setUnknown([]);
         }}
@@ -496,31 +529,66 @@ export function ProfileView(props: { importDocId: string | null; onImported(): v
 
       <Section title="Personal">
         <div className="grid">
-          <TextInput label="First name" value={p.personal.firstName} onChange={(v) => update((x) => (x.personal.firstName = v))} />
-          <TextInput label="Last name" value={p.personal.lastName} onChange={(v) => update((x) => (x.personal.lastName = v))} />
-          <TextInput label="Preferred name" value={p.personal.preferredName} onChange={(v) => update((x) => (x.personal.preferredName = v))} />
-          <TextInput label="Pronouns" value={p.personal.pronouns} onChange={(v) => update((x) => (x.personal.pronouns = v))} />
-          <TextInput label="Email" type="email" value={p.personal.email} onChange={(v) => update((x) => (x.personal.email = v))} />
-          <TextInput label="Phone" type="tel" value={p.personal.phone} onChange={(v) => update((x) => (x.personal.phone = v))} />
-          <TextInput label="Street address" wide value={a.line1} onChange={(v) => update((x) => (x.personal.address.line1 = v))} />
-          <TextInput label="Apt / suite" value={a.line2} onChange={(v) => update((x) => (x.personal.address.line2 = v))} />
-          <TextInput label="City" value={a.city} onChange={(v) => update((x) => (x.personal.address.city = v))} />
-          <TextInput label="State / province" value={a.region} onChange={(v) => update((x) => (x.personal.address.region = v))} />
-          <TextInput label="Postal code" value={a.postalCode} onChange={(v) => update((x) => (x.personal.address.postalCode = v))} />
-          <TextInput label="Country" value={a.country} onChange={(v) => update((x) => (x.personal.address.country = v))} />
+          <TextInput label="First name" autoComplete="given-name" value={p.personal.firstName} onChange={(v) => update((x) => (x.personal.firstName = v))} />
+          <TextInput label="Last name" autoComplete="family-name" value={p.personal.lastName} onChange={(v) => update((x) => (x.personal.lastName = v))} />
+          <TextInput
+            label="Preferred name"
+            autoComplete="nickname"
+            value={p.personal.preferredName}
+            onChange={(v) => update((x) => (x.personal.preferredName = v))}
+          />
+          <TextInput label="Pronouns" autoComplete="off" value={p.personal.pronouns} onChange={(v) => update((x) => (x.personal.pronouns = v))} />
+          <TextInput
+            label="Email"
+            type="email"
+            autoComplete="email"
+            spellCheck={false}
+            value={p.personal.email}
+            onChange={(v) => update((x) => (x.personal.email = v))}
+          />
+          <TextInput label="Phone" type="tel" autoComplete="tel" value={p.personal.phone} onChange={(v) => update((x) => (x.personal.phone = v))} />
+          <TextInput
+            label="Street address"
+            wide
+            autoComplete="address-line1"
+            value={a.line1}
+            onChange={(v) => update((x) => (x.personal.address.line1 = v))}
+          />
+          <TextInput label="Apt / suite" autoComplete="address-line2" value={a.line2} onChange={(v) => update((x) => (x.personal.address.line2 = v))} />
+          <TextInput label="City" autoComplete="address-level2" value={a.city} onChange={(v) => update((x) => (x.personal.address.city = v))} />
+          <TextInput
+            label="State / province"
+            autoComplete="address-level1"
+            value={a.region}
+            onChange={(v) => update((x) => (x.personal.address.region = v))}
+          />
+          <TextInput
+            label="Postal code"
+            autoComplete="postal-code"
+            value={a.postalCode}
+            onChange={(v) => update((x) => (x.personal.address.postalCode = v))}
+          />
+          <TextInput label="Country" autoComplete="country-name" value={a.country} onChange={(v) => update((x) => (x.personal.address.country = v))} />
         </div>
       </Section>
 
       <Section title="Links">
         <div className="grid">
-          <TextInput label="LinkedIn" value={p.links.linkedin} onChange={(v) => update((x) => (x.links.linkedin = v))} wide />
-          <TextInput label="GitHub" value={p.links.github} onChange={(v) => update((x) => (x.links.github = v))} wide />
-          <TextInput label="Portfolio" value={p.links.portfolio} onChange={(v) => update((x) => (x.links.portfolio = v))} wide />
-          <TextInput label="Website" value={p.links.website} onChange={(v) => update((x) => (x.links.website = v))} wide />
+          <TextInput label="LinkedIn" type="url" spellCheck={false} value={p.links.linkedin} onChange={(v) => update((x) => (x.links.linkedin = v))} wide />
+          <TextInput label="GitHub" type="url" spellCheck={false} value={p.links.github} onChange={(v) => update((x) => (x.links.github = v))} wide />
+          <TextInput label="Portfolio" type="url" spellCheck={false} value={p.links.portfolio} onChange={(v) => update((x) => (x.links.portfolio = v))} wide />
+          <TextInput label="Website" type="url" spellCheck={false} value={p.links.website} onChange={(v) => update((x) => (x.links.website = v))} wide />
         </div>
       </Section>
 
-      <AccountSection />
+      <AccountSection
+        account={account}
+        onChange={(next) => {
+          setAccount(next);
+          setDirty(true);
+          setSaved(false);
+        }}
+      />
 
       <Section title="Summary" defaultOpen={false}>
         <TextInput label="Professional summary" multiline value={p.summary} onChange={(v) => update((x) => (x.summary = v))} />
@@ -585,7 +653,7 @@ export function ProfileView(props: { importDocId: string | null; onImported(): v
       </Section>
 
       <div className="savebar">
-        {saved && !dirty && <span className="saved">Saved ✓</span>}
+        {saved && !dirty && <Saved />}
         {dirty && <span className="hint">Unsaved changes</span>}
         <Button kind="primary" disabled={!dirty} onClick={save}>
           Save profile

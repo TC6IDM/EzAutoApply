@@ -37,7 +37,7 @@ Everything runs on your computer. Your profile and documents are stored in your 
 │    Answers, Settings                         ▲                       │
 │                                              │                       │
 │  Content script (in every frame of the job page)                     │
-│  · scans fields → decides answers → fills → outlines each field      │
+│  · scans fields → decides answers → fills → reports to the panel     │
 └──────────────────────────────────────────────┼───────────────────────┘
                                                │ HTTP (localhost)
                                   ┌────────────▼─────────────┐
@@ -93,7 +93,7 @@ When you click **Autofill**, every frame of the page is scanned. That includes e
 | **Rules** | Recognizes about 60 standard fields from the label, `autocomplete` attribute, name/id and section heading | "First Name", "LinkedIn URL", "Start date" under *Education* |
 | **Saved answers** | Looks up answers you gave on earlier applications, by exact or fuzzy match | "Have you worked here before?" |
 | **Classifier** | Laya/Jev decides which profile field an unfamiliar question is asking for, or which option matches your answer | "Institution you graduated from" → school |
-| **You** | Anything still unknown is outlined in red and listed in the side panel | "Why do you want to work here?" |
+| **You** | Anything still unknown is listed in the side panel | "Why do you want to work here?" |
 
 Autofill runs in **two passes**. The rules and saved answers fill everything they can immediately. Only the questions left over go to the classifier, which takes a second or so each on a laptop CPU, and those are filled as its answers arrive.
 
@@ -115,11 +115,11 @@ Values go in the way a person would enter them:
 
 **Advance**, under the Autofill button in the side panel, is on whenever the page has a button that moves the application along: **Sign In** or **Create Account**, **Apply** (on Workday, **Apply Manually**, so Workday doesn't read your resume), **Next**, **Save and Continue**, or **Submit**. It shows that button's name ("Advance: Save and Continue") and presses it when you press Advance, never otherwise. Buttons like Back, Cancel, Add, Upload and "Sign in with Google" are never chosen.
 
-Fields are outlined by outcome: **green** = filled, **amber** = filled but worth a check, **red dashed** = needs you, **blue** = you changed it.
+Nothing is drawn on the page. The side panel lists what was filled, what's worth a check, and what needs you.
 
 ### 3. Learning answers
 
-Each red field shows up on the side panel's **Apply** tab with an input that matches it (a dropdown for a dropdown, checkboxes for checkboxes, and so on). Every unanswered dropdown, radio and checkbox question is listed, even when the page doesn't mark it required. Workday's "Select One" lists only load their options when opened, so EzAutoApply opens each one briefly to read its options, then closes it without choosing, so you can pick from the real list. **Fill & remember** fills the field and saves the answer in one step. Saved answers are global by default or, if you choose, limited to that one site. If you type an answer directly into the page, the panel offers **Remember this answer** instead.
+Each field that needs you shows up on the side panel's **Apply** tab with an input that matches it (a dropdown for a dropdown, checkboxes for checkboxes, and so on). Every unanswered dropdown, radio and checkbox question is listed, even when the page doesn't mark it required. Workday's "Select One" lists only load their options when opened, so EzAutoApply opens each one briefly to read its options, then closes it without choosing, so you can pick from the real list. **Fill & remember** fills the field and saves the answer in one step. Saved answers are global by default or, if you choose, limited to that one site. If you type an answer directly into the page, the panel offers **Remember this answer** instead.
 
 On later applications, that question, or a rephrasing of it, fills automatically. All saved answers can be edited on the **Answers** tab.
 
@@ -129,7 +129,7 @@ If a field on some site isn't filled correctly, **Copy details** on its card cop
 
 ### Job-site accounts
 
-Workday, iCIMS, Taleo and similar sites make you create an account before applying. Set one password under **Profile → Job site accounts**. A checklist shows the usual requirements (8+ characters, upper and lower case, a number, a special character), and there's a button to generate a strong one. EzAutoApply fills it into "Password" and "Verify password" fields, both when creating an account and when signing in.
+Workday, iCIMS, Taleo and similar sites make you create an account before applying. Set one password under **Profile → Job site accounts** (it's saved with **Save profile**). A checklist shows the usual requirements (8+ characters, upper and lower case, a number, a special character), and there's a button to generate a strong one. EzAutoApply fills it into "Password" and "Verify password" fields, both when creating an account and when signing in.
 
 The password is handled more carefully than everything else:
 
@@ -211,11 +211,11 @@ Options:
 
 On macOS or Linux, use `./classifier/start.sh` instead. The script binds Laya to `127.0.0.1`. Laya's own default is `0.0.0.0`, which would expose it to your network.
 
-In the side panel, the dot in the top right turns green when the classifier is reachable. **Settings → Classifier** has the URL, key, checkpoint and thresholds.
+In the side panel, the header in the top right says **Classifier on** (filled dot) when the classifier is reachable, **Classifier offline** when it isn't, and **Classifier off** when you've turned it off. **Settings → Classifier** has the URL, key, checkpoint and thresholds. Settings save as you change them.
 
 ### Using Jev instead
 
-In **Settings → Classifier**, choose **Jev (TypeSafe cloud)**, enter the API URL and key from your Jev account, and click **Save & test connection**.
+In **Settings → Classifier**, choose **Jev (TypeSafe cloud)**, enter the API URL and key from your Jev account, and click **Test connection**.
 
 ---
 
@@ -223,8 +223,8 @@ In **Settings → Classifier**, choose **Jev (TypeSafe cloud)**, enter the API U
 
 1. **Open the side panel** by clicking the EzAutoApply toolbar icon.
 2. **Profile:** click **Choose resume file** (and/or import your LinkedIn data under **Import from LinkedIn**), check what was parsed, fill in work authorization and preferences, then click **Save profile**.
-3. **Documents:** drag in cover letters, transcripts and extra resumes. The original files are stored, the ★ default of each type is what gets uploaded, and uploads get standard names (see [Documents](#documents)). For Workday-style sites, also set a password under **Profile → Job site accounts**.
-4. **Go to a job application** and click **Autofill**. You can use the floating ⚡ button on the page, **Alt+Shift+F**, or the button on the side panel's Apply tab.
+3. **Documents:** drag in cover letters, transcripts and extra resumes. The original files are stored, the default of each type is what gets uploaded, and uploads get standard names (see [Documents](#documents)). For Workday-style sites, also set a password under **Profile → Job site accounts**.
+4. **Go to a job application** and click **Autofill**. You can use the floating **Autofill** button on the page, **Alt+Shift+F**, or the button on the side panel's Apply tab.
 5. **Apply tab:** answer anything under *Needs your answer*, look over *Check these*, and pick a different resume or cover letter for this application if you want.
 6. **Review the page, then submit it yourself** or press **Advance** to press the page's Next or Submit button.
 
@@ -300,7 +300,7 @@ It sends ten unusual application questions through the same steps the extension 
 |---|---|
 | The Autofill button doesn't appear | It only shows on pages that look like applications. Use the side panel's **Autofill this page** or **Alt+Shift+F** instead, and check **Settings → Show the Autofill button**. |
 | Nothing happens on a tab | Reload the tab (see the note under [Using it](#using-it)). Pages like `chrome://` and the Chrome Web Store can't be autofilled. |
-| "Classifier off" | Start `classifier\start.ps1`, then click the dot to open Settings and **Save & test connection**. If you set `-ApiKey`, enter the same key in Settings. |
+| "Classifier offline" | Start `classifier\start.ps1`, then click it to open Settings and **Test connection**. If you set `-ApiKey`, enter the same key in Settings. |
 | `start.ps1` says the port is in use | If it says Laya is already running, it is: nothing to do. If another program has port 8000, run `.\classifier\start.ps1 -Port 8001` and set `http://127.0.0.1:8001` in Settings. |
 | A field wasn't filled or picked the wrong option | Use **Copy details** on its card in the side panel and include that in a bug report. |
 | Password fields stay red | Set the password under **Profile → Job site accounts**. On a site that isn't a known job-account site, also tick **Also fill it on other sites**. |

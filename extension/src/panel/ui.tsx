@@ -1,15 +1,21 @@
-import { type DragEvent, type ReactNode, useId, useRef, useState } from 'react';
+import { type DragEvent, type ReactNode, useEffect, useId, useRef, useState } from 'react';
 import type { TriState } from '../core/profile';
+import { CheckIcon, ChevronIcon } from './icons';
 
 /** Small form building blocks for the side panel. */
 
-export function Field(props: { label: string; hint?: string; children: (id: string) => ReactNode; wide?: boolean }) {
+export function Field(props: { label: string; hint?: string; children: (id: string, hintId?: string) => ReactNode; wide?: boolean }) {
   const id = useId();
+  const hintId = props.hint ? `${id}-hint` : undefined;
   return (
     <div className={`field${props.wide ? ' wide' : ''}`}>
       <label htmlFor={id}>{props.label}</label>
-      {props.children(id)}
-      {props.hint && <small className="hint">{props.hint}</small>}
+      {props.children(id, hintId)}
+      {props.hint && (
+        <small className="hint" id={hintId}>
+          {props.hint}
+        </small>
+      )}
     </div>
   );
 }
@@ -18,24 +24,42 @@ export function TextInput(props: {
   label: string;
   value: string;
   onChange(v: string): void;
+  onBlur?(): void;
   placeholder?: string;
   type?: string;
   hint?: string;
   wide?: boolean;
   multiline?: boolean;
+  autoComplete?: string;
+  spellCheck?: boolean;
+  inputMode?: 'text' | 'email' | 'tel' | 'url' | 'numeric' | 'decimal';
 }) {
   return (
     <Field label={props.label} hint={props.hint} wide={props.wide || props.multiline}>
-      {(id) =>
+      {(id, hintId) =>
         props.multiline ? (
-          <textarea id={id} value={props.value} placeholder={props.placeholder} rows={4} onChange={(e) => props.onChange(e.target.value)} />
+          <textarea
+            id={id}
+            value={props.value}
+            placeholder={props.placeholder}
+            rows={4}
+            aria-describedby={hintId}
+            spellCheck={props.spellCheck}
+            onChange={(e) => props.onChange(e.target.value)}
+            onBlur={props.onBlur}
+          />
         ) : (
           <input
             id={id}
             type={props.type ?? 'text'}
             value={props.value}
             placeholder={props.placeholder}
+            aria-describedby={hintId}
+            autoComplete={props.autoComplete}
+            spellCheck={props.spellCheck}
+            inputMode={props.inputMode}
             onChange={(e) => props.onChange(e.target.value)}
+            onBlur={props.onBlur}
           />
         )
       }
@@ -47,8 +71,8 @@ export function SelectInput(props: { label: string; value: string; options: stri
   const opts = props.options.includes(props.value) || !props.value ? props.options : [props.value, ...props.options];
   return (
     <Field label={props.label} hint={props.hint} wide={props.wide}>
-      {(id) => (
-        <select id={id} value={props.value} onChange={(e) => props.onChange(e.target.value)}>
+      {(id, hintId) => (
+        <select id={id} value={props.value} aria-describedby={hintId} onChange={(e) => props.onChange(e.target.value)}>
           {props.blank !== undefined && <option value="">{props.blank}</option>}
           {opts.map((o) => (
             <option key={o} value={o}>
@@ -71,9 +95,9 @@ export function TriInput(props: { label: string; value: TriState; onChange(v: Tr
   return (
     <fieldset className="field tri">
       <legend>{props.label}</legend>
-      <div className="segmented" role="radiogroup">
+      <div className="segmented">
         {choices.map(([v, text]) => (
-          <label key={text} className={props.value === v ? 'on' : ''}>
+          <label key={text} className={`${props.value === v ? 'on' : ''}${v === null ? ' unset' : ''}`}>
             <input type="radio" name={name} checked={props.value === v} onChange={() => props.onChange(v)} />
             {text}
           </label>
@@ -111,11 +135,12 @@ export function Button(props: {
   type?: 'button' | 'submit';
   title?: string;
   small?: boolean;
+  className?: string;
 }) {
   return (
     <button
       type={props.type ?? 'button'}
-      className={`btn ${props.kind ?? 'secondary'}${props.small ? ' small' : ''}`}
+      className={`btn ${props.kind ?? 'secondary'}${props.small ? ' small' : ''}${props.className ? ` ${props.className}` : ''}`}
       onClick={props.onClick}
       disabled={props.disabled}
       title={props.title}
@@ -125,22 +150,28 @@ export function Button(props: {
   );
 }
 
-export function Section(props: { title: string; children: ReactNode; actions?: ReactNode; defaultOpen?: boolean; count?: number }) {
+export function Section(props: { title: string; children: ReactNode; defaultOpen?: boolean; count?: number; id?: string }) {
   return (
-    <details className="section" open={props.defaultOpen ?? true}>
+    <details className="section" id={props.id} open={props.defaultOpen ?? true}>
       <summary>
-        <span className="section-title">
+        <ChevronIcon className="chev" />
+        <h2 className="section-title">
           {props.title}
           {props.count !== undefined && <span className="count">{props.count}</span>}
-        </span>
-        {props.actions && (
-          <span className="section-actions" onClick={(e) => e.preventDefault()}>
-            {props.actions}
-          </span>
-        )}
+        </h2>
       </summary>
       <div className="section-body">{props.children}</div>
     </details>
+  );
+}
+
+/** Quiet confirmation after a save the user asked for. */
+export function Saved() {
+  return (
+    <span className="saved">
+      <CheckIcon />
+      Saved
+    </span>
   );
 }
 
@@ -190,6 +221,42 @@ export function Banner(props: { tone: 'info' | 'warn' | 'error' | 'ok'; children
 
 export function Empty(props: { children: ReactNode }) {
   return <p className="empty">{props.children}</p>;
+}
+
+const UNDO_MS = 8000;
+
+/**
+ * Deletes happen at once; this offers a few seconds to take one back instead of asking
+ * "Are you sure?" first. Returns the toast to render and a function to show it.
+ */
+export function useUndo(): [ReactNode, (message: string, undo: () => unknown) => void] {
+  const [item, setItem] = useState<{ message: string; undo: () => unknown; at: number } | null>(null);
+  useEffect(() => {
+    if (!item) return;
+    const t = setTimeout(() => setItem(null), UNDO_MS);
+    return () => clearTimeout(t);
+  }, [item]);
+  // The live region stays in the page so screen readers announce the toast when it appears.
+  const toast = (
+    <div role="status">
+      {item && (
+        <div className="undo-toast">
+          <span>{item.message}</span>
+          <button
+            type="button"
+            className="link-btn"
+            onClick={() => {
+              item.undo();
+              setItem(null);
+            }}
+          >
+            Undo
+          </button>
+        </div>
+      )}
+    </div>
+  );
+  return [toast, (message, undo) => setItem({ message, undo, at: Date.now() })];
 }
 
 export function formatBytes(n: number): string {

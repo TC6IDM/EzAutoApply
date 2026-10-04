@@ -52,7 +52,7 @@ export type PanelToBackground =
 export type BackgroundToContent =
   | { type: 'autofill' }
   | { type: 'applyAnswer'; fieldId: string; answer: AnswerValue }
-  | { type: 'clearHighlights' }
+  | { type: 'clearReports' }
   | { type: 'focusField'; fieldId: string }
   | { type: 'findAdvance' }
   | { type: 'advance' }

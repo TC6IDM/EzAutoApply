@@ -58,8 +58,8 @@ export default defineContentScript({
         case 'applyAnswer':
           controller.applyAnswer(msg.fieldId, msg.answer).then(sendResponse, (e: Error) => sendResponse({ error: e.message }));
           return true;
-        case 'clearHighlights':
-          controller.clearHighlights();
+        case 'clearReports':
+          controller.clearReports();
           sendResponse(null);
           return false;
         case 'focusField':

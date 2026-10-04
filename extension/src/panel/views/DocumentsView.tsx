@@ -10,12 +10,14 @@ import {
   getProfile,
   getSettings,
   listDocuments,
+  restoreDocument,
   setDefaultDocument,
   updateDocument,
 } from '../../db';
 import { extractText } from '../../parse/extract';
-import type { View } from '../App';
-import { Banner, Button, DropZone, Empty, formatBytes, formatDate, Section } from '../ui';
+import type { Goto } from '../App';
+import { UploadIcon } from '../icons';
+import { Banner, Button, DropZone, Empty, formatBytes, formatDate, Section, useUndo } from '../ui';
 
 const KINDS: DocKind[] = ['resume', 'coverLetter', 'transcript', 'other'];
 
@@ -28,7 +30,7 @@ const SECTION_TITLES: Record<DocKind, string> = {
 
 const ACCEPT = '.pdf,.doc,.docx,.txt,.md,.rtf,.odt,image/*';
 
-function DocRow(props: { doc: DocumentMeta; uploadName: string; goto(v: View, opts?: { importDocId?: string }): void }) {
+function DocRow(props: { doc: DocumentMeta; uploadName: string; goto: Goto; onDelete(doc: DocumentMeta): void }) {
   const { doc, uploadName } = props;
   const [name, setName] = useState(doc.name);
 
@@ -63,8 +65,10 @@ function DocRow(props: { doc: DocumentMeta; uploadName: string; goto(v: View, op
           Uploads as <span className="upload-name">{uploadName}</span>
         </small>
         <small>
-          {uploadName !== doc.fileName && <>Added as {doc.fileName} · </>}
-          {formatBytes(doc.size)} · {formatDate(doc.createdAt)}
+          <button type="button" className="link-btn" onClick={open} title="Open the original file">
+            {doc.fileName}
+          </button>{' '}
+          · {formatBytes(doc.size)} · {formatDate(doc.createdAt)}
         </small>
       </div>
       <div className="row">
@@ -81,32 +85,23 @@ function DocRow(props: { doc: DocumentMeta; uploadName: string; goto(v: View, op
           ))}
         </select>
         {doc.isDefault ? (
-          <span className="badge" title={`Used unless you pick another ${DOC_KIND_LABELS[doc.kind].toLowerCase()} on the Apply tab`}>
-            ★ Default
-          </span>
+          <span className="tag">Default</span>
         ) : (
           <Button small kind="ghost" onClick={() => setDefaultDocument(doc.id)}>
             Make default
           </Button>
         )}
-        <Button small kind="ghost" onClick={open}>
-          Open
-        </Button>
-        <Button small kind="ghost" onClick={download}>
-          Download
-        </Button>
+      </div>
+      <div className="row">
         {doc.kind === 'resume' && (
           <Button small kind="ghost" onClick={() => props.goto('profile', { importDocId: doc.id })} title="Fill empty profile fields from this resume">
             Parse into profile
           </Button>
         )}
-        <Button
-          small
-          kind="danger"
-          onClick={() => {
-            if (confirm(`Delete “${doc.name}”?`)) deleteDocument(doc.id);
-          }}
-        >
+        <Button small kind="ghost" onClick={download}>
+          Download
+        </Button>
+        <Button small kind="danger" className="push-end" onClick={() => props.onDelete(doc)}>
           Delete
         </Button>
       </div>
@@ -120,7 +115,7 @@ interface Added {
   guessed: boolean;
 }
 
-export function DocumentsView(props: { goto(v: View, opts?: { importDocId?: string }): void }) {
+export function DocumentsView(props: { goto: Goto }) {
   const docs = useLiveQuery(listDocuments, [], [] as DocumentMeta[]);
   const person = useLiveQuery(async () => (await getProfile()).personal, [], null as PersonName | null);
   const format = useLiveQuery(async () => (await getSettings()).fileNameFormat, [], 'underscore' as FileNameFormat);
@@ -128,6 +123,7 @@ export function DocumentsView(props: { goto(v: View, opts?: { importDocId?: stri
   const [added, setAdded] = useState<Added[]>([]);
   const [error, setError] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
+  const [undoToast, offerUndo] = useUndo();
 
   /** Store each file; its kind is the section it was dropped on, or a guess from its name and text. */
   const add = async (files: File[], kind?: DocKind) => {
@@ -150,19 +146,24 @@ export function DocumentsView(props: { goto(v: View, opts?: { importDocId?: stri
     }
   };
 
+  /** Delete at once; the stored copy is kept in memory for a few seconds in case of Undo. */
+  const remove = async (doc: DocumentMeta) => {
+    const full = await getDocument(doc.id);
+    await deleteDocument(doc.id);
+    if (full) offerUndo(`Deleted “${doc.name}”.`, () => restoreDocument(full));
+  };
+
   const name = person ?? { firstName: '', lastName: '' };
   const hasName = !!(name.firstName.trim() || name.lastName.trim());
 
   return (
     <div className="view documents">
       <DropZone className="drop-main" onFiles={(f) => add(f)} disabled={busy}>
-        <span className="drop-icon" aria-hidden="true">
-          ⇣
-        </span>
+        <UploadIcon className="drop-icon" />
         <p>
-          <strong>{busy ? 'Adding…' : 'Drop resumes, cover letters or transcripts here'}</strong>
+          <strong>{busy ? 'Adding…' : 'Drop resumes, cover letters or transcripts'}</strong>
         </p>
-        <p className="hint">Each file is sorted by type automatically. You can change the type below, or drop onto a section to choose it yourself.</p>
+        <p className="hint">Sorted by type for you. Stored in this browser only.</p>
         <input
           ref={fileRef}
           type="file"
@@ -185,7 +186,7 @@ export function DocumentsView(props: { goto(v: View, opts?: { importDocId?: stri
           <ul className="added-list">
             {added.map((a, i) => (
               <li key={i}>
-                {a.fileName} → {DOC_KIND_LABELS[a.kind].toLowerCase()}
+                {a.fileName} added to {SECTION_TITLES[a.kind]}
                 {a.guessed && a.kind === 'other' && ' (couldn’t tell the type; change it below if needed)'}
               </li>
             ))}
@@ -197,20 +198,15 @@ export function DocumentsView(props: { goto(v: View, opts?: { importDocId?: stri
         <Banner tone="info">Add your name on the Profile tab and files will be uploaded with standard names like First_Last_Resume.pdf.</Banner>
       )}
 
-      <p className="hint">
-        The original files are stored in this browser. When a form asks for one, it’s uploaded under a standard name (change the format in
-        Settings). The ★ default of each type is used unless you pick another on the Apply tab. Backups include these files.
-      </p>
-
       {KINDS.map((k) => {
         const ofKind = docs.filter((d) => d.kind === k);
         return (
           <DropZone key={k} onFiles={(f) => add(f, k)} disabled={busy}>
             <Section title={SECTION_TITLES[k]} count={ofKind.length} defaultOpen={ofKind.length > 0 || k === 'resume'}>
               {ofKind.length ? (
-                <ul className="docs">
+                <ul className="docs rows">
                   {ofKind.map((d) => (
-                    <DocRow key={d.id} doc={d} uploadName={uploadFileName(d, name, format)} goto={props.goto} />
+                    <DocRow key={d.id} doc={d} uploadName={uploadFileName(d, name, format)} goto={props.goto} onDelete={remove} />
                   ))}
                 </ul>
               ) : (
@@ -220,6 +216,10 @@ export function DocumentsView(props: { goto(v: View, opts?: { importDocId?: stri
           </DropZone>
         );
       })}
+      {docs.length > 0 && (
+        <p className="hint">The default of each type is attached unless you pick another on the Apply tab.</p>
+      )}
+      {undoToast}
     </div>
   );
 }

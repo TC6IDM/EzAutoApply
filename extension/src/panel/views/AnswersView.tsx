@@ -3,14 +3,19 @@ import { useMemo, useState } from 'react';
 import { FIELD_KEY_MAP } from '../../core/fieldKeys';
 import { normalize } from '../../core/normalize';
 import type { SavedAnswer } from '../../core/types';
-import { deleteAnswer, listAnswers, saveAnswer, updateAnswer } from '../../db';
-import { Button, Empty, formatDate } from '../ui';
+import { deleteAnswer, listAnswers, restoreAnswer, saveAnswer, updateAnswer } from '../../db';
+import { ChevronIcon } from '../icons';
+import { Button, Empty, formatDate, useUndo } from '../ui';
 
 function answerText(a: SavedAnswer['answer']): string {
   return Array.isArray(a) ? a.join(', ') : typeof a === 'boolean' ? (a ? 'Yes' : 'No') : a;
 }
 
-function AnswerRow(props: { a: SavedAnswer }) {
+function usedText(n: number): string {
+  return n === 0 ? 'not used yet' : n === 1 ? 'used once' : `used ${n} times`;
+}
+
+function AnswerRow(props: { a: SavedAnswer; onDelete(a: SavedAnswer): void }) {
   const { a } = props;
   const [editing, setEditing] = useState(false);
   const [question, setQuestion] = useState(a.question);
@@ -62,20 +67,14 @@ function AnswerRow(props: { a: SavedAnswer }) {
           <p className="val">{answerText(a.answer)}</p>
           <p className="meta">
             {a.scope === 'global' ? 'All sites' : `Only on ${a.scope}`}
-            {a.canonicalKey && FIELD_KEY_MAP[a.canonicalKey] ? ` · ${FIELD_KEY_MAP[a.canonicalKey].title}` : ''} · used {a.timesUsed}×
-            {a.timesUsed ? ` · last ${formatDate(a.lastUsed)}` : ''}
+            {a.canonicalKey && FIELD_KEY_MAP[a.canonicalKey] ? ` · ${FIELD_KEY_MAP[a.canonicalKey].title}` : ''} · {usedText(a.timesUsed)}
+            {a.timesUsed ? `, last ${formatDate(a.lastUsed)}` : ''}
           </p>
           <div className="row">
             <Button kind="ghost" small onClick={() => setEditing(true)}>
               Edit
             </Button>
-            <Button
-              kind="danger"
-              small
-              onClick={() => {
-                if (confirm('Delete this saved answer?')) deleteAnswer(a.id);
-              }}
-            >
+            <Button kind="danger" small onClick={() => props.onDelete(a)}>
               Delete
             </Button>
           </div>
@@ -90,6 +89,7 @@ export function AnswersView() {
   const [query, setQuery] = useState('');
   const [newQ, setNewQ] = useState('');
   const [newA, setNewA] = useState('');
+  const [undoToast, offerUndo] = useUndo();
 
   const shown = useMemo(() => {
     const q = normalize(query);
@@ -103,24 +103,40 @@ export function AnswersView() {
     setNewA('');
   };
 
+  const remove = async (a: SavedAnswer) => {
+    await deleteAnswer(a.id);
+    offerUndo('Deleted a saved answer.', () => restoreAnswer(a));
+  };
+
   return (
     <div className="view answers">
-      <p className="hint">
-        Answers you gave on earlier applications. When a form asks the same (or a similar) question, these fill automatically.
-      </p>
-      <input className="search" type="search" placeholder="Search saved answers" value={query} onChange={(e) => setQuery(e.target.value)} />
+      {answers.length > 0 && (
+        <input
+          className="search"
+          type="search"
+          aria-label="Search saved answers"
+          placeholder="Search saved answers…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      )}
       {shown.length ? (
-        <ul className="answer-list">
+        <ul className="answer-list rows list-card">
           {shown.map((a) => (
-            <AnswerRow key={a.id} a={a} />
+            <AnswerRow key={a.id} a={a} onDelete={remove} />
           ))}
         </ul>
       ) : (
-        <Empty>{answers.length ? 'No matches.' : 'No saved answers yet. Answer a question on the Apply tab and it will show up here.'}</Empty>
+        <Empty>
+          {answers.length
+            ? 'No matches.'
+            : 'No saved answers yet. When you answer a question on the Apply tab, it’s saved here and filled in automatically the next time a form asks something similar.'}
+        </Empty>
       )}
       <details className="section">
         <summary>
-          <span className="section-title">Add an answer manually</span>
+          <ChevronIcon className="chev" />
+          <h2 className="section-title">Add an answer manually</h2>
         </summary>
         <div className="section-body answer">
           <label>
@@ -136,6 +152,7 @@ export function AnswersView() {
           </Button>
         </div>
       </details>
+      {undoToast}
     </div>
   );
 }

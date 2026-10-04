@@ -81,6 +81,16 @@ export async function saveSettings(s: Settings): Promise<void> {
   await db.kv.put({ key: 'settings', value: s });
 }
 
+/** Change some settings, applied to what's stored now so changes made elsewhere aren't overwritten. */
+export async function updateSettings(change: (s: Settings) => void): Promise<Settings> {
+  return db.transaction('rw', db.kv, async () => {
+    const s = await getSettings();
+    change(s);
+    await saveSettings(s);
+    return s;
+  });
+}
+
 // ── documents ───────────────────────────────────────────────────────────
 
 export function toMeta(d: StoredDocument): DocumentMeta {
@@ -163,6 +173,14 @@ export async function deleteDocument(id: string): Promise<void> {
   });
 }
 
+/** Put back a document deleted a moment ago (Undo), as the default again if it was one. */
+export async function restoreDocument(doc: StoredDocument): Promise<void> {
+  await db.transaction('rw', db.documents, async () => {
+    if (doc.isDefault) await db.documents.where('kind').equals(doc.kind).modify({ isDefault: false });
+    await db.documents.put(doc);
+  });
+}
+
 /** Move a document to another kind, e.g. when a dropped file was sorted wrongly. */
 export async function changeDocumentKind(id: string, kind: DocKind): Promise<void> {
   await db.transaction('rw', db.documents, async () => {
@@ -204,6 +222,11 @@ export async function updateAnswer(id: string, changes: Partial<SavedAnswer>): P
 
 export async function deleteAnswer(id: string): Promise<void> {
   await db.answers.delete(id);
+}
+
+/** Put back an answer deleted a moment ago (Undo). */
+export async function restoreAnswer(a: SavedAnswer): Promise<void> {
+  await db.answers.put(a);
 }
 
 export async function markAnswersUsed(ids: string[]): Promise<void> {

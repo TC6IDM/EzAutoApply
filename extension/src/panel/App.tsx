@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { send, useActiveTab } from './api';
 import { AnswersView } from './views/AnswersView';
 import { ApplyView } from './views/ApplyView';
@@ -7,6 +7,14 @@ import { ProfileView } from './views/ProfileView';
 import { SettingsView } from './views/SettingsView';
 
 export type View = 'apply' | 'profile' | 'documents' | 'answers' | 'settings';
+
+/** Where to land when switching views: a resume to parse, or a profile section to open. */
+export interface GotoOptions {
+  importDocId?: string;
+  section?: 'account';
+}
+
+export type Goto = (v: View, opts?: GotoOptions) => void;
 
 const VIEWS: [View, string][] = [
   ['apply', 'Apply'],
@@ -18,6 +26,8 @@ const VIEWS: [View, string][] = [
 
 export interface Health {
   ok: boolean;
+  /** Turned off in Settings, as opposed to unreachable. */
+  off?: boolean;
   detail: string;
 }
 
@@ -35,6 +45,13 @@ function useClassifierHealth(): [Health | null, () => void] {
     return () => clearInterval(t);
   }, [check]);
   return [health, check];
+}
+
+function healthLabel(h: Health | null): [string, string] {
+  if (!h) return ['unknown', 'Classifier…'];
+  if (h.ok) return ['ok', 'Classifier on'];
+  if (h.off) return ['off', 'Classifier off'];
+  return ['down', 'Classifier offline'];
 }
 
 /** A file dropped outside a drop zone would replace the whole panel with that file; ignore it instead. */
@@ -55,45 +72,75 @@ function useBlockStrayDrops() {
 export function App() {
   useBlockStrayDrops();
   const [view, setView] = useState<View>('apply');
-  /** A document to parse into the profile when the Profile view opens. */
-  const [importDocId, setImportDocId] = useState<string | null>(null);
+  /** Set on every navigation, so views can react to it (open a section, parse a document). */
+  const [nav, setNav] = useState<GotoOptions>({});
   const tab = useActiveTab();
   const [health, recheck] = useClassifierHealth();
+  const tabRefs = useRef<Partial<Record<View, HTMLButtonElement | null>>>({});
 
-  const goto = (v: View, opts?: { importDocId?: string }) => {
-    setImportDocId(opts?.importDocId ?? null);
+  const goto: Goto = (v, opts) => {
+    setNav(opts ?? {});
     setView(v);
+  };
+
+  /** Arrow keys, Home and End move between tabs (the ARIA tabs pattern). */
+  const onTabKey = (e: KeyboardEvent<HTMLButtonElement>) => {
+    const i = VIEWS.findIndex(([v]) => v === view);
+    const last = VIEWS.length - 1;
+    const next = { ArrowRight: i === last ? 0 : i + 1, ArrowLeft: i === 0 ? last : i - 1, Home: 0, End: last }[e.key];
+    if (next === undefined) return;
+    e.preventDefault();
+    const v = VIEWS[next][0];
+    goto(v);
+    tabRefs.current[v]?.focus();
+  };
+
+  const [healthState, healthText] = healthLabel(health);
+  // Views stay mounted while hidden, so unsaved edits survive switching tabs.
+  const content: Record<View, (active: boolean) => ReactNode> = {
+    apply: (active) => <ApplyView tab={tab} goto={goto} active={active} />,
+    profile: (active) => <ProfileView active={active} nav={nav} />,
+    documents: () => <DocumentsView goto={goto} />,
+    answers: () => <AnswersView />,
+    settings: (active) => <SettingsView active={active} onSaved={recheck} health={health} />,
   };
 
   return (
     <div className="app">
       <header className="top">
         <h1>EzAutoApply</h1>
-        <span
-          className={`health ${health === null ? 'unknown' : health.ok ? 'ok' : 'off'}`}
-          title={health?.detail ?? 'Checking classifier…'}
-          role="button"
-          tabIndex={0}
-          onClick={() => goto('settings')}
-          onKeyDown={(e) => e.key === 'Enter' && goto('settings')}
-        >
+        <button type="button" className={`health ${healthState}`} title={health?.detail} onClick={() => goto('settings')}>
           <span className="dot" aria-hidden="true" />
-          {health === null ? 'Classifier…' : health.ok ? 'Classifier on' : 'Classifier off'}
-        </span>
+          {healthText}
+        </button>
       </header>
-      <nav className="tabs" role="tablist" aria-label="Sections">
+      <div className="tabs" role="tablist" aria-label="Sections">
         {VIEWS.map(([v, label]) => (
-          <button key={v} role="tab" aria-selected={view === v} className={view === v ? 'active' : ''} onClick={() => goto(v)}>
+          <button
+            key={v}
+            ref={(el) => {
+              tabRefs.current[v] = el;
+            }}
+            id={`tab-${v}`}
+            type="button"
+            role="tab"
+            aria-selected={view === v}
+            aria-controls={`panel-${v}`}
+            tabIndex={view === v ? 0 : -1}
+            className={view === v ? 'active' : ''}
+            onClick={() => goto(v)}
+            onKeyDown={onTabKey}
+          >
             {label}
           </button>
         ))}
-      </nav>
+      </div>
       <main>
-        {view === 'apply' && <ApplyView tab={tab} goto={goto} />}
-        {view === 'profile' && <ProfileView importDocId={importDocId} onImported={() => setImportDocId(null)} />}
-        {view === 'documents' && <DocumentsView goto={goto} />}
-        {view === 'answers' && <AnswersView />}
-        {view === 'settings' && <SettingsView onSaved={recheck} health={health} />}
+        {VIEWS.map(([v]) => (
+          <section key={v} id={`panel-${v}`} role="tabpanel" aria-labelledby={`tab-${v}`} hidden={view !== v}>
+            {content[v](view === v)}
+          </section>
+        ))}
       </main>
     </div>
   );
