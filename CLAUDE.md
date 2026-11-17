@@ -7,10 +7,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 EzAutoApply is a Chrome/Edge MV3 extension (WXT + React + TypeScript + Dexie) that parses a resume into a profile, stores the user's documents, and autofills job applications on any site. It uses an optional local classifier, **Laya**, or its hosted twin **Jev**. These are typed *decision* models (`choice` / `noul` / `score` with calibrated probabilities). They are not generative LLMs, and the user doesn't want generative text in this product. See README.md for user-facing docs.
 
 Ground rules:
-- **Never `git commit` or `git push` without the user's explicit approval for that specific commit or push.**
+- **Never `git commit` or `git push` without the user's explicit approval for that specific commit or push.** One exception: invoking `/ezaa-sprint` approves that sprint's own commits and pushes (see "Issues and sprints"). `.claude/hooks/guard.mjs` enforces both.
 - The extension never submits or advances on its own. Autofill never clicks Next/Submit/Sign In. The side panel's **Advance** button (`fill/advance.ts`) presses the page's own button, and only when the user presses Advance. Filling only happens when the user acts.
 - The classifier must stay optional. Rules and saved answers must work with it off or unreachable.
 - The job-site account password is a secret: never put it in reports, saved answers, backups, or messages other than `getSecret`.
+
+## Issues and sprints
+
+- GitHub issues on `TC6IDM/EzAutoApply` are the to-do list, on the "EzAutoApply" Project board. The `ezaa-issues` skill has the format: parents with one sub-issue per part, labels, milestones, and the board. When the owner mentions something to build, change, fix or decide, log it as an issue without being asked, after searching for duplicates.
+- **The repo is public.** Never put the password, contact details, real application answers, a real recruiter's name, unredacted page markup or LinkedIn export data in an issue, comment or PR.
+- Working an issue: `work.mjs start N` first. `work.mjs review N` once it's pushed with a PR that says `Fixes #N`. The merge closes it.
+- The pinned **Inbox** issue collects ideas. Never reply to it with a new comment. `inbox.mjs log` writes what each comment became under that comment. The SessionStart hook says when something is waiting.
+- `/ezaa-sprint` works issues unattended until the usage limit (`ezaa-sprint` SKILL.md). Invoking it is the owner's yes, for that sprint only, to commit (one commit per issue) and push on its own `sprint/<stamp>` and `wip/issue-N` branches, and to open and update its one PR. It never commits to `main`, merges, force-pushes, closes issues, submits an application or messages a person. `guard.mjs` (PreToolUse) asks before every other commit or push. It blocks force-pushes, a bare `git push` from main, and a merge while a sprint is running.
 
 ## Commands
 

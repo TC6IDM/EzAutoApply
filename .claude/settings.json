@@ -1,0 +1,86 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run compile*)",
+      "Bash(npm test*)",
+      "Bash(npx vitest run*)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git show*)",
+      "Bash(git branch*)",
+      "Bash(git rev-parse*)",
+      "Bash(gh issue view*)",
+      "Bash(gh issue list*)",
+      "Bash(node .claude/skills/ezaa-sprint/sprint.mjs budget*)",
+      "Bash(node .claude/skills/ezaa-sprint/sprint.mjs next*)",
+      "Bash(node .claude/skills/ezaa-sprint/sprint.mjs status*)",
+      "Bash(node .claude/skills/ezaa-issues/inbox.mjs pending*)",
+      "Bash(node .claude/skills/ezaa-issues/inbox.mjs count*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.mjs\"",
+            "timeout": 10,
+            "statusMessage": "Checking the commit rule..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/skills/ezaa-sprint/sprint.mjs\" budget --hook",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/skills/ezaa-sprint/sprint.mjs\" precompact",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/skills/ezaa-sprint/sprint.mjs\" aftercompact",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/skills/ezaa-issues/inbox.mjs\" count --hook",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "node \"$CLAUDE_PROJECT_DIR/.claude/skills/ezaa-sprint/sprint.mjs\" statusline"
+  }
+}

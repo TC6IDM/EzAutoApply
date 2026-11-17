@@ -1,0 +1,1531 @@
+<title>Fleet Office</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: one-screen app. A header band holds fleet controls and counters; a 3D isometric office fills the stage;
+   a roster rail sits on the left; agent windows float on top and can be dragged; an activity strip runs along the bottom. */
+:root {
+  --bg: #e8ecf1; --panel: #ffffff; --panel-2: #f3f5f8; --ink: #15202b; --ink-2: #4c5866; --ink-3: #7a8592; --line: #d4dae2;
+  --accent: #2650c0; --accent-ink: #ffffff;
+  --run: #2765d6; --ok: #1b8648; --warn: #a3660c; --bad: #bf3a26; --idle: #7d8794;
+  --haiku: #e2694f; --sonnet: #6a58d6; --opus: #cf9510; --you: #16958a;
+  --floor: #dde3ea; --rug: #ced7e1; --wall: #f5f7f9; --desk: #cbb594; --metal: #98a3b0; --crate: #c49d62; --paper: #fbfbf7; --screen: #1a222c;
+  --shadow: 0 12px 32px rgb(20 32 48 / .16), 0 2px 6px rgb(20 32 48 / .08);
+  --f-display: "Familjen Grotesk", "IBM Plex Sans", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0e131a; --panel: #161d26; --panel-2: #1c2430; --ink: #e5eaf0; --ink-2: #9ba8b7; --ink-3: #6f7c8b; --line: #2a3542;
+  --accent: #86a3ff; --accent-ink: #0e131a;
+  --run: #64a4ff; --ok: #44cf80; --warn: #f0b24a; --bad: #ff7b67; --idle: #6c7785;
+  --haiku: #ff8a72; --sonnet: #9d8fff; --opus: #f2c04c; --you: #4fd0bf;
+  --floor: #19212b; --rug: #222c38; --wall: #252f3b; --desk: #5c4b38; --metal: #56616f; --crate: #8a6a3f; --paper: #dfe3e8; --screen: #0b0f14;
+  --shadow: 0 14px 36px rgb(0 0 0 / .5), 0 2px 6px rgb(0 0 0 / .3);
+  color-scheme: dark;
+} }
+:root[data-theme="dark"] {
+  --bg: #0e131a; --panel: #161d26; --panel-2: #1c2430; --ink: #e5eaf0; --ink-2: #9ba8b7; --ink-3: #6f7c8b; --line: #2a3542;
+  --accent: #86a3ff; --accent-ink: #0e131a;
+  --run: #64a4ff; --ok: #44cf80; --warn: #f0b24a; --bad: #ff7b67; --idle: #6c7785;
+  --haiku: #ff8a72; --sonnet: #9d8fff; --opus: #f2c04c; --you: #4fd0bf;
+  --floor: #19212b; --rug: #222c38; --wall: #252f3b; --desk: #5c4b38; --metal: #56616f; --crate: #8a6a3f; --paper: #dfe3e8; --screen: #0b0f14;
+  --shadow: 0 14px 36px rgb(0 0 0 / .5), 0 2px 6px rgb(0 0 0 / .3);
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--ink); font: 14px/1.45 var(--f-body); overflow: hidden; }
+* { box-sizing: border-box; }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.app { height: 100%; display: grid; grid-template-rows: auto 1fr auto; }
+
+/* Header band */
+.top { background: var(--panel); border-bottom: 1px solid var(--line); padding-block: 10px 8px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 8px; position: relative; z-index: 30; }
+.top-row { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between; }
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.mark { width: 30px; height: 30px; border-radius: 8px; background: var(--ink); display: grid; place-items: center; flex: none; }
+.mark i { width: 12px; height: 12px; background: var(--bg); transform: rotate(45deg); border-radius: 2px; }
+.brand h1 { font: 700 19px/1.1 var(--f-display); margin: 0; letter-spacing: -.01em; }
+.brand p { margin: 1px 0 0; font-size: 12px; color: var(--ink-3); }
+.badge { display: inline-block; font: 500 11px var(--f-mono); color: var(--warn); border: 1px solid currentColor; border-radius: 4px; padding: 0 5px; margin-left: 6px; vertical-align: 1px; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.seg { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); padding: 2px; gap: 2px; }
+.seg > span { font-size: 12px; color: var(--ink-2); padding: 0 6px 0 8px; }
+.seg button { border: 0; background: transparent; border-radius: 6px; min-width: 30px; height: 28px; cursor: pointer; font-variant-numeric: tabular-nums; }
+.seg button[aria-pressed="true"] { background: var(--panel); box-shadow: 0 1px 2px rgb(0 0 0 / .12); font-weight: 600; }
+.btn { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; height: 32px; padding: 0 12px; cursor: pointer; font-weight: 500; white-space: nowrap; }
+.btn:hover { background: var(--panel-2); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn.danger { color: var(--bad); }
+.btn.small { height: 28px; padding: 0 10px; font-size: 13px; }
+.confirm { position: absolute; right: max(16px, env(safe-area-inset-right, 0px)); top: 52px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; box-shadow: var(--shadow); padding: 12px; width: min(320px, calc(100vw - 32px)); display: grid; gap: 10px; z-index: 40; }
+.confirm p { margin: 0; }
+.confirm div { display: flex; gap: 8px; justify-content: flex-end; }
+.stats { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+.stats::-webkit-scrollbar { display: none; }
+.stat { flex: none; display: flex; align-items: baseline; gap: 6px; border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; background: var(--panel-2); font-size: 12px; color: var(--ink-2); }
+.stat b { font: 600 13px var(--f-mono); color: var(--ink); font-variant-numeric: tabular-nums; }
+button.stat { cursor: pointer; }
+button.stat:hover { border-color: var(--ink-3); }
+.stat.t-warn b { color: var(--warn); } .stat.t-ok b { color: var(--ok); }
+
+/* Stage */
+.stage { position: relative; overflow: hidden; min-height: 0; }
+#scene { position: absolute; inset: 0; }
+#scene canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.labels { position: absolute; inset: 0; pointer-events: none; }
+.tagwrap { pointer-events: none; }
+.tag { pointer-events: auto; display: flex; align-items: center; gap: 6px; background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+  border-radius: 999px; padding: 2px 4px 2px 6px; font: 500 12px var(--f-body); box-shadow: 0 4px 12px rgb(0 0 0 / .12); white-space: nowrap; cursor: pointer; }
+.tag:hover, .tag.hover { border-color: var(--ink-3); }
+.tag.dim { opacity: .7; }
+.tag .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--c); flex: none; }
+.zone { font: 600 10.5px var(--f-body); letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); white-space: nowrap; }
+.pill { --c: var(--idle); display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; padding: 1px 8px; font: 500 11.5px var(--f-body);
+  background: color-mix(in oklab, var(--c) 15%, var(--panel)); color: color-mix(in oklab, var(--c) 82%, var(--ink)); white-space: nowrap; }
+.pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--c); }
+.t-run { --c: var(--run); } .t-ok { --c: var(--ok); } .t-warn { --c: var(--warn); } .t-bad { --c: var(--bad); } .t-idle { --c: var(--idle); }
+.pill.t-run::before { animation: blink 1.2s ease-in-out infinite; }
+@keyframes blink { 50% { opacity: .3; } }
+
+/* Roster */
+.roster { position: absolute; z-index: 10; top: 12px; left: max(16px, env(safe-area-inset-left, 0px)); width: 256px; max-height: calc(100% - 24px);
+  overflow-y: auto; background: color-mix(in oklab, var(--panel) 92%, transparent); backdrop-filter: blur(8px); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); }
+.roster h2 { font: 600 11px var(--f-body); letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); margin: 0; padding: 12px 14px 6px; }
+.roster ul { list-style: none; margin: 0; padding: 0 6px 6px; display: grid; gap: 2px; }
+.r-item { width: 100%; display: grid; grid-template-columns: 12px 1fr auto; gap: 2px 8px; align-items: center; text-align: left; border: 0; background: transparent; border-radius: 8px; padding: 7px 8px; cursor: pointer; }
+.r-item:hover, .r-item.open { background: var(--panel-2); }
+.r-item .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--c); }
+.r-item .nm { font-weight: 600; font-size: 13px; }
+.r-item .md { font: 400 11px var(--f-mono); color: var(--ink-3); }
+.r-item .ln { grid-column: 2 / 4; font-size: 12px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.r-item.off .nm, .r-item.off .ln { color: var(--ink-3); }
+.legend-models { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 8px 14px 12px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--ink-2); }
+.legend-models span { display: inline-flex; align-items: center; gap: 5px; }
+.legend-models i { width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+
+.viewctl { position: absolute; z-index: 10; right: max(16px, env(safe-area-inset-right, 0px)); bottom: 12px; display: flex; gap: 6px; }
+.nogl { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 24px; color: var(--ink-2); }
+.nogl p { max-width: 40ch; }
+
+/* Windows */
+#windows { position: absolute; inset: 0; pointer-events: none; z-index: 20; }
+.win { position: absolute; width: min(390px, calc(100% - 32px)); max-height: calc(100% - 24px); display: flex; flex-direction: column; pointer-events: auto;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
+.win-h { display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 12px; border-bottom: 1px solid var(--line); cursor: grab; user-select: none; touch-action: none;
+  background: linear-gradient(color-mix(in oklab, var(--c) 10%, var(--panel)), var(--panel)); }
+.win-h:active { cursor: grabbing; }
+.avatar { width: 26px; height: 26px; border-radius: 50%; background: var(--c); flex: none; position: relative; }
+.avatar::after { content: ""; position: absolute; left: 7px; right: 7px; top: 10px; height: 4px; border-radius: 2px; background: color-mix(in oklab, var(--c) 40%, #000); }
+.win-t { flex: 1; min-width: 0; display: grid; }
+.win-t strong { font: 700 15px/1.2 var(--f-display); }
+.win-t span { font-size: 12px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.icon-btn { border: 0; background: transparent; width: 30px; height: 30px; border-radius: 8px; cursor: pointer; color: var(--ink-2); font-size: 15px; }
+.icon-btn:hover { background: var(--panel-2); }
+.win-b { overflow-y: auto; padding: 12px; display: grid; gap: 12px; align-content: start; }
+.now-row { display: flex; align-items: center; gap: 8px; }
+.now { margin: 0; font-size: 13px; color: var(--ink-2); min-width: 0; }
+.empty { margin: 0; color: var(--ink-2); font-size: 13px; }
+.job { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: grid; gap: 2px; background: var(--panel-2); }
+.job-top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.job-top strong { font: 700 15px var(--f-display); }
+.job-role { font-size: 13px; }
+.job-meta { font-size: 12px; color: var(--ink-3); }
+.tier { font: 500 11px var(--f-mono); color: var(--ink-2); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; background: var(--panel); }
+.sect { display: grid; gap: 6px; }
+.sect-h { display: flex; justify-content: space-between; font: 600 11px var(--f-body); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); }
+.sect-h .num { font: 500 11.5px var(--f-mono); letter-spacing: 0; text-transform: none; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.stepper { list-style: none; margin: 0; padding: 0; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.stepper li { display: flex; align-items: center; gap: 4px; }
+.stepper li + li::before { content: ""; width: 10px; height: 2px; background: var(--line); }
+.stepper span { min-width: 24px; height: 24px; border-radius: 12px; display: grid; place-items: center; font: 500 12px var(--f-mono); border: 1px solid var(--line); color: var(--ink-3); padding: 0 6px; }
+.stepper .done span { background: color-mix(in oklab, var(--ok) 16%, var(--panel)); color: var(--ok); border-color: transparent; }
+.stepper .cur span { background: var(--run); color: #fff; border-color: transparent; }
+.stepper .submit span { font-family: var(--f-body); }
+.stepper .submit.cur span { background: var(--ok); }
+.form-mini { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.fr { display: grid; grid-template-columns: minmax(0, 1fr) 46%; gap: 8px; align-items: center; padding: 5px 10px; font-size: 12px; border-top: 1px solid var(--line); }
+.fr:first-child { border-top: 0; }
+.fr .fl { color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fr .fv { height: 16px; border-radius: 4px; border: 1px dashed var(--line); }
+.fr.filled .fv { border: 0; background: color-mix(in oklab, var(--ok) 22%, var(--panel)); }
+.fr.stuck { background: color-mix(in oklab, var(--warn) 9%, var(--panel)); }
+.fr.stuck .fl { color: var(--ink); font-weight: 500; }
+.fr.stuck .fv { border: 0; height: auto; font: 500 11px var(--f-body); color: var(--warn); }
+.srcbar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--panel-2); }
+.srcbar i { width: var(--w); background: var(--c); }
+.legend { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 12px; color: var(--ink-2); }
+.legend li { display: inline-flex; align-items: center; gap: 5px; }
+.legend span { width: 8px; height: 8px; border-radius: 2px; background: var(--c); }
+.legend b { font: 500 12px var(--f-mono); color: var(--ink); }
+.callout { border-radius: 10px; padding: 10px 12px; display: grid; gap: 4px; border: 1px solid color-mix(in oklab, var(--c) 35%, var(--line)); background: color-mix(in oklab, var(--c) 8%, var(--panel)); }
+.callout strong { font-size: 13px; color: color-mix(in oklab, var(--c) 80%, var(--ink)); }
+.callout p { margin: 0; font-size: 12.5px; color: var(--ink-2); }
+.callout.warn { --c: var(--warn); } .callout.info { --c: var(--run); } .callout.ok { --c: var(--ok); }
+.link { border: 0; background: none; padding: 0; color: var(--accent); cursor: pointer; font-weight: 500; justify-self: start; text-decoration: underline; text-underline-offset: 2px; }
+.log { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; font-size: 12px; }
+.log li { display: grid; grid-template-columns: 62px 1fr; gap: 8px; }
+.log time { font: 400 11.5px var(--f-mono); color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.log .t-warn span { color: var(--warn); } .log .t-ok span { color: var(--ok); } .log .t-bad span { color: var(--bad); }
+.win-actions { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 2px; }
+.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.steps li { display: grid; grid-template-columns: 18px 1fr; gap: 8px; align-items: start; font-size: 12.5px; padding: 3px 0; color: var(--ink-3); }
+.steps li::before { content: ""; width: 12px; height: 12px; margin-top: 3px; border-radius: 50%; border: 1.5px solid var(--line); }
+.steps li.done { color: var(--ink-2); }
+.steps li.done::before { background: var(--ok); border-color: var(--ok); }
+.steps li.cur { color: var(--ink); font-weight: 500; }
+.steps li.cur::before { border-color: var(--run); background: color-mix(in oklab, var(--run) 30%, var(--panel)); animation: blink 1s infinite; }
+.steps small { display: block; font: 400 11.5px var(--f-mono); color: var(--ink-3); font-weight: 400; }
+.kind { font: 500 11px var(--f-mono); }
+.ticket { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: grid; gap: 4px; }
+.ticket-top { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.ticket q { font-weight: 600; quotes: "“" "”"; }
+.ticket p { margin: 0; font-size: 12px; color: var(--ink-3); }
+.lamp { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); }
+.lamp i { width: 10px; height: 10px; border-radius: 50%; background: var(--c); box-shadow: 0 0 0 3px color-mix(in oklab, var(--c) 25%, transparent); }
+.rows { list-style: none; margin: 0; padding: 0; display: grid; }
+.rows li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; padding: 7px 0; border-top: 1px solid var(--line); font-size: 12.5px; }
+.rows li:first-child { border-top: 0; }
+.rows .sub { grid-column: 1 / -1; color: var(--ink-3); font-size: 12px; }
+.rows .mono { font: 500 12px var(--f-mono); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+table.src { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.src th { text-align: left; font: 600 11px var(--f-body); letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); padding: 4px 0; }
+table.src td { padding: 5px 0; border-top: 1px solid var(--line); }
+table.src td.n, table.src th.n { text-align: right; font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+table.src tr.skip td { color: var(--ink-3); }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.chip { font-size: 12px; border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; color: var(--ink-3); }
+.chip.cur { border-color: var(--run); color: var(--run); font-weight: 500; }
+.chip.done { color: var(--ink-2); }
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin: -4px -12px 0; padding: 0 8px; overflow-x: auto; scrollbar-width: none; }
+.tabs button { border: 0; background: none; padding: 8px 8px 7px; cursor: pointer; font-size: 13px; color: var(--ink-2); border-bottom: 2px solid transparent; white-space: nowrap; }
+.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 600; border-bottom-color: var(--accent); }
+.tabs b { font: 500 11.5px var(--f-mono); color: var(--ink-3); margin-left: 3px; }
+.card { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: grid; gap: 6px; }
+.card-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.card-top strong { font: 700 14px var(--f-display); }
+.card-meta { font-size: 12px; color: var(--ink-3); }
+.msg { margin: 0; font-size: 12.5px; background: var(--panel-2); border-radius: 8px; padding: 8px 10px; white-space: pre-wrap; }
+.msg-h { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--ink-3); }
+.msg-h span:last-child { font-family: var(--f-mono); }
+.card-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* Activity strip */
+.ticker { background: var(--panel); border-top: 1px solid var(--line); padding-block: 6px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: flex; gap: 14px; align-items: center; min-width: 0; font-size: 12.5px; z-index: 30; }
+.ticker > strong { font: 600 11px var(--f-body); letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); flex: none; }
+.ticker ol { list-style: none; margin: 0; padding: 0; display: flex; gap: 18px; min-width: 0; overflow: hidden; }
+.ticker li { white-space: nowrap; color: var(--ink-2); }
+.ticker li:first-child { color: var(--ink); }
+.ticker time { font: 400 11.5px var(--f-mono); color: var(--ink-3); margin-right: 6px; }
+.ticker b { font-weight: 600; }
+.toast { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px; z-index: 50; box-shadow: var(--shadow); max-width: calc(100% - 32px); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+@media (max-width: 760px) {
+  .brand p { display: none; }
+  .roster { top: auto; bottom: 8px; left: 8px; right: 8px; width: auto; max-height: none; overflow: visible; border-radius: 12px; }
+  .roster h2, .legend-models { display: none; }
+  .roster ul { display: flex; overflow-x: auto; padding: 6px; gap: 4px; scrollbar-width: none; }
+  .roster li { flex: none; width: 168px; }
+  .viewctl { top: 10px; bottom: auto; }
+  .win { left: 0 !important; right: 0; top: auto !important; bottom: 0; width: 100%; max-height: 72%; border-radius: 14px 14px 0 0; }
+  .win-h { cursor: default; }
+  .ticker ol li:nth-child(n+2) { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { .pill.t-run::before, .steps li.cur::before { animation: none; } }
+</style>
+
+<div class="app">
+  <header class="top">
+    <div class="top-row">
+      <div class="brand">
+        <div class="mark" aria-hidden="true"><i></i></div>
+        <div>
+          <h1>Fleet Office <span class="badge">sample data</span></h1>
+          <p>EzAutoApply × ai-job-search · agents stop at Submit, you press it</p>
+        </div>
+      </div>
+      <div class="controls">
+        <div class="seg" role="group" aria-label="Number of applier agents">
+          <span>Appliers</span>
+          <button type="button" data-count="1" aria-pressed="false">1</button>
+          <button type="button" data-count="2" aria-pressed="true">2</button>
+          <button type="button" data-count="3" aria-pressed="false">3</button>
+          <button type="button" data-count="4" aria-pressed="false">4</button>
+        </div>
+        <button type="button" class="btn primary" id="launch">Pause fleet</button>
+        <button type="button" class="btn danger" id="stop">Stop all</button>
+      </div>
+    </div>
+    <div class="stats" id="stats" aria-label="Fleet totals"></div>
+    <div class="confirm" id="stopConfirm" role="alertdialog" aria-labelledby="stopText" hidden>
+      <p id="stopText">Stop every agent? Jobs they were working on go back to the front of the queue, and their windows close.</p>
+      <div><button type="button" class="btn" id="stopNo">Keep running</button><button type="button" class="btn primary" id="stopYes">Stop all</button></div>
+    </div>
+  </header>
+
+  <main class="stage" id="stage">
+    <div id="scene"><p class="sr-only">A 3D office floor showing each agent at its desk. Use the agent list to open any agent.</p></div>
+    <aside class="roster" aria-label="Agents">
+      <h2>Agents</h2>
+      <ul id="roster"></ul>
+      <div class="legend-models" aria-label="Model colours">
+        <span style="--c: var(--haiku)"><i></i>Haiku 5.5</span>
+        <span style="--c: var(--sonnet)"><i></i>Sonnet 5.5</span>
+        <span style="--c: var(--opus)"><i></i>Opus 5.5</span>
+        <span style="--c: var(--you)"><i></i>You</span>
+      </div>
+    </aside>
+    <div class="viewctl">
+      <div class="seg" role="group" aria-label="Simulation speed">
+        <span>Speed</span>
+        <button type="button" data-speed="1" aria-pressed="true">1×</button>
+        <button type="button" data-speed="4" aria-pressed="false">4×</button>
+      </div>
+      <button type="button" class="btn small" id="resetView">Reset view</button>
+    </div>
+    <div class="nogl" id="nogl" hidden><p>The 3D office couldn't load in this browser. Everything else still works: open any agent from the list.</p></div>
+    <div id="windows"></div>
+    <div class="toast" id="toast" role="status" hidden></div>
+  </main>
+
+  <footer class="ticker" aria-label="Latest activity">
+    <strong>Activity</strong>
+    <ol id="ticker"></ol>
+  </footer>
+</div>
+
+<script>
+(() => {
+  'use strict';
+  const $ = (s, r = document) => r.querySelector(s);
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const rnd = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
+  const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+  const clock = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+
+  const listeners = [];
+  const Fleet = (window.Fleet = {
+    on(fn) { listeners.push(fn); },
+    emit(type, data) { for (const fn of listeners) { try { fn(type, data); } catch (e) { console.error(e); } } },
+  });
+
+  // ---------- Sample data ----------
+  const JOBS = [
+    { company: 'Larkspur Health', role: 'Software Developer I', loc: 'Remote, Canada', ats: 'Workday', pages: 6, tier: 'A', fit: 88, doc: 'Tailored CV (from /apply)' },
+    { company: 'Northwind Maps', role: 'Junior Backend Developer', loc: 'Toronto, ON · Hybrid', ats: 'Greenhouse', pages: 3, tier: 'B', fit: 84, doc: 'Default resume' },
+    { company: 'Tidepool Analytics', role: 'New Grad Software Engineer', loc: 'Toronto, ON', ats: 'Ashby', pages: 2, tier: 'B', fit: 81, doc: 'Default resume' },
+    { company: 'Quarry Labs', role: 'Full-Stack Developer, New Grad', loc: 'Waterloo, ON · Hybrid', ats: 'Lever', pages: 2, tier: 'B', fit: 77, doc: 'Default resume' },
+    { company: 'Fernhill Bank', role: 'Associate Software Engineer', loc: 'Toronto, ON · Hybrid', ats: 'Workday', pages: 7, tier: 'B', fit: 79, doc: 'Default resume' },
+    { company: 'Brightline Transit', role: 'Developer, Geospatial Systems', loc: 'Ottawa, ON · Remote', ats: 'SmartRecruiters', pages: 4, tier: 'A', fit: 90, doc: 'Tailored CV (from /apply)' },
+    { company: 'Cobalt Games', role: 'Junior Software Developer', loc: 'Toronto, ON', ats: 'LinkedIn Easy Apply', pages: 3, tier: 'B', fit: 83, doc: 'Default resume' },
+    { company: 'Maple Ledger', role: 'Software Engineer I, Payments', loc: 'Remote, Canada', ats: 'iCIMS', pages: 5, tier: 'B', fit: 76, doc: 'Default resume' },
+    { company: 'Harbourline Logistics', role: 'Backend Developer (Python)', loc: 'Mississauga, ON', ats: 'Lever', pages: 2, tier: 'B', fit: 80, doc: 'Default resume' },
+    { company: 'Polar Sports Media', role: 'Web Developer, Content Apps', loc: 'Toronto, ON · Hybrid', ats: 'Ashby', pages: 2, tier: 'B', fit: 86, doc: 'Default resume' },
+  ];
+  const ACCOUNT_ATS = ['Workday', 'iCIMS', 'SmartRecruiters'];
+  const ISSUES = {
+    onsite: { kind: 'data', label: 'Can you work on-site 4 days a week in Toronto?', fix: 'Saved "Yes" (from your location and on-site preference), flagged for your approval' },
+    start: { kind: 'data', label: 'When could you start?', fix: 'Saved "Immediately" (graduated May 2026), flagged for your approval' },
+    mobile: { kind: 'code', label: 'Mobile #', fix: 'Phone label now matches "Mobile #"', file: 'core/fieldKeys.ts', test: 'rules.test.ts › Phone › "Mobile #"' },
+    grad: { kind: 'code', label: 'Graduation date (year only)', fix: 'Year-only date box in a custom wrapper is now scanned', file: 'fill/scan.ts', test: 'workday.test.ts › year-only graduation date' },
+    degree: { kind: 'code', label: 'Highest level of education', fix: '"Undergraduate Degree" now matches Bachelor’s', file: 'core/options.ts', test: 'options.test.ts › degree variants' },
+    rank: { kind: 'cant', label: 'Rank these technologies (drag to order)', fix: 'No filler for drag-to-rank lists yet. Logged for a proper fix.' },
+    certify: { kind: 'attest', label: 'I certify the information in this application is true', fix: 'Attestation. Only you can answer this one.' },
+    captcha: { kind: 'human', label: 'Security check (CAPTCHA)', fix: 'Agents never solve CAPTCHAs.' },
+  };
+  const ISSUE_KEYS = Object.keys(ISSUES);
+  const FIELD_NAMES = ['First name', 'Last name', 'Email', 'Phone', 'City', 'LinkedIn URL', 'Resume', 'Legally eligible to work in Canada?',
+    'School', 'Degree', 'Graduation date', 'Most recent employer', 'Job title', 'Start date', 'How did you hear about us?', 'Gender (optional)', 'Portfolio or GitHub', 'Cover letter'];
+  const PROSPECTS = [
+    { company: 'Lumen Geodata', person: 'Priya Nair', title: 'Engineering Manager, Mapping', found: 'Team page', why: 'geo', channel: 'LinkedIn' },
+    { company: 'Kestrel Fintech', person: 'Marcus Lee', title: 'Technical Recruiter', found: 'Public job post', why: 'backend', channel: 'LinkedIn' },
+    { company: 'Saltbox Studios', person: 'Dana Okafor', title: 'Talent Partner', found: 'Careers page (email listed)', why: 'sports', channel: 'Email' },
+    { company: 'Aurora Civic Tech', person: 'Sam Tremblay', title: 'Head of Engineering', found: 'Conference talk page', why: 'geo', channel: 'LinkedIn' },
+    { company: 'Riverbend Software', person: 'Elena Rossi', title: 'University Recruiter', found: 'Careers page', why: 'backend', channel: 'LinkedIn' },
+    { company: 'Pinecrest Media', person: 'Jordan Blake', title: 'Engineering Manager', found: 'Team page', why: 'sports', channel: 'LinkedIn' },
+    { company: 'Ironwood Cloud', person: 'Hana Sato', title: 'Technical Recruiter', found: 'Public job post', why: 'backend', channel: 'LinkedIn' },
+    { company: 'Granite Robotics', person: 'Theo Martin', title: 'Talent Partner', found: 'Careers page (email listed)', why: 'backend', channel: 'Email' },
+  ];
+  const NOTE = {
+    geo: (f, c) => `Hi ${f}, I'm a 2026 York software engineering grad. At Natural Resources Canada I built a Python QGIS plugin for geospatial work on HPC. I'd love to connect about developer roles at ${c}.`,
+    backend: (f, c) => `Hi ${f}, I'm a 2026 York software engineering grad. At Natural Resources Canada I improved a hydrology app's processing by about 80%. I'd love to connect about roles at ${c}.`,
+    sports: (f, c) => `Hi ${f}, I'm a 2026 York software engineering grad who spent 8 months at theScore. I'd love to connect about developer roles at ${c}.`,
+  };
+  const FOLLOW = {
+    geo: (f, c) => `Thanks for connecting, ${f}. I graduated from York's software engineering program in May. At Natural Resources Canada I built the Canadian Hydrospatial Network QGIS plugin solo in Python, so a 10 to 14 person team could run their tools on HPC without downloading huge files. ${c}'s mapping work is close to that. If you're hiring junior or new-grad developers, I'd be glad to send my resume or have a quick call.`,
+    backend: (f, c) => `Thanks for connecting, ${f}. I graduated from York's software engineering program in May and I'm looking for a backend or full-stack role. At Natural Resources Canada I wrote flow-path algorithms in Python and redesigned a catchment-union step, which improved processing by about 80% on multi-gigabyte data. If ${c} is hiring new-grad developers, I'd be glad to send my resume.`,
+    sports: (f, c) => `Thanks for connecting, ${f}. I graduated from York's software engineering program in May. I spent 8 months at theScore on its betting and content apps, and I'm building a casino game in TypeScript and Svelte with a Python math backend. If ${c} is hiring junior developers, I'd be glad to send my resume or chat.`,
+  };
+
+  // ---------- State ----------
+  let jobSeq = 0, ticketSeq = 40, prospectSeq = 0;
+  function makeJob(override) {
+    const base = JOBS[jobSeq % JOBS.length];
+    jobSeq++;
+    const pages = [];
+    for (let i = 0; i < base.pages; i++) pages.push({ total: rnd(6, 13), filled: 0 });
+    let issue = null;
+    const key = override?.issue ?? (Math.random() < 0.45 ? pick(ISSUE_KEYS) : null);
+    if (key) {
+      const p = override?.issuePage ?? rnd(0, base.pages - 1);
+      issue = { ...ISSUES[key], page: p, at: override?.issueAt ?? rnd(2, pages[p].total - 1), done: false };
+    }
+    return { id: 'job-' + (1000 + jobSeq), ...base, pages, issue, page: 0, src: { rules: 0, answers: 0, classifier: 0, fixer: 0, agent: 0 } };
+  }
+  function agent(id, name, model, role, kind, extra) {
+    return { id, name, model, role, kind, phase: 'idle', wait: 0, log: [], now: '', paused: false, ...extra };
+  }
+  const S = (Fleet.S = {
+    mode: 'running', count: 2, speed: 1,
+    queue: [], ready: [], needs: [], answers: [], drafts: [], tickets: [], events: [],
+    submitted: 4, fixes: 3, sent: 1, spend: 0.62,
+    agents: {
+      scout: agent('scout', 'Scout', 'sonnet', 'Finds and ranks jobs, fills the queue', 'scout', { step: 6, run: {}, today: { linkedin: 31, simplify: 22, jobbank: 9 } }),
+      w1: agent('w1', 'Applier 1', 'haiku', 'Runs EzAutoApply on queued jobs', 'applier', { slot: 1, phase: 'off', job: null }),
+      w2: agent('w2', 'Applier 2', 'haiku', 'Runs EzAutoApply on queued jobs', 'applier', { slot: 2, phase: 'off', job: null }),
+      w3: agent('w3', 'Applier 3', 'haiku', 'Runs EzAutoApply on queued jobs', 'applier', { slot: 3, phase: 'off', job: null }),
+      w4: agent('w4', 'Applier 4', 'haiku', 'Runs EzAutoApply on queued jobs', 'applier', { slot: 4, phase: 'off', job: null }),
+      fixer: agent('fixer', 'Fixer', 'opus', 'Fixes the extension so the field fills next time', 'fixer', { ticket: null, stepIdx: 0, lamp: 'off', recent: [] }),
+      outreach: agent('outreach', 'Outreach', 'sonnet', 'Finds recruiters and writes messages for you to send', 'outreach', { step: -1, prospect: null }),
+    },
+  });
+  const A = S.agents;
+  const APPLIERS = [A.w1, A.w2, A.w3, A.w4];
+
+  function log(a, text, tone) {
+    const t = clock();
+    a.log.unshift({ t, text, tone });
+    if (a.log.length > 40) a.log.length = 40;
+    a.now = text;
+    S.events.unshift({ t, who: a.name, text, tone });
+    if (S.events.length > 30) S.events.length = 30;
+  }
+
+  // ---------- Appliers ----------
+  function stepApplier(a) {
+    const active = a.slot <= S.count;
+    if (a.phase === 'off') {
+      if (active) { a.phase = 'idle'; log(a, 'Joined the fleet in its own Chrome window'); Fleet.emit('agentOn', a.id); }
+      return;
+    }
+    if (a.paused) return;
+    if (a.wait > 0) { a.wait--; return; }
+    const j = a.job;
+    switch (a.phase) {
+      case 'idle':
+        if (!active) { a.phase = 'off'; a.now = 'Empty desk'; Fleet.emit('agentOff', a.id); return; }
+        if (S.queue.length) {
+          a.job = S.queue.shift();
+          a.phase = 'open'; a.wait = 1;
+          log(a, `Claimed ${a.job.company}: ${a.job.role}`);
+          Fleet.emit('claim', a.id);
+        } else a.now = 'Waiting for the queue';
+        return;
+      case 'open':
+        log(a, `Opened the ${j.ats} posting and pressed Run`);
+        if (ACCOUNT_ATS.includes(j.ats)) { a.phase = 'account'; a.wait = 1; } else a.phase = 'fill';
+        return;
+      case 'account':
+        log(a, `Run created a ${j.ats} account with your saved password`);
+        a.phase = 'verify'; a.wait = 1;
+        return;
+      case 'verify':
+        log(a, 'Read the verification code from Gmail and entered it');
+        a.phase = 'fill';
+        return;
+      case 'fill': {
+        const p = j.pages[j.page];
+        const iss = j.issue;
+        const add = rnd(2, 4);
+        for (let k = 0; k < add && p.filled < p.total; k++) {
+          if (iss && !iss.done && iss.page === j.page && p.filled === iss.at) return stopOnIssue(a);
+          p.filled++;
+          const r = Math.random();
+          if (r < 0.66) j.src.rules++; else if (r < 0.9) j.src.answers++; else j.src.classifier++;
+        }
+        S.spend += 0.0008;
+        a.now = `Run is filling page ${j.page + 1} of ${j.pages.length}: ${p.filled} of ${p.total} fields`;
+        if (p.filled >= p.total) a.phase = j.page === j.pages.length - 1 ? 'ready' : 'advance';
+        return;
+      }
+      case 'advance':
+        j.page++;
+        log(a, `Page ${j.page} complete. Run pressed Next`);
+        a.phase = 'fill';
+        return;
+      case 'ready':
+        S.ready.push({ ...j, at: clock(), by: a.name });
+        log(a, `Stopped at Submit on ${j.company}. It's in your inbox.`, 'ok');
+        Fleet.emit('ready', a.id);
+        a.job = null; a.phase = 'idle'; a.wait = 2;
+        return;
+      case 'parked':
+        a.now = `Waiting on the Fixer (ticket #${a.ticketId})`;
+        return;
+      case 'rerun':
+        j.issue.done = true; j.pages[j.page].filled++; j.src.fixer++;
+        log(a, 'The Fixer shipped a fix. Pressed Run again and the field filled', 'ok');
+        a.phase = 'fill';
+        return;
+      case 'handfill':
+        j.issue.done = true; j.pages[j.page].filled++; j.src.agent++;
+        S.answers.push({ q: j.issue.label, a: 'Filled by Applier in the page', company: j.company, by: a.name + ' (by hand)' });
+        log(a, `Filled "${j.issue.label}" by hand. Flagged for your review`, 'warn');
+        S.spend += 0.01;
+        a.phase = 'fill';
+        return;
+    }
+  }
+  function stopOnIssue(a) {
+    const j = a.job, iss = j.issue;
+    if (iss.kind === 'human') {
+      iss.done = true;
+      S.needs.push({ company: j.company, role: j.role, ats: j.ats, reason: `CAPTCHA on page ${j.page + 1}`, at: clock() });
+      log(a, `${iss.label} at ${j.company}. Left the window open for you`, 'warn');
+      Fleet.emit('needsYou', a.id);
+      a.job = null; a.phase = 'idle'; a.wait = 2;
+      return;
+    }
+    const open = [A.fixer.ticket, ...S.tickets].find((t) => t && t.label === iss.label);
+    if (open) {
+      open.waiters.push(a.id); a.ticketId = open.id;
+      log(a, `Can't fill "${iss.label}". The Fixer already has it (#${open.id})`, 'warn');
+    } else {
+      const t = { id: ++ticketSeq, label: iss.label, kind: iss.kind, fix: iss.fix, file: iss.file, test: iss.test, ats: j.ats, company: j.company, waiters: [a.id] };
+      S.tickets.push(t); a.ticketId = t.id;
+      log(a, `Can't fill "${iss.label}". Reported it to the Fixer (#${t.id})`, 'warn');
+    }
+    Fleet.emit('incident', a.id);
+    a.phase = 'parked';
+  }
+
+  // ---------- Fixer ----------
+  const STEPS = {
+    data: ['Read the incident', 'Classify: data gap', 'Search your records', 'Sonnet writes the answer from your records', 'Save to the answer bank, flagged for you', 'Applier presses Run again'],
+    code: ['Read the incident', 'Classify: code fix', 'Build a fixture from the redacted page', 'Write a failing test', 'Fix', 'npm test', 'Replay past incidents', 'Rebuild the fleet extension', 'Reload it between fills'],
+    cant: ['Read the incident', 'Classify: code fix', 'Build a fixture from the redacted page', 'Try a fix', 'Over the time budget', 'Hand back to the applier'],
+    attest: ['Read the incident', 'Classify: attestation', 'Send to your inbox'],
+  };
+  const DUR = { 'Search your records': 2, 'Sonnet writes the answer from your records': 2, 'Build a fixture from the redacted page': 2, 'Write a failing test': 2, 'Fix': 3, 'npm test': 2, 'Replay past incidents': 2, 'Rebuild the fleet extension': 2, 'Try a fix': 3 };
+  function stepDetail(t, step) {
+    if (step === 'Write a failing test') return t.test;
+    if (step === 'Fix') return t.file + ': ' + t.fix;
+    if (step === 'Save to the answer bank, flagged for you') return t.fix;
+    if (step === 'Replay past incidents') return '214 stored fields, 0 changed';
+    return '';
+  }
+  function stepFixer(f) {
+    if (f.wait > 0) { f.wait--; return; }
+    if (!f.ticket) {
+      if (S.tickets.length) {
+        f.ticket = S.tickets.shift(); f.stepIdx = 0; f.lamp = 'off';
+        log(f, `Picked up #${f.ticket.id}: "${f.ticket.label}" (${f.ticket.ats})`);
+      } else f.now = 'No open tickets';
+      return;
+    }
+    const t = f.ticket, steps = STEPS[t.kind];
+    if (f.stepIdx < steps.length) {
+      const step = steps[f.stepIdx++];
+      if (step === 'Write a failing test') f.lamp = 'red';
+      if (step === 'npm test' || step === 'Replay past incidents') f.lamp = 'green';
+      const d = stepDetail(t, step);
+      log(f, `#${t.id} ${step}${d ? ': ' + d : ''}`);
+      S.spend += t.kind === 'code' ? 0.03 : 0.012;
+      f.wait = DUR[step] ?? 1;
+      return;
+    }
+    const outcome = t.kind === 'cant' ? 'cant' : t.kind === 'attest' ? 'attest' : 'fixed';
+    if (outcome === 'fixed') {
+      S.fixes++;
+      if (t.kind === 'data') S.answers.push({ q: t.label, a: t.fix.match(/"([^"]+)"/)?.[1] ?? 'Answer', company: t.company, by: 'Sonnet 5.5 via the Fixer' });
+    }
+    f.recent.unshift({ id: t.id, label: t.label, kind: t.kind, outcome, file: t.file, test: t.test, t: clock() });
+    if (f.recent.length > 6) f.recent.length = 6;
+    log(f, outcome === 'fixed' ? `Fixed #${t.id}. Every applier fills "${t.label}" from now on` : outcome === 'cant' ? `Couldn't fix #${t.id} in time. The applier fills it by hand` : `#${t.id} needs your answer. Sent to your inbox`, outcome === 'fixed' ? 'ok' : 'warn');
+    for (const id of t.waiters) {
+      const a = A[id];
+      if (!a || a.phase !== 'parked' || a.ticketId !== t.id) continue;
+      if (outcome === 'fixed') { a.phase = 'rerun'; a.wait = 1; }
+      else if (outcome === 'cant') { a.phase = 'handfill'; a.wait = 2; log(a, `Fixer couldn't fix it. Filling "${t.label}" by hand`, 'warn'); }
+      else {
+        const j = a.job;
+        S.needs.push({ company: j.company, role: j.role, ats: j.ats, reason: t.label, at: clock() });
+        log(a, `"${t.label}" needs you. Left the window open`, 'warn');
+        a.job = null; a.phase = 'idle'; a.wait = 2;
+      }
+      Fleet.emit('resolved', { to: id, outcome });
+    }
+    f.ticket = null; f.wait = 1;
+  }
+
+  // ---------- Scout ----------
+  const SCOUT = [
+    { s: 'linkedin', short: 'Searching LinkedIn', text: 'Searching LinkedIn (guest search): junior developer, Toronto and remote, last 14 days', dur: 3 },
+    { s: 'simplify', short: 'Reading Simplify list', text: 'Reading the SimplifyJobs New-Grad list: Canada and remote rows', dur: 3 },
+    { s: 'jobbank', short: 'Searching Job Bank', text: 'Searching Job Bank: software developer, Ontario', dur: 2 },
+    { s: 'dedupe', short: 'Deduping', text: 'Removing jobs already seen or in your tracker', dur: 2 },
+    { s: 'rank', short: 'Ranking', text: '/rank: scoring new postings against your profile and resume', dur: 3 },
+    { s: 'queue', short: 'Queueing', text: '/queue: resolving apply links and choosing a resume', dur: 2 },
+    { s: 'rest', short: 'Resting', text: 'Next search in a few minutes', dur: 16 },
+  ];
+  function stepScout(a) {
+    if (a.wait > 0) { a.wait--; return; }
+    a.step = (a.step + 1) % SCOUT.length;
+    const st = SCOUT[a.step];
+    a.wait = st.dur;
+    if (st.s === 'linkedin') { a.run = { linkedin: rnd(8, 18) }; a.today.linkedin += a.run.linkedin; }
+    if (st.s === 'simplify') { a.run.simplify = rnd(4, 12); a.today.simplify += a.run.simplify; }
+    if (st.s === 'jobbank') { a.run.jobbank = rnd(2, 6); a.today.jobbank += a.run.jobbank; }
+    if (st.s === 'dedupe') a.run.fresh = rnd(3, 7);
+    if (st.s === 'rank') a.run.ranked = a.run.fresh;
+    if (st.s === 'queue') {
+      const n = Math.max(0, Math.min(rnd(2, 4), 9 - S.queue.length));
+      let tierA = 0;
+      for (let i = 0; i < n; i++) { const job = makeJob(); if (job.tier === 'A') tierA++; S.queue.push(job); }
+      a.run.queued = n; a.run.at = clock();
+      log(a, n ? `Added ${n} jobs to the queue (${tierA} with a tailored CV)` : 'Queue is full. Holding new jobs for the next run', n ? 'ok' : undefined);
+      if (n) Fleet.emit('crates', n);
+      return;
+    }
+    if (st.s === 'rest') { a.now = st.text; return; }
+    log(a, st.text);
+  }
+
+  // ---------- Outreach ----------
+  const OUT = ['Picking a company that fits your skills and is hiring developers', 'Finding the right person on public pages', 'Checking the company against your profile', 'Writing a connection note and a follow-up message', 'Added to your recruiter page'];
+  function stepOutreach(a) {
+    if (a.wait > 0) { a.wait--; return; }
+    if (S.drafts.length >= 6 && a.step === -1) { a.now = '6 messages waiting for you to send'; return; }
+    a.step++;
+    if (a.step === 0) a.prospect = PROSPECTS[prospectSeq++ % PROSPECTS.length];
+    const p = a.prospect;
+    if (a.step >= OUT.length) { a.step = -1; a.wait = 3; return; }
+    const text = a.step === 0 ? `${OUT[0]}: ${p.company}` : a.step === 1 ? `${OUT[1]}: ${p.title} (${p.found})` : OUT[a.step];
+    log(a, text, a.step === OUT.length - 1 ? 'ok' : undefined);
+    a.wait = a.step === 3 ? 3 : 2;
+    S.spend += 0.006;
+    if (a.step === OUT.length - 1) {
+      const first = p.person.split(' ')[0];
+      S.drafts.push({ ...p, note: NOTE[p.why](first, p.company), follow: FOLLOW[p.why](first, p.company) });
+      Fleet.emit('draft');
+    }
+  }
+
+  // ---------- Tick ----------
+  function step() {
+    if (S.mode !== 'running') return;
+    stepScout(A.scout);
+    for (const a of APPLIERS) stepApplier(a);
+    stepFixer(A.fixer);
+    stepOutreach(A.outreach);
+  }
+  let timer = null;
+  function tick() { step(); render(); Fleet.emit('tick'); }
+  function startTimer() { clearInterval(timer); timer = setInterval(tick, 1000 / S.speed); }
+
+  // ---------- Seed ----------
+  S.queue.push(makeJob({ issue: 'grad', issuePage: 1, issueAt: 3 }));
+  S.queue.push(makeJob({ issue: null }));
+  for (let i = 0; i < 4; i++) S.queue.push(makeJob());
+  const r1 = makeJob({ issue: null }); r1.pages.forEach((p) => (p.filled = p.total)); r1.page = r1.pages.length - 1;
+  S.ready.push({ ...JOBS[6], ...r1, company: 'Cobalt Games', role: 'Junior Software Developer', ats: 'LinkedIn Easy Apply', at: '13:41:07', by: 'Applier 2' });
+  S.ready.push({ ...JOBS[3], pages: [{ total: 9, filled: 9 }, { total: 7, filled: 7 }], page: 1, src: { rules: 12, answers: 3, classifier: 1, fixer: 0, agent: 0 }, at: '13:52:30', by: 'Applier 1' });
+  S.needs.push({ company: 'Fernhill Bank', role: 'Associate Software Engineer', ats: 'Workday', reason: 'I certify the information in this application is true', at: '13:47:12' });
+  S.answers.push({ q: 'Are you willing to travel up to 10% of the time?', a: 'Yes', company: 'Quarry Labs', by: 'Sonnet 5.5 via the Fixer' });
+  for (let i = 0; i < 2; i++) {
+    const p = PROSPECTS[prospectSeq++]; const first = p.person.split(' ')[0];
+    S.drafts.push({ ...p, note: NOTE[p.why](first, p.company), follow: FOLLOW[p.why](first, p.company) });
+  }
+  A.fixer.recent.push(
+    { id: 38, label: 'Preferred pronouns', kind: 'code', outcome: 'fixed', file: 'core/options.ts', test: 'options.test.ts › pronoun variants', t: '13:20:44' },
+    { id: 37, label: 'Willing to travel up to 10%?', kind: 'data', outcome: 'fixed', t: '13:02:10' },
+    { id: 36, label: 'Portfolio URL', kind: 'code', outcome: 'fixed', file: 'core/fieldKeys.ts', test: 'rules.test.ts › Portfolio', t: '12:41:55' },
+  );
+  for (let i = 0; i < 13; i++) step();
+
+  // ---------- Status ----------
+  const MODEL = { haiku: { label: 'Haiku 5.5', c: 'var(--haiku)' }, sonnet: { label: 'Sonnet 5.5', c: 'var(--sonnet)' }, opus: { label: 'Opus 5.5', c: 'var(--opus)' }, you: { label: 'You', c: 'var(--you)' } };
+  function statusOf(id) {
+    if (id === 'you') {
+      const n = S.ready.length + S.needs.length + S.answers.length + S.drafts.length;
+      return { label: n ? `${n} waiting` : 'All clear', tone: S.needs.length ? 'warn' : n ? 'ok' : 'idle' };
+    }
+    const a = A[id];
+    if (a.kind === 'applier' && (a.phase === 'off' || (S.mode === 'stopped'))) return { label: 'Empty desk', tone: 'idle' };
+    if (S.mode === 'stopped') return { label: 'Off', tone: 'idle' };
+    if (S.mode === 'paused') return { label: 'Paused', tone: 'idle' };
+    if (a.paused) return { label: a.takeover ? 'You took over' : 'Paused', tone: 'idle' };
+    if (a.kind === 'applier') {
+      switch (a.phase) {
+        case 'idle': return { label: 'Waiting for a job', tone: 'idle' };
+        case 'open': return { label: 'Opening job', tone: 'run' };
+        case 'account': case 'verify': return { label: 'Creating account', tone: 'run' };
+        case 'fill': case 'advance': return { label: `Page ${a.job.page + 1} of ${a.job.pages.length}`, tone: 'run' };
+        case 'ready': return { label: 'At Submit', tone: 'ok' };
+        case 'parked': return { label: 'Waiting on Fixer', tone: 'warn' };
+        case 'rerun': return { label: 'Running again', tone: 'run' };
+        case 'handfill': return { label: 'Filling by hand', tone: 'warn' };
+      }
+    }
+    if (a.kind === 'fixer') return a.ticket ? { label: `Fixing #${a.ticket.id}`, tone: 'run' } : { label: 'No tickets', tone: 'idle' };
+    if (a.kind === 'scout') return SCOUT[a.step].s === 'rest' ? { label: 'Resting', tone: 'idle' } : { label: SCOUT[a.step].short, tone: 'run' };
+    if (a.kind === 'outreach') return S.drafts.length >= 6 && a.step === -1 ? { label: 'Waiting on you', tone: 'warn' } : { label: 'Writing', tone: 'run' };
+    return { label: '', tone: 'idle' };
+  }
+  Fleet.statusOf = statusOf;
+  Fleet.model = (id) => (id === 'you' ? 'you' : A[id].model);
+  Fleet.name = (id) => (id === 'you' ? 'You' : A[id].name);
+  Fleet.ids = ['scout', 'w1', 'w2', 'w3', 'w4', 'fixer', 'outreach', 'you'];
+
+  // ---------- Rendering helpers ----------
+  function setHTML(el, html) { if (el._h !== html) { el.innerHTML = html; el._h = html; } }
+  function pill(st) { return `<span class="pill t-${st.tone}">${esc(st.label)}</span>`; }
+  function logHTML(a, n = 8) {
+    return `<div class="sect"><div class="sect-h"><span>Activity</span></div><ol class="log">${a.log.slice(0, n).map((l) => `<li class="t-${l.tone || 'none'}"><time>${l.t}</time><span>${esc(l.text)}</span></li>`).join('') || '<li><time></time><span>Nothing yet.</span></li>'}</ol></div>`;
+  }
+  const SRC = [
+    { k: 'rules', label: 'Rules', c: 'var(--run)' },
+    { k: 'answers', label: 'Saved answers', c: 'var(--you)' },
+    { k: 'classifier', label: 'Laya', c: 'var(--ink-3)' },
+    { k: 'fixer', label: 'Fixer', c: 'var(--opus)' },
+    { k: 'agent', label: 'By hand', c: 'var(--haiku)' },
+  ];
+  function formRows(a, j) {
+    const p = j.pages[j.page];
+    const rows = Math.min(p.total, 8);
+    const filledRows = Math.round((p.filled / p.total) * rows);
+    const stuck = (a.phase === 'parked' || a.phase === 'handfill') && j.issue && !j.issue.done;
+    const off = (j.page * 5) % FIELD_NAMES.length;
+    let h = '';
+    for (let i = 0; i < rows; i++) {
+      if (stuck && i === Math.min(filledRows, rows - 1)) {
+        h += `<div class="fr stuck"><span class="fl">${esc(j.issue.label)}</span><span class="fv">${a.phase === 'handfill' ? 'Applier filling by hand' : 'Sent to the Fixer'}</span></div>`;
+        continue;
+      }
+      h += `<div class="fr ${i < filledRows ? 'filled' : ''}"><span class="fl">${esc(FIELD_NAMES[(off + i) % FIELD_NAMES.length])}</span><span class="fv"></span></div>`;
+    }
+    return h;
+  }
+  function findTicket(id) { return [A.fixer.ticket, ...S.tickets].find((t) => t && t.id === id); }
+
+  function applierHTML(a) {
+    const st = statusOf(a.id), j = a.job;
+    let h = `<div class="now-row">${pill(st)}<p class="now">${esc(a.phase === 'off' ? '' : a.now)}</p></div>`;
+    if (!j) {
+      h += `<p class="empty">${a.phase === 'off' ? 'This desk is empty. Raise the applier count in the top bar to bring an agent here.' : 'No job right now. The next job in the queue goes to the first free applier.'}</p>`;
+    } else {
+      h += `<article class="job"><div class="job-top"><strong>${esc(j.company)}</strong><span class="tier">Tier ${j.tier}</span></div>
+        <div class="job-role">${esc(j.role)}</div><div class="job-meta">${esc(j.ats)} · ${esc(j.loc)} · fit ${j.fit} · ${esc(j.doc)}</div></article>`;
+      h += `<div class="sect"><div class="sect-h"><span>Pages</span><span class="num">${j.page + 1} of ${j.pages.length}</span></div>
+        <ol class="stepper">${j.pages.map((p, i) => `<li class="${i < j.page ? 'done' : i === j.page ? 'cur' : ''}"><span>${i + 1}</span></li>`).join('')}<li class="submit"><span>Submit</span></li></ol></div>`;
+      const p = j.pages[j.page];
+      h += `<div class="sect"><div class="sect-h"><span>What the page looks like</span><span class="num">${p.filled}/${p.total} fields</span></div><div class="form-mini">${formRows(a, j)}</div></div>`;
+      if (a.phase === 'parked') {
+        const t = findTicket(a.ticketId);
+        const onIt = t && A.fixer.ticket === t;
+        h += `<div class="callout warn"><strong>Waiting on the Fixer</strong><p>Ticket #${a.ticketId}: “${esc(t?.label ?? j.issue?.label)}”. ${onIt ? 'The Fixer is working on it now.' : 'It’s in the Fixer’s queue.'} If it can’t be fixed in time, this applier fills it by hand and flags it for you.</p><button type="button" class="link" data-act="open" data-arg="fixer">Watch the Fixer</button></div>`;
+      }
+      const tot = Object.values(j.src).reduce((x, y) => x + y, 0);
+      h += `<div class="sect"><div class="sect-h"><span>Who filled what</span><span class="num">${tot} fields</span></div>
+        <div class="srcbar">${SRC.map((s) => (j.src[s.k] ? `<i style="--w:${(j.src[s.k] / Math.max(tot, 1)) * 100}%;--c:${s.c}"></i>` : '')).join('')}</div>
+        <ul class="legend">${SRC.map((s) => `<li style="--c:${s.c}"><span></span>${s.label} <b>${j.src[s.k]}</b></li>`).join('')}</ul></div>`;
+    }
+    h += logHTML(a);
+    h += `<div class="win-actions"><button type="button" class="btn small" data-act="go">Show its window</button><button type="button" class="btn small" data-act="pause">${a.paused ? 'Resume' : 'Pause'}</button><button type="button" class="btn small" data-act="takeover">Take over</button></div>`;
+    return h;
+  }
+
+  const KIND = {
+    data: { label: 'Data gap', tone: 'run' },
+    code: { label: 'Code fix', tone: 'run' },
+    cant: { label: 'Code fix', tone: 'run' },
+    attest: { label: 'Attestation', tone: 'warn' },
+  };
+  function fixerHTML(f) {
+    const st = statusOf('fixer');
+    const lampTone = f.lamp === 'red' ? 'bad' : f.lamp === 'green' ? 'ok' : 'idle';
+    let h = `<div class="now-row">${pill(st)}<span class="lamp" style="--c:var(--${lampTone === 'idle' ? 'idle' : lampTone})"><i></i>Tests ${f.lamp === 'red' ? 'failing (as expected)' : f.lamp === 'green' ? 'passing' : 'idle'}</span></div>`;
+    const t = f.ticket;
+    if (t) {
+      const steps = STEPS[t.kind];
+      const cur = f.stepIdx - 1;
+      h += `<article class="ticket"><div class="ticket-top"><span class="kind">#${t.id} · ${esc(t.ats)} · ${esc(t.company)}</span>${pill({ label: KIND[t.kind].label, tone: KIND[t.kind].tone })}</div><q>${esc(t.label)}</q>${t.waiters.length > 1 ? `<p>${t.waiters.length} appliers are waiting on this one</p>` : ''}</article>`;
+      h += `<div class="sect"><div class="sect-h"><span>Steps</span><span class="num">${Math.max(cur + 1, 0)} of ${steps.length}</span></div><ol class="steps">${steps.map((s, i) => { const d = stepDetail(t, s); return `<li class="${i < cur ? 'done' : i === cur ? 'cur' : ''}"><span>${esc(s)}${d && i <= cur ? `<small>${esc(d)}</small>` : ''}</span></li>`; }).join('')}</ol></div>`;
+    } else {
+      h += `<p class="empty">No open tickets. When an applier hits a field the extension can’t fill, it lands here.</p>`;
+    }
+    h += `<div class="sect"><div class="sect-h"><span>Waiting</span><span class="num">${S.tickets.length}</span></div>${S.tickets.length ? `<ul class="rows">${S.tickets.map((x) => `<li><span>#${x.id} “${esc(x.label)}”</span><span class="mono">${esc(x.ats)}</span></li>`).join('')}</ul>` : '<p class="empty">Nothing waiting.</p>'}</div>`;
+    h += `<div class="sect"><div class="sect-h"><span>Done today</span><span class="num">${S.fixes} fixed</span></div><ul class="rows">${f.recent.map((x) => `<li><span>#${x.id} “${esc(x.label)}”</span>${pill({ label: x.outcome === 'fixed' ? (x.kind === 'data' ? 'Answer saved' : 'Fixed') : x.outcome === 'cant' ? 'Filled by hand' : 'Sent to you', tone: x.outcome === 'fixed' ? 'ok' : 'warn' })}${x.file ? `<span class="sub">${esc(x.file)} · ${esc(x.test)}</span>` : ''}</li>`).join('')}</ul></div>`;
+    h += `<div class="callout info"><strong>Where fixes go</strong><p>Fixes load into the fleet’s copy of the extension after the tests and the replay pass. Your own copy gets them only after you review and approve the commit.</p></div>`;
+    h += logHTML(f, 6);
+    return h;
+  }
+
+  function scoutHTML(a) {
+    const st = statusOf('scout');
+    const cur = SCOUT[a.step].s;
+    const order = ['linkedin', 'simplify', 'jobbank', 'dedupe', 'rank', 'queue'];
+    const ci = order.indexOf(cur);
+    let h = `<div class="now-row">${pill(st)}<p class="now">${esc(a.now)}</p></div>`;
+    h += `<div class="chips">${['Search', 'Dedupe', 'Rank', 'Queue'].map((c, i) => { const idx = i === 0 ? 2 : i + 2; const state = ci < 0 ? 'done' : (i === 0 ? (ci <= 2 ? 'cur' : 'done') : (ci === idx ? 'cur' : ci > idx ? 'done' : '')); return `<span class="chip ${state}">${c}</span>`; }).join('')}</div>`;
+    h += `<div class="sect"><div class="sect-h"><span>Sources</span></div><table class="src"><thead><tr><th>Source</th><th class="n">This run</th><th class="n">Today</th></tr></thead><tbody>
+      <tr><td>LinkedIn guest search</td><td class="n">${a.run.linkedin ?? '–'}</td><td class="n">${a.today.linkedin}</td></tr>
+      <tr><td>SimplifyJobs New-Grad list</td><td class="n">${a.run.simplify ?? '–'}</td><td class="n">${a.today.simplify}</td></tr>
+      <tr><td>Job Bank</td><td class="n">${a.run.jobbank ?? '–'}</td><td class="n">${a.today.jobbank}</td></tr>
+      <tr class="skip"><td>Indeed</td><td class="n" colspan="2">skipped</td></tr></tbody></table></div>`;
+    h += `<div class="sect"><div class="sect-h"><span>Queue</span><span class="num">${S.queue.length} jobs</span></div>${S.queue.length ? `<ul class="rows">${S.queue.slice(0, 6).map((j) => `<li><span><b>${esc(j.company)}</b> · ${esc(j.role)}</span><span class="mono">fit ${j.fit}</span><span class="sub">${esc(j.ats)} · Tier ${j.tier} · ${esc(j.doc)}</span></li>`).join('')}</ul>` : '<p class="empty">The queue is empty.</p>'}</div>`;
+    h += `<div class="callout info"><strong>Resume choice</strong><p>Default resume when it fits well. When it doesn’t, /apply makes a tailored CV, within a daily limit so tailoring doesn’t use up your plan. Past the limit, jobs go out with the default resume.</p></div>`;
+    h += logHTML(a, 6);
+    return h;
+  }
+
+  function outreachHTML(a) {
+    const st = statusOf('outreach');
+    let h = `<div class="now-row">${pill(st)}<p class="now">${esc(a.now)}</p></div>`;
+    if (a.step >= 0 && a.prospect) {
+      h += `<ol class="steps">${OUT.map((s, i) => `<li class="${i < a.step ? 'done' : i === a.step ? 'cur' : ''}"><span>${esc(s)}${i === 0 ? `<small>${esc(a.prospect.company)}</small>` : ''}</span></li>`).join('')}</ol>`;
+    }
+    h += `<div class="callout info"><strong>You send every message</strong><p>Outreach only finds people and writes. The messages are on your recruiter page in your inbox, ready to copy.</p><button type="button" class="link" data-act="openTab" data-arg="drafts">Open the recruiter page</button></div>`;
+    h += logHTML(a, 6);
+    return h;
+  }
+
+  function draftCard(d, i) {
+    const chan = d.channel === 'Email' ? 'Email (address listed publicly)' : 'LinkedIn: connect, then message';
+    return `<article class="card"><div class="card-top"><strong>${esc(d.person)}</strong><span class="tier">${esc(d.channel)}</span></div>
+      <div class="card-meta">${esc(d.title)} at ${esc(d.company)} · found on: ${esc(d.found)}<br>${esc(chan)}</div>
+      <div class="msg-h"><span>${d.channel === 'Email' ? 'Subject line idea' : 'Connection note'}</span><span>${d.channel === 'Email' ? '' : d.note.length + ' / 200'}</span></div>
+      <p class="msg">${esc(d.channel === 'Email' ? 'New-grad developer interested in ' + d.company : d.note)}</p>
+      <div class="msg-h"><span>${d.channel === 'Email' ? 'Email' : 'Message after they accept'}</span><span>${d.follow.length} chars</span></div>
+      <p class="msg">${esc(d.follow)}</p>
+      <div class="card-actions">${d.channel === 'Email' ? '' : `<button type="button" class="btn small" data-act="copy" data-arg="note:${i}">Copy note</button>`}<button type="button" class="btn small" data-act="copy" data-arg="follow:${i}">Copy message</button><button type="button" class="btn small" data-act="sent" data-arg="${i}">Mark sent</button></div></article>`;
+  }
+
+  function youHTML(win) {
+    const tab = win._tab || 'ready';
+    const tabs = [['ready', 'Ready to submit', S.ready.length], ['needs', 'Needs you', S.needs.length], ['answers', 'Answers to approve', S.answers.length], ['drafts', 'Recruiters', S.drafts.length]];
+    let h = `<div class="tabs" role="tablist">${tabs.map(([k, l, n]) => `<button type="button" role="tab" aria-selected="${k === tab}" data-act="tab" data-arg="${k}">${l}<b>${n}</b></button>`).join('')}</div>`;
+    if (tab === 'ready') {
+      h += S.ready.length ? S.ready.map((j, i) => {
+        const flagged = j.src?.agent ? `${j.src.agent} field filled by hand, check it` : 'Every field from your records';
+        return `<article class="card"><div class="card-top"><strong>${esc(j.company)}</strong><span class="tier">Tier ${j.tier}</span></div><div class="card-meta">${esc(j.role)} · ${esc(j.ats)} · ${esc(j.doc ?? 'Default resume')}<br>${esc(flagged)} · stopped at ${esc(j.at)} by ${esc(j.by)}</div>
+          <div class="card-actions"><button type="button" class="btn small" data-act="go">Go to its window</button><button type="button" class="btn small" data-act="submitted" data-arg="${i}">I submitted it</button></div></article>`;
+      }).join('') : '<p class="empty">Nothing is waiting at Submit.</p>';
+      h += `<p class="empty" style="font-size:12px">Windows stay open until you submit. The fleet pauses at 6 open ready windows.</p>`;
+    }
+    if (tab === 'needs') {
+      h += S.needs.length ? S.needs.map((n, i) => `<article class="card"><div class="card-top"><strong>${esc(n.company)}</strong><span class="tier">${esc(n.ats)}</span></div><div class="card-meta">${esc(n.role)} · ${esc(n.at)}</div><p class="msg">${esc(n.reason)}</p>
+        <div class="card-actions"><button type="button" class="btn small" data-act="go">Go to its window</button><button type="button" class="btn small" data-act="needDone" data-arg="${i}">Done</button></div></article>`).join('') : '<p class="empty">Nothing needs you.</p>';
+    }
+    if (tab === 'answers') {
+      h += S.answers.length ? S.answers.map((x, i) => `<article class="card"><div class="card-meta">${esc(x.company)} · written by ${esc(x.by)}</div><strong>${esc(x.q)}</strong><p class="msg">${esc(x.a)}</p>
+        <div class="card-actions"><button type="button" class="btn small" data-act="approve" data-arg="${i}">Approve</button><button type="button" class="btn small" data-act="edit">Edit</button></div></article>`).join('') : '<p class="empty">No answers waiting. Approved answers fill without review from now on.</p>';
+    }
+    if (tab === 'drafts') {
+      h += `<p class="empty" style="font-size:12px">LinkedIn first: recruiters answer there, and guessed email addresses bounce. Email only when the company lists the address. Sent so far: ${S.sent}.</p>`;
+      h += S.drafts.length ? S.drafts.map(draftCard).join('') : '<p class="empty">No messages waiting.</p>';
+    }
+    return h;
+  }
+
+  // ---------- Windows ----------
+  const wins = new Map();
+  let zTop = 30;
+  function winMeta(id) {
+    if (id === 'you') return { title: 'Your inbox', sub: 'Things only you can do', c: 'var(--you)' };
+    const a = A[id];
+    return { title: a.name, sub: `${MODEL[a.model].label} · ${a.role}`, c: MODEL[a.model].c };
+  }
+  function raise(el) { el.style.zIndex = ++zTop; }
+  function openWin(id, tab) {
+    if (wins.has(id)) {
+      const el = wins.get(id);
+      if (tab) { el._tab = tab; renderWin(id); }
+      raise(el); Fleet.emit('focus', id); return;
+    }
+    const m = winMeta(id);
+    const el = document.createElement('section');
+    el.className = 'win';
+    el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-label', m.title);
+    el.style.setProperty('--c', m.c);
+    el.innerHTML = `<header class="win-h"><span class="avatar" aria-hidden="true"></span><div class="win-t"><strong>${esc(m.title)}</strong><span>${esc(m.sub)}</span></div><button type="button" class="icon-btn" data-close aria-label="Close ${esc(m.title)}">✕</button></header><div class="win-b"></div>`;
+    el._tab = tab;
+    const stage = $('#stage').getBoundingClientRect();
+    const n = wins.size;
+    const w = Math.min(390, stage.width - 32);
+    el.style.left = Math.max(16, Math.min(stage.width - w - 16, stage.width - w - 72 - n * 30)) + 'px';
+    el.style.top = Math.max(12, Math.min(stage.height - 260, 12 + n * 30)) + 'px';
+    $('#windows').appendChild(el);
+    wins.set(id, el);
+    el.querySelector('[data-close]').addEventListener('click', () => closeWin(id));
+    el.addEventListener('pointerdown', () => raise(el));
+    el.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeWin(id); });
+    el.addEventListener('click', (e) => { const b = e.target.closest('[data-act]'); if (b) act(id, b.dataset.act, b.dataset.arg, el); });
+    drag(el, el.querySelector('.win-h'));
+    raise(el);
+    renderWin(id);
+    renderRoster();
+    Fleet.emit('focus', id);
+    el.querySelector('[data-close]').focus({ preventScroll: true });
+  }
+  function closeWin(id) { const el = wins.get(id); if (!el) return; el.remove(); wins.delete(id); renderRoster(); }
+  function drag(el, handle) {
+    let sx, sy, ox, oy, on = false;
+    handle.addEventListener('pointerdown', (e) => {
+      if (e.target.closest('button') || matchMedia('(max-width: 760px)').matches) return;
+      on = true; sx = e.clientX; sy = e.clientY; ox = el.offsetLeft; oy = el.offsetTop;
+      handle.setPointerCapture(e.pointerId);
+    });
+    handle.addEventListener('pointermove', (e) => {
+      if (!on) return;
+      const st = $('#stage');
+      el.style.left = Math.max(0, Math.min(st.clientWidth - 80, ox + e.clientX - sx)) + 'px';
+      el.style.top = Math.max(0, Math.min(st.clientHeight - 48, oy + e.clientY - sy)) + 'px';
+    });
+    const end = () => { on = false; };
+    handle.addEventListener('pointerup', end);
+    handle.addEventListener('pointercancel', end);
+  }
+  function renderWin(id) {
+    const el = wins.get(id); if (!el) return;
+    const body = el.querySelector('.win-b');
+    let html;
+    if (id === 'you') html = youHTML(el);
+    else { const a = A[id]; html = a.kind === 'applier' ? applierHTML(a) : a.kind === 'fixer' ? fixerHTML(a) : a.kind === 'scout' ? scoutHTML(a) : outreachHTML(a); }
+    setHTML(body, html);
+  }
+  function act(id, what, arg, el) {
+    const a = A[id];
+    switch (what) {
+      case 'open': openWin(arg); break;
+      case 'openTab': openWin('you', arg); break;
+      case 'go': toast('In the real app this brings that agent’s Chrome window to the front.'); break;
+      case 'pause': a.paused = !a.paused; a.takeover = false; toast(a.paused ? `${a.name} paused` : `${a.name} resumed`); break;
+      case 'takeover': a.paused = true; a.takeover = true; toast(`${a.name} paused. The window is yours until you press Resume.`); break;
+      case 'tab': el._tab = arg; break;
+      case 'submitted': S.ready.splice(+arg, 1); S.submitted++; toast('Marked as submitted and added to your tracker'); break;
+      case 'needDone': S.needs.splice(+arg, 1); toast('Cleared'); break;
+      case 'approve': S.answers.splice(+arg, 1); toast('Approved. It fills without review from now on.'); break;
+      case 'edit': toast('In the real app this opens the answer in the side panel.'); break;
+      case 'sent': S.drafts.splice(+arg, 1); S.sent++; toast('Marked as sent'); break;
+      case 'copy': {
+        const [kind, i] = arg.split(':');
+        const d = S.drafts[+i]; if (!d) break;
+        const text = kind === 'note' ? d.note : d.follow;
+        const p = navigator.clipboard?.writeText(text);
+        if (p) p.then(() => toast('Copied'), () => toast('Copy was blocked here. Select the text and copy it.'));
+        else toast('Copy was blocked here. Select the text and copy it.');
+        break;
+      }
+    }
+    render();
+  }
+  let toastTimer;
+  function toast(msg) {
+    const t = $('#toast'); t.textContent = msg; t.hidden = false;
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.hidden = true), 2600);
+  }
+
+  // ---------- Page chrome ----------
+  function renderStats() {
+    const busy = APPLIERS.filter((a) => a.job).length;
+    const items = [
+      ['Queue', S.queue.length], ['Applying', busy],
+      ['Needs you', S.needs.length, 'warn', 'needs'], ['Ready to submit', S.ready.length, 'ok', 'ready'],
+      ['Answers to approve', S.answers.length, '', 'answers'], ['Recruiter messages', S.drafts.length, '', 'drafts'],
+      ['Submitted today', S.submitted], ['Fixes today', S.fixes], ['Est. plan use today', '$' + S.spend.toFixed(2)],
+    ];
+    setHTML($('#stats'), items.map(([l, v, tone, tab]) => tab
+      ? `<button type="button" class="stat ${tone && v ? 't-' + tone : ''}" data-tab="${tab}">${l} <b>${v}</b></button>`
+      : `<span class="stat">${l} <b>${v}</b></span>`).join(''));
+  }
+  function renderRoster() {
+    setHTML($('#roster'), Fleet.ids.map((id) => {
+      const st = statusOf(id);
+      const model = id === 'you' ? 'you' : A[id].model;
+      const off = id !== 'you' && A[id].kind === 'applier' && (A[id].phase === 'off' || S.mode === 'stopped');
+      const line = id === 'you' ? `${S.ready.length} ready · ${S.needs.length} need you · ${S.drafts.length} messages` : off ? 'Empty desk' : A[id].now || st.label;
+      return `<li><button type="button" class="r-item ${wins.has(id) ? 'open' : ''} ${off ? 'off' : ''}" data-open="${id}" style="--c:${MODEL[model].c}">
+        <span class="dot"></span><span><span class="nm">${esc(Fleet.name(id))}</span> <span class="md">${esc(MODEL[model].label)}</span></span>${pill(st)}<span class="ln">${esc(line)}</span></button></li>`;
+    }).join(''));
+  }
+  function renderTicker() {
+    setHTML($('#ticker'), S.events.slice(0, 4).map((e) => `<li><time>${e.t}</time><b>${esc(e.who)}</b> ${esc(e.text)}</li>`).join(''));
+  }
+  function renderControls() {
+    const l = $('#launch');
+    l.textContent = S.mode === 'running' ? 'Pause fleet' : S.mode === 'paused' ? 'Resume fleet' : 'Launch fleet';
+    l.classList.toggle('primary', S.mode !== 'running');
+    $('#stop').disabled = S.mode === 'stopped';
+    document.querySelectorAll('[data-count]').forEach((b) => b.setAttribute('aria-pressed', String(+b.dataset.count === S.count)));
+    document.querySelectorAll('[data-speed]').forEach((b) => b.setAttribute('aria-pressed', String(+b.dataset.speed === S.speed)));
+  }
+  function render() {
+    renderStats(); renderRoster(); renderTicker(); renderControls();
+    for (const id of wins.keys()) renderWin(id);
+  }
+
+  $('#roster').addEventListener('click', (e) => { const b = e.target.closest('[data-open]'); if (b) openWin(b.dataset.open); });
+  $('#stats').addEventListener('click', (e) => { const b = e.target.closest('[data-tab]'); if (b) openWin('you', b.dataset.tab); });
+  document.querySelectorAll('[data-count]').forEach((b) => b.addEventListener('click', () => {
+    const n = +b.dataset.count;
+    const finishing = APPLIERS.filter((a) => a.slot > n && a.job).length;
+    S.count = n;
+    toast(finishing ? `${finishing} applier${finishing > 1 ? 's' : ''} will leave after the current job` : `${n} applier${n > 1 ? 's' : ''}`);
+    render();
+  }));
+  document.querySelectorAll('[data-speed]').forEach((b) => b.addEventListener('click', () => { S.speed = +b.dataset.speed; startTimer(); renderControls(); }));
+  $('#launch').addEventListener('click', () => {
+    if (S.mode === 'running') { S.mode = 'paused'; toast('Fleet paused. Agents finish their current click and wait.'); }
+    else { const was = S.mode; S.mode = 'running'; toast(was === 'stopped' ? 'Fleet launched' : 'Fleet resumed'); Fleet.emit('mode', S.mode); }
+    render(); Fleet.emit('tick');
+  });
+  $('#stop').addEventListener('click', () => { $('#stopConfirm').hidden = false; $('#stopNo').focus(); });
+  $('#stopNo').addEventListener('click', () => { $('#stopConfirm').hidden = true; });
+  $('#stopYes').addEventListener('click', () => {
+    $('#stopConfirm').hidden = true;
+    let back = 0;
+    for (const a of APPLIERS) {
+      if (a.job) { a.job.pages.forEach((p) => (p.filled = 0)); a.job.page = 0; a.job.issue && (a.job.issue.done = false); S.queue.unshift(a.job); back++; }
+      a.job = null; a.phase = 'off'; a.paused = false; a.wait = 0;
+    }
+    S.tickets = []; A.fixer.ticket = null; A.fixer.lamp = 'off';
+    S.mode = 'stopped';
+    S.events.unshift({ t: clock(), who: 'Fleet', text: `Stopped all agents. ${back} job${back === 1 ? '' : 's'} went back to the queue.` });
+    toast('All agents stopped');
+    render(); Fleet.emit('tick');
+  });
+  $('#resetView').addEventListener('click', () => Fleet.resetView?.());
+
+  Fleet.open = openWin;
+  Fleet.noGL = () => { $('#nogl').hidden = false; };
+  render();
+  startTimer();
+  setTimeout(() => { if (!window.__fleet3d) Fleet.noGL(); }, 9000);
+})();
+</script>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+
+const F = window.Fleet;
+const S = F.S;
+const host = document.getElementById('scene');
+const reduce = matchMedia('(prefers-reduced-motion: reduce)');
+
+let renderer;
+try { renderer = new THREE.WebGLRenderer({ antialias: true }); }
+catch (e) { F.noGL(); throw e; }
+window.__fleet3d = true;
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+host.appendChild(renderer.domElement);
+renderer.domElement.setAttribute('aria-hidden', 'true');
+const css2d = new CSS2DRenderer();
+css2d.domElement.className = 'labels';
+host.appendChild(css2d.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.OrthographicCamera(-10, 10, 10, -10, 0.1, 300);
+const HOME = new THREE.Vector3(26, 24, 26);
+camera.position.copy(HOME);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = !reduce.matches;
+controls.dampingFactor = 0.08;
+controls.minZoom = 0.6; controls.maxZoom = 2.8;
+controls.minPolarAngle = 0.35; controls.maxPolarAngle = 1.2;
+controls.screenSpacePanning = true;
+controls.target.set(0, 0, 0);
+controls.update();
+
+const VIEW = 22;
+function resize() {
+  const w = host.clientWidth, h = host.clientHeight;
+  if (!w || !h) return;
+  renderer.setSize(w, h, false);
+  css2d.setSize(w, h);
+  const aspect = w / h;
+  let halfH = VIEW / 2;
+  if (aspect < 1.3) halfH = (VIEW * 1.3) / aspect / 2;
+  camera.left = -halfH * aspect; camera.right = halfH * aspect; camera.top = halfH; camera.bottom = -halfH;
+  camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe(host);
+resize();
+
+// ---------- Materials, themed from CSS tokens ----------
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const TOK = { floor: '--floor', rug: '--rug', wall: '--wall', desk: '--desk', metal: '--metal', crate: '--crate', paper: '--paper', dark: '--screen',
+  haiku: '--haiku', sonnet: '--sonnet', opus: '--opus', you: '--you', ok: '--ok', warn: '--warn', bad: '--bad', run: '--run' };
+const M = {};
+for (const k of Object.keys(TOK)) M[k] = new THREE.MeshStandardMaterial({ roughness: k === 'metal' ? 0.5 : 0.82, metalness: k === 'metal' ? 0.15 : 0 });
+const clones = [];
+function cloneMat(key) { const m = M[key].clone(); clones.push([m, key]); return m; }
+
+const hemi = new THREE.HemisphereLight(0xffffff, 0x8796a8, 1.2);
+scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xffffff, 1.8);
+sun.position.set(12, 22, 9);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -18, right: 18, top: 16, bottom: -16, near: 1, far: 60 });
+sun.shadow.bias = -0.0006;
+scene.add(sun);
+
+function applyTheme() {
+  for (const [k, v] of Object.entries(TOK)) M[k].color.set(css(v) || '#888888');
+  for (const [m, k] of clones) m.color.copy(M[k].color);
+  const bg = new THREE.Color(css('--bg') || '#e8ecf1');
+  scene.background = bg;
+  const dark = bg.getHSL({}).l < 0.3;
+  hemi.intensity = dark ? 0.55 : 1.2;
+  sun.intensity = dark ? 0.9 : 1.8;
+  lampMat.emissive.copy(lampColor());
+  redrawAll();
+}
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
+new MutationObserver(applyTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+// ---------- Building blocks ----------
+function box(w, h, d, mat, x, y, z, parent, shadow = true) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.position.set(x, y, z);
+  m.castShadow = shadow; m.receiveShadow = true;
+  parent.add(m);
+  return m;
+}
+function label(text, cls, parent, x, y, z) {
+  const el = document.createElement('div');
+  el.className = cls; el.textContent = text;
+  const o = new CSS2DObject(el);
+  o.position.set(x, y, z);
+  parent.add(o);
+  return o;
+}
+
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(28, 20), M.floor);
+floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true;
+scene.add(floor);
+box(28, 2.4, 0.3, M.wall, 0, 1.2, -10.15, scene);
+box(0.3, 2.4, 20.3, M.wall, -14.15, 1.2, -0.15, scene);
+
+const ZONES = [
+  { name: 'Search', x: -8.8, z: -5.4, w: 7.6, d: 6.2 },
+  { name: 'Applying', x: 0, z: 1.1, w: 12.6, d: 4.2 },
+  { name: 'Fix desk', x: 8.6, z: -5.5, w: 7.6, d: 6 },
+  { name: 'Outreach', x: -8.8, z: 6.1, w: 7.2, d: 4.8 },
+  { name: 'Your inbox', x: 8.6, z: 6.1, w: 7.2, d: 4.8 },
+];
+for (const zn of ZONES) {
+  box(zn.w, 0.04, zn.d, M.rug, zn.x, 0.02, zn.z, scene, false);
+  label(zn.name, 'zone', scene, zn.x - zn.w / 2 + 1.1, 0.06, zn.z + zn.d / 2 - 0.35);
+}
+
+// Screens are canvases drawn from the simulation state.
+const SC = { bg: '#0d1319', bar: '#17212c', text: '#d3dce6', dim: '#5d6a7a', run: '#5fa2ff', ok: '#44cf80', warn: '#f0b24a', bad: '#ff7b67', haiku: '#ff8a72', opus: '#f2c04c', sonnet: '#9d8fff' };
+const SANS = '"IBM Plex Sans", system-ui, sans-serif', MONO = '"IBM Plex Mono", ui-monospace, monospace';
+
+function makeDesk(x, z, { wide = false, monitor = true } = {}) {
+  const g = new THREE.Group();
+  g.position.set(x, 0, z);
+  scene.add(g);
+  const W = wide ? 3.2 : 2.4;
+  box(W, 0.1, 1.2, M.desk, 0, 0.86, 0, g);
+  for (const [lx, lz] of [[-W / 2 + 0.1, -0.5], [W / 2 - 0.1, -0.5], [-W / 2 + 0.1, 0.5], [W / 2 - 0.1, 0.5]]) box(0.08, 0.82, 0.08, M.metal, lx, 0.41, lz, g);
+  box(0.62, 0.08, 0.6, M.metal, 0, 0.5, 0.98, g);
+  box(0.08, 0.46, 0.08, M.metal, 0, 0.25, 0.98, g);
+  let screen = null;
+  if (monitor) {
+    box(0.12, 0.3, 0.12, M.metal, 0, 1.06, -0.38, g);
+    box(1.32, 0.84, 0.07, M.dark, 0, 1.58, -0.42, g);
+    const cv = document.createElement('canvas');
+    cv.width = 320; cv.height = 200;
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 4;
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1.22, 0.76), new THREE.MeshBasicMaterial({ map: tex, toneMapped: false }));
+    mesh.position.set(0, 1.58, -0.38);
+    g.add(mesh);
+    screen = { cv, ctx: cv.getContext('2d'), tex };
+  }
+  return { g, screen };
+}
+
+function makeAgent(model, parent) {
+  const g = new THREE.Group();
+  g.position.set(0, 0, 0.98);
+  parent.add(g);
+  const mat = cloneMat(model);
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.3, 0.42, 6, 16), mat);
+  body.position.y = 1.0; body.castShadow = true; g.add(body);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.29, 24, 16), mat);
+  head.position.y = 1.66; head.castShadow = true; g.add(head);
+  const handGeo = new THREE.SphereGeometry(0.085, 12, 8);
+  const hl = new THREE.Mesh(handGeo, mat); hl.position.set(-0.24, 0.98, -0.5); g.add(hl);
+  const hr = new THREE.Mesh(handGeo, mat); hr.position.set(0.24, 0.98, -0.5); g.add(hr);
+  if (model === 'haiku') {
+    const ant = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.24, 8), M.metal); ant.position.y = 2.04; g.add(ant);
+    const tip = new THREE.Mesh(new THREE.SphereGeometry(0.06, 12, 8), mat); tip.position.y = 2.18; g.add(tip);
+  } else if (model === 'sonnet') {
+    const band = new THREE.Mesh(new THREE.TorusGeometry(0.31, 0.04, 8, 24, Math.PI), M.dark); band.position.y = 1.68; g.add(band);
+    for (const sx of [-0.31, 0.31]) { const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.08, 14), M.dark); cup.rotation.z = Math.PI / 2; cup.position.set(sx, 1.66, 0); g.add(cup); }
+  } else if (model === 'opus') {
+    const halo = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.035, 8, 32), mat); halo.rotation.x = Math.PI / 2; halo.position.y = 2.08; g.add(halo);
+  }
+  return { g, body, head, hl, hr, mat, scale: 1 };
+}
+
+const POS = {}, R = {}, pickables = [], tags = {};
+function addTag(id, parent, y) {
+  const wrap = document.createElement('div');
+  wrap.className = 'tagwrap';
+  const b = document.createElement('button');
+  b.type = 'button'; b.className = 'tag';
+  b.addEventListener('click', () => F.open(id));
+  b.addEventListener('pointerenter', () => setHover(id));
+  b.addEventListener('pointerleave', () => setHover(null));
+  wrap.appendChild(b);
+  const o = new CSS2DObject(wrap);
+  o.position.set(0, y, 0.98);
+  parent.add(o);
+  tags[id] = b;
+}
+function station(id, model, x, z, opts = {}) {
+  const d = makeDesk(x, z, opts);
+  const ag = model ? makeAgent(model, d.g) : null;
+  d.g.userData.pick = id;
+  pickables.push(d.g);
+  POS[id] = new THREE.Vector3(x, 0, z + 0.98);
+  R[id] = { ...d, ag };
+  addTag(id, d.g, model ? 2.62 : 2.5);
+  return R[id];
+}
+
+station('scout', 'sonnet', -9.6, -5.6);
+['w1', 'w2', 'w3', 'w4'].forEach((id, i) => station(id, 'haiku', -4.5 + i * 3, 0.5));
+station('fixer', 'opus', 8.6, -5.8, { wide: true });
+station('outreach', 'sonnet', -8.8, 5.6);
+const youSt = station('you', null, 8.6, 5.6);
+
+// Conveyor and queue rack
+box(4.4, 0.5, 0.72, M.metal, -5.2, 0.25, -6.2, scene);
+box(4.4, 0.04, 0.6, M.dark, -5.2, 0.52, -6.2, scene, false);
+const RACK = new THREE.Vector3(-1.7, 0, -6.2);
+for (const y of [0.3, 0.85, 1.4]) box(1.3, 0.06, 1.0, M.metal, RACK.x, y, RACK.z, scene);
+for (const [dx, dz] of [[-0.6, -0.45], [0.6, -0.45], [-0.6, 0.45], [0.6, 0.45]]) box(0.06, 1.5, 0.06, M.metal, RACK.x + dx, 0.75, RACK.z + dz, scene);
+label('Queue', 'zone', scene, RACK.x, 1.95, RACK.z);
+const crateGeo = new THREE.BoxGeometry(0.42, 0.34, 0.42);
+const rackCrates = [];
+for (let s = 0; s < 3; s++) for (let i = 0; i < 4; i++) {
+  const c = new THREE.Mesh(crateGeo, M.crate);
+  c.position.set(RACK.x + (i % 2 ? 0.27 : -0.27), [0.3, 0.85, 1.4][s] + 0.2, RACK.z + (i < 2 ? -0.22 : 0.22));
+  c.castShadow = true; c.visible = false;
+  scene.add(c); rackCrates.push(c);
+}
+const rackSlot = (n) => rackCrates[Math.max(0, Math.min(rackCrates.length - 1, n))].position;
+
+// Fixer's ticket board and test lamp
+const BOARD = new THREE.Vector3(8.6, 1.5, -9.95);
+box(3.4, 1.5, 0.06, M.crate, BOARD.x, BOARD.y, BOARD.z, scene, false);
+const cardGeo = new THREE.BoxGeometry(0.62, 0.42, 0.02);
+const cards = [];
+for (let i = 0; i < 8; i++) {
+  const c = new THREE.Mesh(cardGeo, i === 0 ? M.run : M.warn);
+  c.position.set(BOARD.x - 1.17 + (i % 4) * 0.78, BOARD.y + (i < 4 ? 0.32 : -0.3), BOARD.z + 0.05);
+  c.visible = false; scene.add(c); cards.push(c);
+}
+label('Tickets', 'zone', scene, BOARD.x, 2.5, BOARD.z + 0.1);
+box(0.06, 1.6, 0.06, M.metal, 11.2, 0.8, -6.1, scene);
+const lampMat = new THREE.MeshStandardMaterial({ color: 0x222222, emissiveIntensity: 1.4 });
+const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.17, 20, 14), lampMat);
+lamp.position.set(11.2, 1.72, -6.1); scene.add(lamp);
+function lampColor() { const l = S.agents.fixer.lamp; return new THREE.Color(l === 'red' ? css('--bad') : l === 'green' ? css('--ok') : '#2a2f36'); }
+
+// Your inbox: three trays and a marker
+const TRAYS = { ready: { x: -0.85, mat: M.ok }, needs: { x: 0, mat: M.warn }, drafts: { x: 0.85, mat: M.sonnet } };
+const sheetGeo = new THREE.BoxGeometry(0.52, 0.035, 0.38);
+for (const t of Object.values(TRAYS)) {
+  box(0.66, 0.04, 0.48, M.metal, t.x, 0.93, 0.1, youSt.g);
+  t.sheets = [];
+  for (let i = 0; i < 10; i++) { const s = new THREE.Mesh(sheetGeo, t.mat); s.position.set(t.x, 0.97 + i * 0.04, 0.1); s.visible = false; s.castShadow = true; youSt.g.add(s); t.sheets.push(s); }
+}
+const trayPos = (k) => new THREE.Vector3(8.6 + TRAYS[k].x, 1.4, 5.7);
+const youMarkMat = cloneMat('you');
+youMarkMat.emissive = new THREE.Color(0x000000);
+const youMark = new THREE.Mesh(new THREE.OctahedronGeometry(0.3), youMarkMat);
+youMark.position.set(0, 1.95, 0.98); youMark.castShadow = true;
+youSt.g.add(youMark);
+const youChairPos = youMark.position;
+
+// ---------- Screens ----------
+function rr(c, x, y, w, h, r, color) { c.fillStyle = color; c.beginPath(); c.roundRect(x, y, w, h, r); c.fill(); }
+function header(c, left, right, color = SC.text) {
+  c.fillStyle = SC.bg; c.fillRect(0, 0, 320, 200);
+  c.fillStyle = SC.bar; c.fillRect(0, 0, 320, 36);
+  c.font = '600 17px ' + SANS; c.fillStyle = color; c.textAlign = 'left'; c.fillText(left, 14, 24);
+  if (right) { c.textAlign = 'right'; c.font = '500 15px ' + MONO; c.fillStyle = SC.dim; c.fillText(right, 306, 24); c.textAlign = 'left'; }
+}
+function drawApplier(c, a) {
+  if (a.phase === 'off' || S.mode === 'stopped') { c.fillStyle = '#05080b'; c.fillRect(0, 0, 320, 200); return; }
+  const j = a.job;
+  if (!j) { header(c, 'EzAutoApply', ''); c.font = '15px ' + MONO; c.fillStyle = SC.dim; c.fillText('waiting for the queue', 14, 110); return; }
+  header(c, j.ats.replace(' Easy Apply', ''), `${j.page + 1}/${j.pages.length}`);
+  if (a.phase === 'account' || a.phase === 'verify') {
+    c.font = '15px ' + MONO; c.fillStyle = SC.run;
+    c.fillText(a.phase === 'account' ? 'creating account…' : 'verification code…', 14, 90);
+    rr(c, 14, 108, 200, 20, 4, '#1c2733'); rr(c, 14, 136, 200, 20, 4, '#1c2733');
+    return;
+  }
+  const p = j.pages[j.page];
+  const rows = 6, filled = Math.round((p.filled / p.total) * rows);
+  const stuck = (a.phase === 'parked' || a.phase === 'handfill') && j.issue && !j.issue.done;
+  for (let i = 0; i < rows; i++) {
+    const y = 48 + i * 22;
+    rr(c, 14, y + 4, 70, 8, 3, '#2a3644');
+    if (stuck && i === Math.min(filled, rows - 1)) { rr(c, 96, y, 210, 16, 4, a.phase === 'handfill' ? SC.haiku : SC.warn); continue; }
+    if (i < filled) rr(c, 96, y, 120 + ((i * 37) % 80), 16, 4, '#2f7f55');
+    else { c.strokeStyle = '#33404f'; c.lineWidth = 2; c.beginPath(); c.roundRect(96, y, 210, 16, 4); c.stroke(); }
+  }
+  const total = j.pages.reduce((s, q) => s + q.total, 0), done = j.pages.reduce((s, q) => s + q.filled, 0);
+  rr(c, 14, 184, 292, 6, 3, '#1c2733');
+  rr(c, 14, 184, Math.max(6, 292 * (done / total)), 6, 3, stuck ? SC.warn : SC.run);
+}
+function drawFixer(c, f) {
+  const t = f.ticket;
+  header(c, 'fixer', t ? '#' + t.id : 'idle', SC.opus);
+  if (S.mode === 'stopped') return;
+  if (!t) {
+    c.font = '15px ' + MONO; c.fillStyle = SC.ok; c.fillText('✓ no open tickets', 14, 80);
+    c.fillStyle = SC.dim; c.fillText(`${S.fixes} fixed today`, 14, 106);
+    return;
+  }
+  const steps = { data: 6, code: 9, cant: 6, attest: 3 }[t.kind];
+  const cur = f.stepIdx - 1;
+  c.font = '14px ' + MONO;
+  const lines = t.kind === 'code' || t.kind === 'cant'
+    ? ['$ npm test -- ' + (t.test ? t.test.split(' ›')[0] : 'fixture'), f.lamp === 'red' ? '✗ 1 failing' : f.lamp === 'green' ? '✓ 412 passed' : '… building fixture', t.file ? '~ ' + t.file : '']
+    : ['records → answer', '"' + t.label.slice(0, 24) + '…"', ''];
+  lines.forEach((l, i) => { c.fillStyle = i === 1 ? (f.lamp === 'red' ? SC.bad : f.lamp === 'green' ? SC.ok : SC.text) : SC.text; c.fillText(l, 14, 66 + i * 24); });
+  for (let i = 0; i < steps; i++) rr(c, 14 + i * (292 / steps), 176, 292 / steps - 4, 8, 3, i < cur ? SC.ok : i === cur ? SC.run : '#26313d');
+}
+function drawScout(c, a) {
+  header(c, 'scout', a.run?.queued != null ? `+${a.run.queued}` : '', SC.sonnet);
+  if (S.mode === 'stopped') return;
+  c.font = '13.5px ' + MONO;
+  S.queue.slice(0, 5).forEach((j, i) => { c.fillStyle = i === 0 ? SC.text : SC.dim; c.fillText(`${String(j.fit).padStart(2)}  ${j.company}`.slice(0, 30), 14, 62 + i * 24); });
+  if (!S.queue.length) { c.fillStyle = SC.dim; c.fillText('queue empty', 14, 80); }
+}
+function drawOutreach(c, a) {
+  header(c, 'outreach', `${S.drafts.length} ready`, SC.sonnet);
+  if (S.mode === 'stopped') return;
+  const d = a.prospect;
+  c.font = '13.5px ' + MONO;
+  if (d && a.step >= 0) {
+    c.fillStyle = SC.text; c.fillText(d.company, 14, 62);
+    c.fillStyle = SC.dim; c.fillText(d.title.slice(0, 30), 14, 84);
+    for (let i = 0; i < Math.min(a.step + 1, 4); i++) rr(c, 14, 104 + i * 18, 150 + ((i * 53) % 130), 8, 3, '#2c3a4a');
+  } else { c.fillStyle = SC.dim; c.fillText('waiting on you to send', 14, 80); }
+}
+function drawYou(c) {
+  header(c, 'your inbox', '', '#4fd0bf');
+  const rows = [['ready', S.ready.length, SC.ok], ['needs you', S.needs.length, SC.warn], ['answers', S.answers.length, SC.text], ['messages', S.drafts.length, SC.sonnet]];
+  rows.forEach(([l, n, col], i) => { c.font = '600 22px ' + MONO; c.fillStyle = col; c.fillText(String(n), 14, 70 + i * 34); c.font = '15px ' + SANS; c.fillStyle = SC.dim; c.fillText(l, 56, 68 + i * 34); });
+}
+function redrawAll() {
+  const A = S.agents;
+  for (const id of ['w1', 'w2', 'w3', 'w4']) { drawApplier(R[id].screen.ctx, A[id]); R[id].screen.tex.needsUpdate = true; }
+  drawFixer(R.fixer.screen.ctx, A.fixer); R.fixer.screen.tex.needsUpdate = true;
+  drawScout(R.scout.screen.ctx, A.scout); R.scout.screen.tex.needsUpdate = true;
+  drawOutreach(R.outreach.screen.ctx, A.outreach); R.outreach.screen.tex.needsUpdate = true;
+  drawYou(R.you.screen.ctx); R.you.screen.tex.needsUpdate = true;
+}
+
+// ---------- Tags and sync ----------
+const MODELC = { haiku: 'var(--haiku)', sonnet: 'var(--sonnet)', opus: 'var(--opus)', you: 'var(--you)' };
+function syncTags() {
+  for (const id of F.ids) {
+    const st = F.statusOf(id);
+    const html = `<span class="dot" style="--c:${MODELC[F.model(id)]}"></span><span>${F.name(id)}</span><span class="pill t-${st.tone}">${st.label}</span>`;
+    if (tags[id]._h !== html) { tags[id].innerHTML = html; tags[id]._h = html; }
+    tags[id].classList.toggle('dim', st.tone === 'idle');
+  }
+}
+let pendingCrates = 0;
+function syncWorld() {
+  const A = S.agents;
+  for (const id of ['scout', 'w1', 'w2', 'w3', 'w4', 'fixer', 'outreach']) {
+    const a = A[id];
+    const show = S.mode !== 'stopped' && !(a.kind === 'applier' && a.phase === 'off');
+    R[id].ag.target = show ? 1 : 0;
+  }
+  const inRack = Math.max(0, S.queue.length - pendingCrates);
+  rackCrates.forEach((c, i) => (c.visible = i < inRack));
+  const open = (A.fixer.ticket ? 1 : 0) + S.tickets.length;
+  cards.forEach((c, i) => { c.visible = i < open; c.material = i === 0 && A.fixer.ticket ? M.run : M.warn; });
+  lampMat.emissive.copy(lampColor());
+  const counts = { ready: S.ready.length, needs: S.needs.length + S.answers.length, drafts: S.drafts.length };
+  for (const [k, t] of Object.entries(TRAYS)) t.sheets.forEach((s, i) => (s.visible = i < Math.min(10, counts[k])));
+  redrawAll();
+  syncTags();
+}
+
+// ---------- Things that fly between desks ----------
+const planeGeo = new THREE.ConeGeometry(0.16, 0.52, 3); planeGeo.rotateX(Math.PI / 2);
+const envGeo = new THREE.BoxGeometry(0.5, 0.05, 0.34);
+const fliers = [];
+function fly(geo, mat, from, to, { dur = 1.4, arc = 2.2, onDone } = {}) {
+  if (reduce.matches) { onDone?.(); return; }
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.castShadow = true; mesh.position.copy(from);
+  scene.add(mesh);
+  fliers.push({ mesh, from: from.clone(), to: to.clone(), t: 0, dur, arc, onDone });
+}
+const head = (id) => POS[id].clone().add(new THREE.Vector3(0, 1.9, 0));
+const desk = (id) => POS[id].clone().add(new THREE.Vector3(0, 1.0, -0.9));
+F.on((type, d) => {
+  switch (type) {
+    case 'tick': case 'mode': syncWorld(); break;
+    case 'crates':
+      for (let i = 0; i < d; i++) {
+        pendingCrates++;
+        setTimeout(() => fly(crateGeo, M.crate, new THREE.Vector3(-7.3, 0.72, -6.2), new THREE.Vector3(-3.1, 0.72, -6.2), { dur: 2.2, arc: 0,
+          onDone: () => { pendingCrates = Math.max(0, pendingCrates - 1); syncWorld(); } }), reduce.matches ? 0 : i * 450);
+      }
+      if (reduce.matches) pendingCrates = 0;
+      break;
+    case 'claim': fly(crateGeo, M.crate, rackSlot(S.queue.length), desk(d), { dur: 1.1, arc: 1.6 }); break;
+    case 'incident': fly(planeGeo, M.bad, head(d), BOARD.clone().add(new THREE.Vector3(0, 0, 0.4)), { dur: 1.5, arc: 2.6 }); break;
+    case 'resolved': {
+      const mat = d.outcome === 'fixed' ? M.ok : d.outcome === 'cant' ? M.metal : M.warn;
+      const to = d.outcome === 'attest' ? trayPos('needs') : head(d.to);
+      fly(planeGeo, mat, head('fixer'), to, { dur: 1.5, arc: 2.6 });
+      break;
+    }
+    case 'ready': fly(envGeo, M.ok, head(d), trayPos('ready'), { dur: 1.7, arc: 3 }); break;
+    case 'needsYou': fly(envGeo, M.warn, head(d), trayPos('needs'), { dur: 1.7, arc: 3 }); break;
+    case 'draft': fly(envGeo, M.sonnet, head('outreach'), trayPos('drafts'), { dur: 2, arc: 3.4 }); break;
+    case 'focus': focusOn(d); break;
+  }
+});
+
+// ---------- Hover, click, camera ----------
+const ray = new THREE.Raycaster(), ptr = new THREE.Vector2();
+let hoverId = null, down = null;
+function idOf(o) { while (o) { if (o.userData?.pick) return o.userData.pick; o = o.parent; } return null; }
+function pickAt(e) {
+  const r = renderer.domElement.getBoundingClientRect();
+  ptr.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+  ray.setFromCamera(ptr, camera);
+  const hit = ray.intersectObjects(pickables, true).find((h) => h.object.visible);
+  return hit ? idOf(hit.object) : null;
+}
+function setHover(id) {
+  if (hoverId === id) return;
+  if (hoverId) glow(hoverId, false);
+  hoverId = id;
+  if (id) glow(id, true);
+  renderer.domElement.style.cursor = id ? 'pointer' : '';
+}
+function glow(id, on) {
+  tags[id]?.classList.toggle('hover', on);
+  const mat = id === 'you' ? youMarkMat : R[id]?.ag?.mat;
+  if (mat) { if (on) mat.emissive.copy(mat.color).multiplyScalar(0.35); else mat.emissive.setScalar(0); }
+}
+renderer.domElement.addEventListener('pointermove', (e) => { if (!down) setHover(pickAt(e)); });
+renderer.domElement.addEventListener('pointerleave', () => setHover(null));
+renderer.domElement.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY }; });
+renderer.domElement.addEventListener('pointerup', (e) => {
+  if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 6) { const id = pickAt(e); if (id) F.open(id); }
+  down = null;
+});
+
+let tween = null;
+function focusOn(id) {
+  const p = POS[id]; if (!p) return;
+  const to = new THREE.Vector3(p.x, 0.8, p.z);
+  const off = camera.position.clone().sub(controls.target);
+  const z1 = Math.max(camera.zoom, 1.3);
+  if (reduce.matches) { controls.target.copy(to); camera.position.copy(to).add(off); camera.zoom = z1; camera.updateProjectionMatrix(); return; }
+  tween = { from: controls.target.clone(), to, off, t: 0, z0: camera.zoom, z1 };
+}
+F.resetView = () => {
+  tween = null;
+  controls.target.set(0, 0, 0); camera.position.copy(HOME); camera.zoom = 1; camera.updateProjectionMatrix(); controls.update();
+};
+
+// ---------- Loop ----------
+const clock = new THREE.Clock();
+function frame() {
+  requestAnimationFrame(frame);
+  if (document.hidden) return;
+  const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime;
+  const A = S.agents;
+  for (const id of ['scout', 'w1', 'w2', 'w3', 'w4', 'fixer', 'outreach']) {
+    const ag = R[id].ag, a = A[id];
+    const target = ag.target ?? 1;
+    ag.scale += (target - ag.scale) * (reduce.matches ? 1 : Math.min(1, dt * 7));
+    if (Math.abs(ag.scale - target) < 0.01) ag.scale = target;
+    ag.g.visible = ag.scale > 0.02;
+    ag.g.scale.setScalar(Math.max(0.001, ag.scale));
+    const st = F.statusOf(id);
+    const busy = !reduce.matches && S.mode === 'running' && !a.paused && st.tone !== 'idle';
+    const typing = busy && (a.phase === 'fill' || a.phase === 'handfill' || a.kind === 'fixer' || a.kind === 'outreach' || a.kind === 'scout');
+    const k = id.charCodeAt(id.length - 1);
+    ag.body.position.y = 1.0 + (busy ? Math.sin(t * 3 + k) * 0.02 : 0);
+    ag.head.position.y = 1.66 + (busy ? Math.sin(t * 3 + k) * 0.02 : 0);
+    ag.head.rotation.x = a.phase === 'parked' ? 0.25 + Math.sin(t * 1.5) * 0.05 : 0;
+    ag.head.rotation.y = a.phase === 'parked' ? Math.sin(t * 0.8) * 0.4 : 0;
+    ag.hl.position.y = 0.98 + (typing ? Math.max(0, Math.sin(t * 16 + k)) * 0.05 : 0);
+    ag.hr.position.y = 0.98 + (typing ? Math.max(0, Math.sin(t * 16 + k + Math.PI)) * 0.05 : 0);
+  }
+  if (!reduce.matches) { youMark.rotation.y += dt * 0.9; youMark.position.y = 1.95 + Math.sin(t * 2) * 0.06; }
+  for (let i = fliers.length - 1; i >= 0; i--) {
+    const f = fliers[i];
+    f.t += dt / f.dur;
+    const k = Math.min(1, f.t);
+    const e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+    const prev = f.mesh.position.clone();
+    f.mesh.position.lerpVectors(f.from, f.to, e);
+    f.mesh.position.y += Math.sin(Math.PI * e) * f.arc;
+    if (f.mesh.position.distanceToSquared(prev) > 1e-6) f.mesh.lookAt(f.mesh.position.clone().add(f.mesh.position.clone().sub(prev)));
+    if (k >= 1) { scene.remove(f.mesh); fliers.splice(i, 1); f.onDone?.(); }
+  }
+  if (tween) {
+    tween.t += dt / 0.7;
+    const k = Math.min(1, tween.t), e = 1 - Math.pow(1 - k, 3);
+    controls.target.lerpVectors(tween.from, tween.to, e);
+    camera.position.copy(controls.target).add(tween.off);
+    camera.zoom = tween.z0 + (tween.z1 - tween.z0) * e;
+    camera.updateProjectionMatrix();
+    if (k >= 1) tween = null;
+  }
+  controls.update();
+  renderer.render(scene, camera);
+  css2d.render(scene, camera);
+}
+applyTheme();
+syncWorld();
+frame();
+document.fonts?.ready.then(redrawAll);
+</script>
