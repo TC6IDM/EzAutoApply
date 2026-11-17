@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { browser } from 'wxt/browser';
 import { SystemOneClient } from '../classifier/systemone';
 import type { DocSelection } from '../core/types';
+import type { FillProgress } from '../fill/types';
 import { getSettings } from '../db';
 import { type BackgroundBroadcast, call, type PanelToBackground, type TabState } from '../messages';
 import type { SectionType } from '../parse/resume';
@@ -43,23 +44,38 @@ export function useActiveTab(): ActiveTab | null {
   return tab;
 }
 
-const EMPTY: TabState = { reports: [], selection: {} };
+const EMPTY: TabState = { reports: [], selection: {}, progress: null };
 
-/** Fill reports and document choices for a tab, kept live via background broadcasts. */
-export function useTabState(tabId: number | undefined): { state: TabState; busy: boolean; setBusy(b: boolean): void } {
+/**
+ * Fill reports and document choices for a tab, kept live via background broadcasts. `busy` holds
+ * while a run is starting or any frame is still filling; `progress` counts what's filled and what's left.
+ */
+export function useTabState(tabId: number | undefined): {
+  state: TabState;
+  busy: boolean;
+  progress: FillProgress | null;
+  setBusy(b: boolean): void;
+} {
   const [state, setState] = useState<TabState>(EMPTY);
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<FillProgress | null>(null);
   useEffect(() => {
+    setProgress(null);
     if (tabId === undefined) return;
     let alive = true;
     const load = () =>
       send<TabState>({ type: 'getTabState', tabId })
-        .then((s) => alive && setState(s ?? EMPTY))
+        .then((s) => {
+          if (!alive) return;
+          setState(s ?? EMPTY);
+          setProgress(s?.progress ?? null);
+        })
         .catch(() => {});
     load();
     const onMsg = (msg: BackgroundBroadcast) => {
       if (msg.tabId !== tabId) return;
       if (msg.type === 'autofillStarted') setBusy(true);
+      if (msg.type === 'fillProgress') setProgress(msg.progress);
       if (msg.type === 'tabStateChanged') {
         setBusy(false);
         load();
@@ -71,7 +87,7 @@ export function useTabState(tabId: number | undefined): { state: TabState; busy:
       browser.runtime.onMessage.removeListener(onMsg);
     };
   }, [tabId]);
-  return { state, busy, setBusy };
+  return { state, busy: busy || !!progress, progress, setBusy };
 }
 
 export function setDocSelection(tabId: number, selection: DocSelection) {

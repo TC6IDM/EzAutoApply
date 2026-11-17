@@ -1,4 +1,5 @@
 import { OWN_UI_ID } from '../fill/dom';
+import type { FillProgress } from '../fill/types';
 import { PALETTE as P } from './palette';
 
 /**
@@ -27,7 +28,10 @@ button:disabled { cursor: default; color: ${P.onInkMuted}; }
 .close { display: inline-flex; padding: 8px 10px; color: ${P.onInkMuted}; }
 .close svg { width: 14px; height: 14px; }
 .summary { display: flex; gap: 10px; padding: 0 8px 0 4px; font-variant-numeric: tabular-nums; }
-.summary:empty { display: none; }
+.summary:empty, .summary[hidden] { display: none; }
+.progress { padding: 0 8px 0 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.progress:empty { display: none; }
+.progress b { font-weight: 600; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: 0; }
 .dot.filled { background: ${P.onInkMuted}; }
 .dot.review { background: ${P.warnOnInk}; }
@@ -51,8 +55,14 @@ export class FloatingUi {
   private host: HTMLElement;
   private main: HTMLButtonElement;
   private summary: HTMLElement;
+  private progressEl: HTMLElement;
   private toastEl: HTMLElement;
   private toastTimer?: number;
+  /** This frame's own run. */
+  private busy = false;
+  private busyLabel = 'Filling…';
+  /** Every frame's runs together (a form in an iframe too), from the background. */
+  private progress: FillProgress | null = null;
 
   constructor(onAutofill: () => void) {
     this.host = document.createElement('div');
@@ -62,6 +72,7 @@ export class FloatingUi {
       <div class="wrap">
         <div class="toast" role="status" hidden></div>
         <div class="bar">
+          <span class="progress"></span>
           <span class="summary" aria-live="polite"></span>
           <button class="main" type="button" title="Autofill this application (Alt+Shift+F)">Autofill</button>
           <button class="close" type="button" aria-label="Hide EzAutoApply on this page">${CLOSE_ICON}</button>
@@ -69,6 +80,7 @@ export class FloatingUi {
       </div>`;
     this.main = root.querySelector('.main')!;
     this.summary = root.querySelector('.summary')!;
+    this.progressEl = root.querySelector('.progress')!;
     this.toastEl = root.querySelector('.toast')!;
     this.main.addEventListener('click', () => {
       this.main.classList.remove('pulse');
@@ -79,8 +91,25 @@ export class FloatingUi {
   }
 
   setBusy(busy: boolean, label = 'Filling…'): void {
-    this.main.textContent = busy ? label : 'Autofill';
+    this.busy = busy;
+    this.busyLabel = label;
+    this.render();
+  }
+
+  /** "12 filled · 8 to go" while any frame is filling; the last run's summary comes back when done. */
+  setProgress(progress: FillProgress | null): void {
+    this.progress = progress;
+    this.render();
+  }
+
+  private render(): void {
+    const p = this.progress;
+    const busy = this.busy || !!p;
+    this.main.textContent = busy ? this.busyLabel : 'Autofill';
     this.main.disabled = busy;
+    // Not a live region: it changes with every field. The summary after the run is announced.
+    this.progressEl.innerHTML = p ? `<b>${p.filled}</b> filled${p.remaining ? ` · <b>${p.remaining}</b> to go` : ''}` : '';
+    this.summary.hidden = !!p;
   }
 
   setSummary(s: Summary): void {

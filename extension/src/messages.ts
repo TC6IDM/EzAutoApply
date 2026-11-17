@@ -3,7 +3,7 @@ import type { Profile } from './core/profile';
 import type { AnswerValue, DocKind, DocSelection, FieldKind, SavedAnswer, Settings } from './core/types';
 import type { AdvanceKind } from './fill/advance';
 import type { DocumentPayload } from './fill/fillers';
-import type { FrameReport } from './fill/types';
+import type { FillProgress, FrameReport } from './fill/types';
 
 /**
  * Message protocol between the three extension contexts:
@@ -31,6 +31,8 @@ export type ContentToBackground =
   | { type: 'getDocument'; kind: DocKind }
   | { type: 'getSecret'; name: 'accountPassword' }
   | { type: 'report'; report: FrameReport }
+  /** How far this frame's run has got; null when it's done. */
+  | { type: 'progress'; progress: FillProgress | null }
   | { type: 'fieldEdited'; fieldId: string; userValue: AnswerValue }
   | { type: 'answersUsed'; ids: string[] }
   | { type: 'autofillAll' };
@@ -56,7 +58,9 @@ export type BackgroundToContent =
   | { type: 'focusField'; fieldId: string }
   | { type: 'findAdvance' }
   | { type: 'advance' }
-  | { type: 'settingsChanged'; settings: Settings };
+  | { type: 'settingsChanged'; settings: Settings }
+  /** All of the tab's frames together, for the top frame's floating button; null when none is filling. */
+  | { type: 'fillProgress'; progress: FillProgress | null };
 
 /** The page button the side panel's Advance button presses: Next, Submit, Sign In, Apply. */
 export interface AdvanceTarget {
@@ -67,7 +71,10 @@ export interface AdvanceTarget {
 }
 
 /** Broadcast by the background to extension pages (the side panel). */
-export type BackgroundBroadcast = { type: 'tabStateChanged'; tabId: number } | { type: 'autofillStarted'; tabId: number };
+export type BackgroundBroadcast =
+  | { type: 'tabStateChanged'; tabId: number }
+  | { type: 'autofillStarted'; tabId: number }
+  | { type: 'fillProgress'; tabId: number; progress: FillProgress | null };
 
 export interface ContentContext {
   profile: Profile;
@@ -78,6 +85,8 @@ export interface ContentContext {
 export interface TabState {
   reports: FrameReport[];
   selection: DocSelection;
+  /** Set while any frame of the tab is filling. */
+  progress: FillProgress | null;
 }
 
 export type ClassifyResponse = SystemOneResponse | SystemOneResponse[];

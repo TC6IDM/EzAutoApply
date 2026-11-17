@@ -81,6 +81,10 @@ export default defineContentScript({
           applySettings(msg.settings);
           sendResponse(null);
           return false;
+        case 'fillProgress':
+          ui?.setProgress(msg.progress);
+          sendResponse(null);
+          return false;
       }
     });
 

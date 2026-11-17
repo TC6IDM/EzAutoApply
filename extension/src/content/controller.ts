@@ -10,7 +10,7 @@ import { resolveFields } from '../fill/pipeline';
 import { acknowledgePrivacyNotices } from '../fill/consent';
 import { expandRepeatingSections } from '../fill/repeat';
 import { isSearchPrompt, promptChoices, scanFields } from '../fill/scan';
-import type { FieldDescriptor, FieldReport, FillStatus, FrameReport, Resolution } from '../fill/types';
+import type { FieldDescriptor, FieldReport, FillProgress, FillStatus, FrameReport, Resolution } from '../fill/types';
 import {
   type AnswerValue,
   call,
@@ -77,6 +77,11 @@ export function debugHtml(f: FieldDescriptor): string {
   return clone.outerHTML.replace(/\s+/g, ' ').slice(0, 3000);
 }
 
+/** A resolution that `fillAll` will try to write into the page. */
+function willFill(r: Resolution): boolean {
+  return (r.status === 'filled' || r.status === 'review') && r.value !== undefined;
+}
+
 function shown(v: AnswerValue): string {
   return Array.isArray(v) ? v.join(', ') : typeof v === 'boolean' ? (v ? 'Checked' : 'Unchecked') : v;
 }
@@ -114,6 +119,8 @@ export class AutofillController {
   private observer?: MutationObserver;
   private observeTimer?: number;
   private classifierError?: string;
+  /** The current run's progress, once it knows what it will fill; null when no run is reporting. */
+  private progress: FillProgress | null = null;
   settings: Settings | null = null;
 
   /** Fields the user typed in, picked or clicked on the page, or answered in the panel: their values are theirs. */
@@ -124,6 +131,26 @@ export class AutofillController {
     private readonly ui: () => FloatingUi | null,
   ) {
     for (const type of ['input', 'change', 'click', 'keydown']) document.addEventListener(type, (e) => this.noteUser(e), true);
+    // A frame that navigates away mid-run never finishes it; say so, or the panel shows it filling forever.
+    window.addEventListener('pagehide', () => this.reportProgress(null));
+  }
+
+  /** Tell the background how far this run has got (null: done). */
+  private reportProgress(progress: FillProgress | null): void {
+    if (!progress && !this.progress) return;
+    this.progress = progress;
+    this.send({ type: 'progress', progress: progress && { ...progress } }).catch(() => {});
+  }
+
+  /** The next pass will try `remaining` fields (replacing the earlier estimate). */
+  private planProgress(remaining: number): void {
+    this.reportProgress({ filled: this.progress?.filled ?? 0, remaining });
+  }
+
+  /** One fill attempt finished. */
+  private stepProgress(ok: boolean): void {
+    if (!this.progress) return;
+    this.reportProgress({ filled: this.progress.filled + (ok ? 1 : 0), remaining: Math.max(0, this.progress.remaining - 1) });
   }
 
   /** Only real input counts (isTrusted): EzAutoApply's own events and the site's scripts don't. */
@@ -209,6 +236,9 @@ export class AutofillController {
       const files = fields.filter((f) => f.kind === 'file');
       if (files.length) {
         const res = await resolveFields(files, { ...deps, classifier: null });
+        // Count the rest now too, so it doesn't say "1 to go" while the page reads the resume. Pass 1 recounts.
+        const rest = await resolveFields(fields.filter((f) => f.kind !== 'file'), { ...deps, classifier: null });
+        this.planProgress(res.filter(willFill).length + rest.filter(willFill).length);
         await this.fillAll(files, res, used);
         const uploaded = new Set(files.flatMap((f, i) => (['filled', 'review'].includes(this.reports.get(f.id)?.status ?? '') && res[i].key ? [res[i].key!] : [])));
         if (uploaded.size && fields.length > files.length) {
@@ -228,6 +258,7 @@ export class AutofillController {
 
       // Pass 1, instant: rules and saved answers.
       const fast = await resolveFields(fields, { ...deps, classifier: null });
+      this.planProgress(fast.filter(willFill).length);
       await this.fillAll(fields, fast, used);
 
       // Before the slow part, read the options of every unanswered dropdown and show the panel
@@ -250,6 +281,7 @@ export class AutofillController {
           onClassifierError: (e) => (this.classifierError = e.message),
         });
         const answered = slow.map((r, i) => [leftovers[i], r] as const).filter(([, r]) => r.status === 'filled' || r.status === 'review');
+        this.planProgress(answered.filter(([, r]) => willFill(r)).length);
         await this.fillAll(answered.map(([f]) => f), answered.map(([, r]) => r), used);
         // Still unanswered: keep any more specific note from the classifier ("Needs a personal answer").
         slow.forEach((r, i) => {
@@ -269,6 +301,7 @@ export class AutofillController {
       throw e;
     } finally {
       this.running = false;
+      this.reportProgress(null);
       this.ui()?.setBusy(false);
     }
   }
@@ -282,9 +315,13 @@ export class AutofillController {
       let status: FillStatus = r.status;
       let note = r.note;
       let text = r.status === 'prefilled' ? shown(readValue(f)) : '';
-      if ((status === 'filled' || status === 'review') && r.value !== undefined) {
-        if (!f.element.isConnected) continue;
+      if (willFill(r)) {
+        if (!f.element.isConnected) {
+          this.stepProgress(false);
+          continue;
+        }
         const out = await fillField(f, r, fillCtx);
+        this.stepProgress(out.ok);
         if (out.ok) {
           text = out.valueText;
           if (r.answerId) used.push(r.answerId);

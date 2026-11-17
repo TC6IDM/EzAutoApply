@@ -15,7 +15,7 @@ import {
   markAnswersUsed,
   saveAnswer,
 } from '../src/db';
-import type { FrameReport } from '../src/fill/types';
+import type { FillProgress, FrameReport } from '../src/fill/types';
 import type {
   AdvanceTarget,
   BackgroundBroadcast,
@@ -63,6 +63,31 @@ function updateTab<T>(tabId: number, fn: (s: StoredTabState) => Promise<T> | T):
   });
   tabLocks.set(tabId, next);
   return next;
+}
+
+/**
+ * Each frame's running autofill, by tab and then frame. Kept in memory: a run keeps messaging the
+ * worker, so it isn't suspended mid-run, and a worker that restarted has nothing running to show.
+ */
+const fillProgress = new Map<number, Map<number, FillProgress>>();
+
+function tabProgress(tabId: number): FillProgress | null {
+  const frames = [...(fillProgress.get(tabId)?.values() ?? [])];
+  if (!frames.length) return null;
+  return { filled: frames.reduce((n, p) => n + p.filled, 0), remaining: frames.reduce((n, p) => n + p.remaining, 0) };
+}
+
+/** Record a frame's progress (null: it finished) and show the tab's total in the panel and on the page's button. */
+function setProgress(tabId: number, frameId: number, progress: FillProgress | null): void {
+  const frames = fillProgress.get(tabId) ?? new Map<number, FillProgress>();
+  if (progress) frames.set(frameId, progress);
+  else if (!frames.delete(frameId)) return;
+  if (frames.size) fillProgress.set(tabId, frames);
+  else fillProgress.delete(tabId);
+  const total = tabProgress(tabId);
+  broadcast({ type: 'fillProgress', tabId, progress: total });
+  // Only the top frame has the floating button; a form in an iframe still shows its progress there.
+  toTab(tabId, { type: 'fillProgress', progress: total }, 0).catch(() => {});
 }
 
 function broadcast(msg: BackgroundBroadcast): void {
@@ -185,6 +210,9 @@ async function handleContent(msg: ContentToBackground, sender: Browser.runtime.M
       if (report.fields.length) await recordApplication(tabId, report, sender.tab).catch(() => {});
       return null;
     }
+    case 'progress':
+      if (tabId !== undefined) setProgress(tabId, sender.frameId ?? 0, msg.progress);
+      return null;
     case 'fieldEdited': {
       if (tabId === undefined) return null;
       await updateTab(tabId, (state) => {
@@ -209,6 +237,7 @@ async function handlePanel(msg: PanelToBackground): Promise<unknown> {
       const state: TabState = {
         reports: Object.values(s.reports).sort((a, b) => a.frameId - b.frameId),
         selection: s.selection,
+        progress: tabProgress(msg.tabId),
       };
       return state;
     }
@@ -272,6 +301,8 @@ export default defineBackground(() => {
   browser.tabs.onUpdated.addListener((tabId, info) => {
     if (info.status === 'loading' && info.url) {
       frameCache.delete(tabId);
+      // The page that was filling is gone, so its run won't report finishing.
+      if (fillProgress.delete(tabId)) broadcast({ type: 'fillProgress', tabId, progress: null });
       updateTab(tabId, (s) => {
         s.reports = {};
       }).catch(() => {});
@@ -280,5 +311,6 @@ export default defineBackground(() => {
   browser.tabs.onRemoved.addListener((tabId) => {
     browser.storage.session.remove(tabKey(tabId)).catch(() => {});
     frameCache.delete(tabId);
+    fillProgress.delete(tabId);
   });
 });

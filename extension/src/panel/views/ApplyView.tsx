@@ -393,7 +393,7 @@ export function ApplyView(props: { tab: ActiveTab | null; goto: Goto; active: bo
   const { tab, goto } = props;
   const docs = useLiveQuery(listDocuments, [], [] as DocumentMeta[]);
   const profileSaved = useLiveQuery(hasProfile, [], true);
-  const { state, busy, setBusy } = useTabState(tab?.id);
+  const { state, busy, progress, setBusy } = useTabState(tab?.id);
   const [error, setError] = useState('');
   const host = tab ? hostOf(tab.url) : '';
   const fields = useMemo(() => state.reports.flatMap((r) => r.fields), [state]);
@@ -462,7 +462,21 @@ export function ApplyView(props: { tab: ActiveTab | null; goto: Goto; active: bo
         </Button>
         {tab && webPage && <AdvanceButton tabId={tab.id} enabled={props.active && !busy} onError={setError} />}
         {!webPage && <p className="hint">Open a job application in this tab to autofill it.</p>}
-        {fields.length > 0 && (
+        {progress ? (
+          // Not a live region: it changes with every field. The counts after the run are announced.
+          <p className="fill-progress">
+            <span className="spinner" aria-hidden="true" />
+            <span>
+              Filled <strong>{progress.filled}</strong> so far
+              {progress.remaining > 0 && (
+                <>
+                  {' · '}
+                  <strong>{progress.remaining}</strong> more to go
+                </>
+              )}
+            </span>
+          </p>
+        ) : fields.length > 0 && (
           <p className="counts" aria-live="polite">
             {(['needs', 'review', 'filled', 'prefilled'] as FillStatus[])
               .filter((s) => counts[s] > 0)

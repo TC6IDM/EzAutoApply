@@ -261,7 +261,18 @@ test('fills a Workday-style application: account, dropdowns, work history, resum
   const form = await context.newPage();
   const url = `${site}/workday.html`;
   await form.goto(url);
-  await autofill(worker, url);
+  const tabId = await worker.evaluate(async (u) => (await chrome.tabs.query({ url: u }))[0].id!, url);
+  type Progress = { filled: number; remaining: number } | null;
+  const progress = async (): Promise<Progress> =>
+    (await panel.evaluate((id) => chrome.runtime.sendMessage({ type: 'getTabState', tabId: id }), tabId)).progress;
+  const filling = autofill(worker, url);
+  // While it works, the panel can say how many fields are filled so far and how many are still to go.
+  await expect.poll(async () => {
+    const p = await progress();
+    return !!p && p.filled > 0 && p.remaining > 0;
+  }).toBe(true);
+  await filling;
+  await expect.poll(progress).toBeNull();
 
   // Account creation.
   await expect(form.locator('#email')).toHaveValue('jordan.rivera@example.com');
@@ -299,7 +310,6 @@ test('fills a Workday-style application: account, dropdowns, work history, resum
 
   // The unanswered screening question is listed with its options, and left untouched.
   type Field = { id: string; frameId: number; label: string; status: string; options: string[] };
-  const tabId = await worker.evaluate(async (u) => (await chrome.tabs.query({ url: u }))[0].id!, url);
   const fields = async (): Promise<Field[]> =>
     (await panel.evaluate((id) => chrome.runtime.sendMessage({ type: 'getTabState', tabId: id }), tabId)).reports.flatMap(
       (r: { fields: Field[] }) => r.fields,

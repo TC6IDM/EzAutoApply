@@ -78,6 +78,14 @@ export interface FieldReport {
   debug?: string;
 }
 
+/** How far an autofill run has got: shown on the page's button and in the side panel while it runs. */
+export interface FillProgress {
+  /** Fields filled so far. */
+  filled: number;
+  /** Fields it's still going to try to fill. Grows when a later pass (the classifier) finds more. */
+  remaining: number;
+}
+
 export interface FrameReport {
   frameId: number;
   url: string;

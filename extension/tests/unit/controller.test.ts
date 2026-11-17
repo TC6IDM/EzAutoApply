@@ -69,13 +69,49 @@ describe('sites that read the uploaded resume', () => {
       }, 300);
     });
 
-    const { controller, lastReport } = setup();
+    const { controller, sent, lastReport } = setup();
     await controller.autofill();
     expect([first.value, phone.value, city.value]).toEqual(['Jordan', '(555) 123-4567', 'Austin']);
+    // While the site reads the resume, the whole form is counted as still to go, not just the upload.
+    // Once it has, the count is redone: the site got City right, so that one isn't filled again.
+    expect(sent.flatMap((m) => (m.type === 'progress' ? [m.progress] : []))).toEqual([
+      { filled: 0, remaining: 4 },
+      { filled: 1, remaining: 3 },
+      { filled: 1, remaining: 2 },
+      { filled: 2, remaining: 1 },
+      { filled: 3, remaining: 0 },
+      null,
+    ]);
     const byLabel = Object.fromEntries(lastReport().fields.map((f) => [f.label, f]));
     expect(byLabel['Resume']).toMatchObject({ status: 'filled', valueText: 'Jordan_Rivera_Resume.pdf' });
     expect(byLabel['First Name']).toMatchObject({ status: 'review', note: 'Replaced “Rivera”, which the site filled in, with your profile' });
     expect(byLabel['Phone']).toMatchObject({ status: 'review' });
     expect(byLabel['City']).toMatchObject({ status: 'prefilled' });
+  });
+});
+
+describe('progress while filling', () => {
+  const progressOf = (sent: ContentToBackground[]) => sent.flatMap((m) => (m.type === 'progress' ? [m.progress] : []));
+
+  it('counts fields filled so far and fields still to go, then says it’s done', async () => {
+    document.body.innerHTML = `
+      <label for="first">First Name</label><input id="first">
+      <label for="email">Email</label><input id="email">
+      <label for="color">What is your favorite color?</label><input id="color">`;
+    const { controller, sent } = setup();
+    await controller.autofill();
+    expect(progressOf(sent)).toEqual([
+      { filled: 0, remaining: 2 },
+      { filled: 1, remaining: 1 },
+      { filled: 2, remaining: 0 },
+      null,
+    ]);
+  });
+
+  it('says nothing from a frame with no fields', async () => {
+    document.body.innerHTML = '<p>No form here</p>';
+    const { controller, sent } = setup();
+    await controller.autofill();
+    expect(progressOf(sent)).toEqual([]);
   });
 });
