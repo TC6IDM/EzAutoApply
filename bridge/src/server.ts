@@ -23,13 +23,19 @@ export interface BridgeOptions {
   now?: () => number;
   /** Longest /ext/commands long-poll, ms. */
   maxWaitMs?: number;
+  /** Claims pause while this many jobs wait for the owner's Submit, each in its own open tab (#29). */
+  maxReadyOpen?: number;
 }
+
+export const MAX_READY_OPEN = 6;
 
 /** What the extension is asked to do. */
 export type Command =
   | { id: string; type: 'run'; jobId: string; urlPrefix?: string; at: number }
   | { id: string; type: 'answer'; jobId: string; fieldId: string; frameId?: number; answer: unknown; save?: unknown; at: number }
-  | { id: string; type: 'stopAll'; at: number };
+  | { id: string; type: 'stopAll'; at: number }
+  /** Bring the job's tab and window to the front (the ready list's "go to tab", #29). */
+  | { id: string; type: 'focus'; jobId: string; at: number };
 
 /** A command before it gets its id and time (Omit over each member of the union). */
 type NewCommand = Command extends infer C ? (C extends Command ? Omit<C, 'id' | 'at'> : never) : never;
@@ -133,6 +139,10 @@ export function createBridge(o: BridgeOptions) {
     }
     if (m === 'GET' && p === '/queue/next') {
       if (stopped) throw new HttpError(423, 'Stopped: POST /resume first');
+      // Each ready job keeps its tab open for the owner; past the limit the appliers wait (#29).
+      const ready = o.queue.all().filter((j) => j.status === 'ready').length;
+      const limit = o.maxReadyOpen ?? MAX_READY_OPEN;
+      if (ready >= limit) return [429, { error: `Paused: ${ready} jobs wait for your Submit`, ready, maxReadyOpen: limit }];
       const job = o.queue.claim(url.searchParams.get('worker') || 'worker');
       return job ? [200, job] : [204, null];
     }
@@ -176,6 +186,7 @@ export function createBridge(o: BridgeOptions) {
         ...(typeof b.frameId === 'number' && { frameId: b.frameId }),
         ...(b.save !== undefined && { save: b.save }),
       });
+      o.queue.noteAgentAnswer(str(b.jobId, 'jobId'), str(b.fieldId, 'fieldId'));
       return [202, { commandId: cmd.id }];
     }
     if (m === 'POST' && p === '/incidents') {
@@ -189,7 +200,21 @@ export function createBridge(o: BridgeOptions) {
       writeFileSync(file, JSON.stringify({ ...b, id, receivedAt: at.toISOString() }, null, 2));
       return [201, { id, file }];
     }
-    if (m === 'GET' && p === '/ready') return [200, o.queue.all().filter((j) => j.status === 'ready')];
+    if (m === 'GET' && p === '/ready') {
+      // The owner's list (#29): each job with the fields an agent answered, by their labels, to check before Submit.
+      const ready = o.queue.all().filter((j) => j.status === 'ready');
+      return [200, ready.map((j) => {
+        const fields = (runs.get(j.id)?.fields ?? []) as { id?: string; label?: string }[];
+        const agentAnswered = (j.agentAnswers ?? []).map((a) => fields.find((f) => f.id === a.fieldId)?.label ?? a.fieldId);
+        return { ...j, agentAnswered, maxReadyOpen: o.maxReadyOpen ?? MAX_READY_OPEN };
+      })];
+    }
+    hit = /^\/ready\/([^/]+)\/focus$/.exec(p);
+    if (m === 'POST' && hit) {
+      const jobId = decodeURIComponent(hit[1]);
+      if (!o.queue.get(jobId)) throw new HttpError(404, 'No such job');
+      return [202, { commandId: queueCommand({ type: 'focus', jobId }).id }];
+    }
     if (m === 'POST' && p === '/stop-all') {
       stopped = true;
       const released = o.queue.releaseAll();

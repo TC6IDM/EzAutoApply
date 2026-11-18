@@ -13,7 +13,9 @@ export const BRIDGE_DEFAULT_URL = 'http://127.0.0.1:8100';
 export type BridgeCommand =
   | { id: string; type: 'run'; jobId: string; urlPrefix?: string }
   | { id: string; type: 'answer'; jobId: string; fieldId: string; frameId?: number; answer: unknown; save?: unknown }
-  | { id: string; type: 'stopAll' };
+  | { id: string; type: 'stopAll' }
+  /** The ready list's "go to tab" (#29): bring the job's tab and window to the front. */
+  | { id: string; type: 'focus'; jobId: string };
 
 /** A field as the bridge sees it: what an agent needs to answer it, never its value. */
 export interface BridgeField {

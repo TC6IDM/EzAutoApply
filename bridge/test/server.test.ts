@@ -106,6 +106,44 @@ test('Stop all releases every lease, drops waiting commands and refuses new work
   assert.equal((await call('GET', '/queue/next?worker=w2')).status, 200);
 });
 
+test('the ready list says what agents answered, "go to tab" reaches the extension, and claims pause when too many wait (#29)', async () => {
+  const dir2 = mkdtempSync(join(tmpdir(), 'ezaa-bridge-ready-'));
+  const q = new QueueStore(join(dir2, 'queue.jsonl'));
+  const b = createBridge({ token: TOKEN, queue: q, incidentsDir: join(dir2, 'incidents'), port: 0, maxWaitMs: 500, maxReadyOpen: 2 });
+  await new Promise<void>((r) => b.server.listen(0, '127.0.0.1', r));
+  const at = `http://127.0.0.1:${(b.server.address() as AddressInfo).port}`;
+  const go = async (method: string, path: string, body?: unknown) => {
+    const res = await fetch(at + path, { method, headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const text = await res.text();
+    return { status: res.status, json: text ? JSON.parse(text) : null };
+  };
+  try {
+    q.add([job('r1'), job('r2'), job('r3')]);
+    await go('POST', '/answers', { jobId: 'r1', fieldId: 'f7', answer: 'Two weeks' });
+    const stopped = { tabId: 1, startUrl: 'x', page: 2, status: 'stopped', history: [], startedAt: 0, updatedAt: 0, stop: { reason: 'submitReady' } };
+    await go('POST', '/ext/runs', { jobId: 'r1', run: stopped, fields: [{ id: 'f7', label: 'Notice period' }] });
+    const ready = (await go('GET', '/ready')).json;
+    assert.deepEqual(ready.map((j: { id: string; agentAnswered: string[] }) => [j.id, j.agentAnswered]), [['r1', ['Notice period']]]);
+
+    assert.equal((await go('GET', '/queue/next?worker=w1')).status, 200, 'one ready job: still under 2');
+    await go('POST', '/ext/runs', { jobId: 'r2', run: stopped });
+    const paused = await go('GET', '/queue/next?worker=w1');
+    assert.equal(paused.status, 429);
+    assert.deepEqual([paused.json.ready, paused.json.maxReadyOpen], [2, 2]);
+
+    await go('GET', '/ext/commands');
+    assert.equal((await go('POST', '/ready/r1/focus')).status, 202);
+    assert.deepEqual((await go('GET', '/ext/commands')).json.map((c: { type: string; jobId: string }) => [c.type, c.jobId]), [['focus', 'r1']]);
+    assert.equal((await go('POST', '/ready/nope/focus')).status, 404);
+
+    // Marked submitted (by hand, or the extension seeing the confirmation page): claims go on.
+    await go('POST', '/queue/r2/status', { status: 'submitted', note: 'marked by hand' });
+    assert.equal((await go('GET', '/queue/next?worker=w1')).status, 200);
+  } finally {
+    b.server.close();
+  }
+});
+
 test('bad requests say what is wrong', async () => {
   assert.equal((await call('POST', '/queue/j2/status', { status: 'done' })).status, 400);
   assert.equal((await call('POST', '/queue/missing/status', { status: 'stuck' })).status, 404);

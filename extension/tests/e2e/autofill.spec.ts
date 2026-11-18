@@ -507,6 +507,17 @@ test('an agent queues a job and asks the bridge for a Run; the extension runs it
     expect((await status())?.fields.length).toBeGreaterThan(0);
     expect(await form.evaluate(() => document.body.dataset.submitted)).toBeUndefined();
 
+    // #29: the owner submits (here: the site shows its thank-you page), and the job is marked submitted.
+    const ready = (await (await api('GET', '/ready')).json()) as { id: string; title?: string; company?: string }[];
+    expect(ready.map((j) => [j.id, j.company])).toEqual([['job-1', 'Example Co.']]);
+    await form.evaluate(() => {
+      document.body.innerHTML = '<h1>Thank you for applying</h1><p>We received your application.</p>';
+      history.pushState({}, '', '/thanks');
+    });
+    await expect
+      .poll(async () => ((await (await api('GET', '/queue')).json()) as { id: string; status: string }[]).find((j) => j.id === 'job-1')?.status, { timeout: 20_000 })
+      .toBe('submitted');
+
     // #18: a field it couldn't fill becomes an incident in the bridge's folder, with no profile value in it.
     const apply = `${site}/apply.html`;
     await form.goto(apply);

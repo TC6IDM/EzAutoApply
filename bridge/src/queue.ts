@@ -30,6 +30,8 @@ export interface QueueJob {
   /** ISO time the claim runs out; a job held past it goes back to `queued`. */
   leaseUntil?: string;
   tabUrl?: string;
+  /** Fields an agent answered through POST /answers (#29), so the ready list says what to check. */
+  agentAnswers?: { fieldId: string; at: string }[];
   createdAt: string;
   updatedAt: string;
   history: { at: string; status: JobStatus; note?: string; page?: number }[];
@@ -137,6 +139,16 @@ export class QueueStore {
       next.leaseUntil = this.iso(this.now() + LEASE_MS);
       this.mark(next, 'claimed', `claimed by ${worker}`);
       return structuredClone(next);
+    });
+  }
+
+  /** Note that an agent answered one of the job's fields (#29). */
+  noteAgentAnswer(id: string, fieldId: string): void {
+    this.change((all) => {
+      const job = all.find((j) => j.id === id);
+      if (!job) return;
+      const rest = (job.agentAnswers ?? []).filter((a) => a.fieldId !== fieldId);
+      job.agentAnswers = [...rest, { fieldId, at: this.iso() }];
     });
   }
 

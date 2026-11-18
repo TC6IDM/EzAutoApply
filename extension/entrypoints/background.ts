@@ -234,6 +234,31 @@ async function syncBridge(): Promise<void> {
   })();
 }
 
+/** The Run a bridge job is on (the latest one kept in session storage), or undefined. */
+async function runForJob(jobId: string): Promise<RunState | undefined> {
+  const all = await browser.storage.session.get(null);
+  return Object.values(all).find((v) => (v as RunState)?.jobId === jobId && typeof (v as RunState).tabId === 'number') as RunState | undefined;
+}
+
+/**
+ * The owner pressed Submit on a job Run left ready (#29): when the tab then shows the
+ * confirmation page, the Run's stop becomes "submitted" and the bridge marks the job so.
+ */
+async function checkSubmitted(tabId: number): Promise<void> {
+  const run = await readRun(tabId);
+  if (!run?.jobId || run.status !== 'stopped' || run.stop?.reason !== 'submitReady') return;
+  for (const wait of [1500, 4000]) {
+    await sleep(wait);
+    const said = (await toTab(tabId, { type: 'confirmation' }, 0).catch(() => null)) as { detail?: string } | null;
+    if (said?.detail) {
+      const now = await readRun(tabId);
+      if (now?.stop?.reason !== 'submitReady') return;
+      await saveRun({ ...now, stop: { reason: 'submitted', detail: said.detail }, updatedAt: Date.now() });
+      return;
+    }
+  }
+}
+
 async function onBridgeCommand(client: BridgeClient, cmd: BridgeCommand): Promise<void> {
   if (cmd.type === 'stopAll') {
     for (const tabId of runs.keys()) cancelled.add(tabId);
@@ -251,11 +276,15 @@ async function onBridgeCommand(client: BridgeClient, cmd: BridgeCommand): Promis
     await client.reportRun(cmd.jobId, run, []);
     return;
   }
+  const run = await runForJob(cmd.jobId);
+  if (!run) return;
+  if (cmd.type === 'focus') {
+    const tab = await browser.tabs.update(run.tabId, { active: true }).catch(() => null);
+    if (tab?.windowId !== undefined) await browser.windows.update(tab.windowId, { focused: true }).catch(() => {});
+    return;
+  }
   // An answer for a field on the job's tab. With `save`, it also goes into the answer bank as an
   // agent's answer, which fills for review until the owner approves it in Answers (#21).
-  const all = await browser.storage.session.get(null);
-  const run = Object.values(all).find((v) => (v as RunState)?.jobId === cmd.jobId && typeof (v as RunState).tabId === 'number') as RunState | undefined;
-  if (!run) return;
   const fields = Object.values((await readTab(run.tabId)).reports).flatMap((r) => r.fields);
   const field = fields.find((f) => f.id === cmd.fieldId && (cmd.frameId === undefined || f.frameId === cmd.frameId));
   const frameId = cmd.frameId ?? field?.frameId ?? 0;
@@ -579,6 +608,8 @@ export default defineBackground(() => {
 
   // A new page in the tab means the old report no longer applies.
   browser.tabs.onUpdated.addListener((tabId, info) => {
+    // A page load or an in-page move after the owner's Submit may be the confirmation (#29).
+    if (bridge && (info.status === 'complete' || info.url)) checkSubmitted(tabId).catch(() => {});
     if (info.status === 'loading' && info.url) {
       frameCache.delete(tabId);
       // The page that was filling is gone, so its run won't report finishing.

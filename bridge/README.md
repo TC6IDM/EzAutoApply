@@ -16,6 +16,7 @@ No packages of its own: Node 24 runs the TypeScript directly, and `npm run compi
 | `EZAA_HOME` | `~/.ezautoapply` (the token in `bridge-token`, incidents in `incidents/<date>/`) |
 | `EZAA_QUEUE_FILE` | `../ai-job-search/apply_queue/queue.jsonl` beside this repo |
 | `EZAA_BRIDGE_PORT` | `8100` |
+| `EZAA_MAX_READY` | `6`: claims pause while this many jobs wait for your Submit (#29) |
 
 Every call except `GET /health` needs `Authorization: Bearer <token>`. Calls from a web page (an `Origin` that isn't `chrome-extension://`) and calls to any host name but `127.0.0.1` / `localhost` are refused.
 
@@ -25,13 +26,15 @@ Every call except `GET /health` needs `Authorization: Bearer <token>`. Calls fro
 |---|---|
 | `GET /health` | `{ ok, stopped }` |
 | `GET /queue` · `POST /queue {jobs}` | every job · add jobs (by `id`, once each) |
-| `GET /queue/next?worker=w1` | claim the next job (Tier A first, then oldest), leased 20 min; 204 when none, 423 after Stop all |
+| `GET /queue/next?worker=w1` | claim the next job (Tier A first, then oldest), leased 20 min; 204 when none, 423 after Stop all, 429 `{ready, maxReadyOpen}` while that many jobs wait for your Submit (an applier waits and asks again; it leaves each ready job's tab open) |
 | `POST /queue/:id/status {status, note?, page?, tabUrl?}` | `running`/`claimed` renew the lease, anything else ends it |
 | `POST /run {jobId, urlPrefix?}` | ask the extension to Run that job's tab |
 | `GET /tabs/:jobId/status` | the latest `RunState` the extension reported |
 | `POST /answers {jobId, fieldId, frameId?, answer, save?}` | ask the extension to fill a field. With `save: {scope, sourceRefs?, createdBy?}` (scope `global` or a hostname) the answer is also saved as an agent's, which fills for review until the owner approves it in Answers (#21). It never replaces an answer the owner wrote. |
 | `POST /incidents {…}` | write an incident to `incidents/<date>/<id>.json` |
-| `GET /ready` | jobs waiting for your Submit |
+| `GET /ready` | jobs waiting for your Submit, each with `agentAnswered` (the labels of the fields an agent answered, to check first) |
+| `POST /ready/:id/focus` | bring that job's tab and window to the front ("go to tab") |
+| `POST /queue/:id/status {status: "submitted"}` | mark a job submitted by hand; the extension also does it when the tab shows the site's confirmation page after your Submit |
 | `POST /stop-all` · `POST /resume` | the kill switch: every lease released, waiting commands dropped, the extension told to stop every Run, no new claims or Runs until resumed |
 | `GET /ext/commands?wait=25` | for the extension: long-poll for commands (each handed out once) |
 | `POST /ext/runs {jobId, run}` | for the extension: a Run's state; a stopped Run sets the job's status (`submitReady` → `ready`, a blocker → `needsYou`, `noProgress`… → `stuck`) |
