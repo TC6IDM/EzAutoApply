@@ -12,6 +12,8 @@ import {
   exportAll,
   getProfile,
   importAll,
+  importAnswers,
+  isAnswersFile,
   listAnswers,
   saveAnswer,
   saveProfile,
@@ -83,6 +85,50 @@ describe('answers', () => {
     await approveAnswers([agent.id]);
     expect((await listAnswers()).find((a) => a.id === agent.id)).toMatchObject({ approved: true, origin: 'agent' });
     expect(await saveAnswer({ question: 'Years with React?', answer: '5', fieldKind: 'text', scope: 'global' })).toMatchObject({ id: agent.id, answer: '5', origin: 'you', approved: true });
+  });
+});
+
+describe('answers files (#60)', () => {
+  const file = (answers: unknown[]) => ({ app: 'EzAutoApply', kind: 'answers', version: 1, answers });
+
+  it('adds each answer as an unapproved import, keeps the owner’s, and skips unreadable rows', async () => {
+    await saveAnswer({ question: 'Notice period?', answer: 'Two weeks', fieldKind: 'text', scope: 'global' });
+    const essay = 'I have wanted to build tools for small teams since my first co-op, and this role does exactly that.';
+    const got = await importAnswers(
+      file([
+        { question: 'Notice period?', answer: 'A month' },
+        { question: 'Why do you want to work here?', answer: essay, scope: 'Jobs.Example.com', sourceRefs: ['documents/applications/example/form_answers.txt Q1'], createdBy: 'ai-job-search' },
+        { question: 'Open to remote?', answer: true },
+        { question: 'Languages?', answer: ['Python', 'Go'] },
+        { question: '', answer: 'x' },
+        { question: 'Bad scope', answer: 'x', scope: 'https://example.com/jobs' },
+        { question: 'Empty', answer: '  ' },
+      ]),
+    );
+    expect(got).toEqual({ added: 3, kept: 1, skipped: 3 });
+    const all = await listAnswers();
+    expect(all.find((a) => a.question === 'Notice period?')).toMatchObject({ answer: 'Two weeks', origin: 'you', approved: true });
+    expect(all.find((a) => a.question.startsWith('Why'))).toMatchObject({
+      scope: 'jobs.example.com', fieldKind: 'textarea', origin: 'import', approved: false, createdBy: 'ai-job-search',
+      sourceRefs: ['documents/applications/example/form_answers.txt Q1'],
+    });
+    expect(all.find((a) => a.question === 'Open to remote?')).toMatchObject({ fieldKind: 'checkbox', createdBy: 'import' });
+    expect(all.find((a) => a.question === 'Languages?')?.fieldKind).toBe('checkboxGroup');
+  });
+
+  it('importing the same file again updates its own unapproved answers, not approved ones', async () => {
+    await importAnswers(file([{ question: 'City?', answer: 'Exampleton' }]));
+    expect(await importAnswers(file([{ question: 'City?', answer: 'Sampleville' }]))).toEqual({ added: 1, kept: 0, skipped: 0 });
+    const [city] = await listAnswers();
+    await approveAnswers([city.id]);
+    expect(await importAnswers(file([{ question: 'City?', answer: 'Elsewhere' }]))).toEqual({ added: 0, kept: 1, skipped: 0 });
+    expect((await listAnswers())[0].answer).toBe('Sampleville');
+  });
+
+  it('tells an answers file from a backup, and refuses anything else', async () => {
+    expect(isAnswersFile(file([]))).toBe(true);
+    expect(isAnswersFile({ app: 'EzAutoApply', version: 1, answers: [] })).toBe(false);
+    await expect(importAnswers({ app: 'Other', kind: 'answers', answers: [] })).rejects.toThrow('Not an EzAutoApply answers file');
   });
 });
 

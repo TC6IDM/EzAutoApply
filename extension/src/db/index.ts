@@ -6,6 +6,7 @@ import {
   defaultSettings,
   type DocKind,
   type DocumentMeta,
+  type FieldKind,
   isApproved,
   originOf,
   type SavedAnswer,
@@ -238,6 +239,68 @@ export async function saveAnswer(input: Omit<SavedAnswer, 'id' | 'normalized' | 
 /** Approve answers an agent or an import wrote, so they fill like the owner's own (#21). */
 export async function approveAnswers(ids: string[]): Promise<void> {
   await db.answers.bulkUpdate(ids.map((id) => ({ key: id, changes: { approved: true } })));
+}
+
+/** An answers file (#60): what ai-job-search's past form answers become. Merged, never a backup. */
+export interface AnswersFile {
+  app: 'EzAutoApply';
+  kind: 'answers';
+  version: 1;
+  answers: AnswerImport[];
+}
+
+export interface AnswerImport {
+  question: string;
+  answer: string | string[] | boolean;
+  scope?: string;
+  fieldKind?: FieldKind;
+  options?: string[];
+  sourceRefs?: string[];
+  createdBy?: string;
+}
+
+export const isAnswersFile = (data: unknown): data is AnswersFile =>
+  !!data && typeof data === 'object' && (data as AnswersFile).app === 'EzAutoApply' && (data as AnswersFile).kind === 'answers';
+
+const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every((s) => typeof s === 'string');
+// A scope is 'global' or a bare hostname, as the answer bank matches it.
+const SCOPE = /^(global|[a-z0-9-]+(\.[a-z0-9-]+)+)$/;
+
+/**
+ * Saves each answer of an answers file as an import: unapproved, so it fills as "check this"
+ * until the owner approves it, and never in place of an answer the owner wrote or approved (#21).
+ */
+export async function importAnswers(data: unknown): Promise<{ added: number; kept: number; skipped: number }> {
+  if (!isAnswersFile(data) || !Array.isArray(data.answers)) throw new Error('Not an EzAutoApply answers file');
+  let added = 0;
+  let kept = 0;
+  let skipped = 0;
+  for (const a of data.answers) {
+    const answer = typeof a?.answer === 'string' ? a.answer.trim() : a?.answer;
+    const scope = (a?.scope ?? 'global').toLowerCase();
+    const ok =
+      typeof a?.question === 'string' && a.question.trim() !== '' && SCOPE.test(scope) &&
+      ((typeof answer === 'string' && answer !== '') || typeof answer === 'boolean' || (strings(answer) && answer.length > 0));
+    if (!ok) {
+      skipped++;
+      continue;
+    }
+    const fieldKind: FieldKind =
+      a.fieldKind ?? (typeof answer === 'boolean' ? 'checkbox' : Array.isArray(answer) ? 'checkboxGroup' : answer.length > 80 || answer.includes('\n') ? 'textarea' : 'text');
+    const row = await saveAnswer({
+      question: a.question.trim(),
+      answer,
+      fieldKind,
+      scope,
+      ...(strings(a.options) && { options: a.options }),
+      ...(strings(a.sourceRefs) && { sourceRefs: a.sourceRefs }),
+      createdBy: typeof a.createdBy === 'string' ? a.createdBy : 'import',
+      origin: 'import',
+    });
+    if (originOf(row) === 'import' && !isApproved(row)) added++;
+    else kept++;
+  }
+  return { added, kept, skipped };
 }
 
 export async function updateAnswer(id: string, changes: Partial<SavedAnswer>): Promise<void> {
