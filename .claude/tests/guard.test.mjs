@@ -12,13 +12,20 @@ const hoursAgo = h => new Date(NOW - h * 3600e3).toISOString();
 const sprint = (over = {}) => ({ branch: 'sprint/2026-11-18-0039', startedAt: hoursAgo(1), readings: [{ at: hoursAgo(0.1) }], ...over });
 const d = (cmd, ctx = {}) => decide(cmd, { now: NOW, branch: 'feature', state: null, ...ctx })?.decision ?? null;
 
-test('commit and push ask when no sprint runs', () => {
-  assert.equal(d('git commit -m "x"'), 'ask');
-  assert.equal(d('git add -A && git commit -m "x"'), 'ask');
-  assert.equal(d('git push origin feature'), 'ask');
-  assert.equal(d('git push -u origin feature'), 'ask');
+test('with no sprint, commit and push on a branch are left to the permission rules (the yes is given in chat)', () => {
+  assert.equal(d('git commit -m "x"'), null);
+  assert.equal(d('git add -A && git commit -m "x"'), null);
+  assert.equal(d('git push origin feature'), null);
+  assert.equal(d('git push -u origin feature'), null);
+  assert.equal(d('cd /repo && git -C extension commit -q -F -'), null);
+});
+
+test('main and upstream still ask, sprint or not', () => {
   assert.equal(d('git push origin main:main', { branch: 'main' }), 'ask');
-  assert.equal(d('cd /repo && git -C extension commit -q -F -'), 'ask');
+  assert.equal(d('git commit -m x', { branch: 'main' }), 'ask');
+  assert.equal(d('git commit -m x', { branch: 'master' }), 'ask');
+  assert.equal(d('git push origin HEAD:main'), 'ask');
+  assert.equal(d('git push -u upstream feature'), 'ask');
 });
 
 test('force-push is denied, even on a sprint branch', () => {
@@ -28,10 +35,10 @@ test('force-push is denied, even on a sprint branch', () => {
   }
 });
 
-test('a bare push from main is denied; from another branch it asks', () => {
+test('a bare push from main is denied; from another branch the permission rules decide', () => {
   assert.equal(d('git push', { branch: 'main' }), 'deny');
   assert.equal(d('git push origin', { branch: 'main' }), 'deny');
-  assert.equal(d('git push', { branch: 'feature' }), 'ask');
+  assert.equal(d('git push', { branch: 'feature' }), null);
 });
 
 test('a live sprint may commit and push on its own branch and wip/issue-N', () => {
@@ -48,13 +55,14 @@ test('the sprint exception never reaches main or another branch', () => {
   assert.equal(d('git push origin master', { branch: state.branch, state }), 'ask');
   assert.equal(d('git commit -m x', { branch: 'main', state }), 'ask');
   assert.equal(d('git commit -m x', { branch: 'sprint/an-older-one', state }), 'ask');
-  assert.equal(d('git commit -m x', { branch: state.branch, state: sprint({ branch: 'feature/x' }) }), 'ask', 'state must name a sprint/ branch');
+  assert.equal(d('git commit -m x', { branch: state.branch, state: sprint({ branch: 'feature/x' }) }), null, 'state must name a sprint/ branch: otherwise no sprint runs');
 });
 
 test('a stale sprint state counts as no sprint', () => {
   const old = sprint({ readings: [{ at: hoursAgo(STALE_HOURS + 1) }] });
   assert.equal(sprintBranch(old, old.branch, NOW), null);
-  assert.equal(d('git commit -m x', { branch: old.branch, state: old }), 'ask');
+  assert.equal(d('git commit -m x', { branch: old.branch, state: old }), null);
+  assert.equal(d('git commit -m x', { branch: 'main', state: old }), 'ask');
   const keepGoing = { ...old, keepGoing: true };
   assert.equal(sprintBranch(keepGoing, old.branch, NOW), old.branch, 'keep-going waits out resets');
   const tooOld = sprint({ keepGoing: true, readings: [{ at: hoursAgo(KEEP_GOING_STALE_HOURS + 1) }] });
@@ -113,7 +121,7 @@ test('the linked exception never reaches the owner\'s own checkout, its main, or
   assert.equal(d('git push --force origin x', { state, home: HOME, places: [at(WT, state.branch)] }), 'deny');
   assert.equal(d('git commit -m x', { state: sprint(), home: HOME, places: [at(WT, state.branch)] }), 'ask', 'no link in the state');
   const stale = linked({ readings: [{ at: hoursAgo(STALE_HOURS + 1) }] });
-  assert.equal(d('git commit -m x', { state: stale, home: HOME, places: [at(WT, state.branch)] }), 'ask', 'a stale sprint links nothing');
+  assert.equal(d('git commit -m x', { state: stale, home: HOME, places: [at(WT, state.branch)] }), null, 'a stale sprint links nothing (and runs nothing)');
 });
 
 test('git -C into another checkout is judged there, not by the session\'s branch', () => {
@@ -126,11 +134,11 @@ test('git -C into another checkout is judged there, not by the session\'s branch
 test('guard.mjs speaks the PreToolUse hook protocol', () => {
   const hook = fileURLToPath(new URL('../hooks/guard.mjs', import.meta.url));
   const run = input => spawnSync(process.execPath, [hook], { input, encoding: 'utf8' });
-  const asked = run(JSON.stringify({ tool_input: { command: 'git commit -m x' } }));
-  assert.equal(asked.status, 0);
-  const out = JSON.parse(asked.stdout).hookSpecificOutput;
+  const denied = run(JSON.stringify({ tool_input: { command: 'git push --force origin x' } }));
+  assert.equal(denied.status, 0);
+  const out = JSON.parse(denied.stdout).hookSpecificOutput;
   assert.equal(out.hookEventName, 'PreToolUse');
-  assert.ok(['ask', 'allow'].includes(out.permissionDecision), out.permissionDecision);
+  assert.equal(out.permissionDecision, 'deny');
   const quiet = run(JSON.stringify({ tool_input: { command: 'ls' } }));
   assert.equal(quiet.status, 0);
   assert.equal(quiet.stdout, '');

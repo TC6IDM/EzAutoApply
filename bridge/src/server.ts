@@ -394,6 +394,9 @@ export function createBridge(o: BridgeOptions) {
         jobs: typeof b.jobs === 'number' ? b.jobs : undefined,
       };
       paused = false;
+      // Jobs whose applier ended mid-job go to the appliers this Start brings up (#77).
+      const orphans = o.queue.releaseOrphans((w) => o.launcher!.isRunning(w));
+      if (orphans.length) note(`${orphans.length} job${orphans.length === 1 ? '' : 's'} back to the queue: their applier had ended`);
       // An empty queue (#62): the Scout fills it first, and the appliers start with the first job.
       if (!hasQueued()) {
         if (!settings.parts.scout) throw new HttpError(409, 'The queue is empty and the Scout is switched off: turn it on in Switches, or run /rank and /queue in ai-job-search');

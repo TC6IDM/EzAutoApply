@@ -180,6 +180,24 @@ export class QueueStore {
     });
   }
 
+  /**
+   * Jobs held by a worker that isn't running any more (it ended mid-job) go back to `queued`, so
+   * Start gives them to the appliers it starts (#77). Returns their ids.
+   */
+  releaseOrphans(isRunning: (worker: string) => boolean, note = 'back to the queue: its applier had ended'): string[] {
+    return this.change((all) => {
+      const ids: string[] = [];
+      for (const j of all) {
+        if (!j.worker || isRunning(j.worker) || !(HELD.includes(j.status) || KEPT.includes(j.status))) continue;
+        delete j.worker;
+        delete j.leaseUntil;
+        this.mark(j, 'queued', note);
+        ids.push(j.id);
+      }
+      return ids;
+    });
+  }
+
   /** The kill switch: every held job goes back to `queued`. Returns how many. */
   releaseAll(note = 'stopped by Stop all'): number {
     return this.change((all) => {

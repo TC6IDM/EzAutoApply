@@ -389,3 +389,36 @@ test('the Scout refills the queue when it runs dry while appliers work, not agai
     bridge.server.close();
   }
 });
+
+test('Start gives the jobs of an applier that ended mid-job to the appliers it starts (#77)', async () => {
+  const TOKEN = 'test-token-orphans-0123456789';
+  const dir = mkdtempSync(join(tmpdir(), 'ezaa-orphans-'));
+  const queue = new QueueStore(join(dir, 'queue.jsonl'));
+  const { spawn, started } = fakeSpawn();
+  const launcher = new Launcher({ claude: 'claude.exe', cwd: dir, logDir: join(dir, 'fleet'), spawn });
+  const bridge = createBridge({ token: TOKEN, queue, incidentsDir: join(dir, 'incidents'), port: 0, launcher });
+  await new Promise<void>((r) => bridge.server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${(bridge.server.address() as AddressInfo).port}`;
+  const call = async (method: string, path: string, body?: unknown) => {
+    const res = await fetch(base + path, { method, headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const text = await res.text();
+    return { status: res.status, json: text ? JSON.parse(text) : null };
+  };
+  try {
+    await call('POST', '/queue', { jobs: [{ id: 'j1', applyUrl: 'https://jobs.ashbyhq.com/acme/1' }, { id: 'j2', applyUrl: 'https://jobs.lever.co/acme/2' }] });
+    // w1 claimed j1 and w2 held j2 on a CAPTCHA; neither runs any more.
+    queue.claim('w1');
+    queue.claim('w2');
+    queue.setStatus('j2', 'needsYou', { note: 'captcha' });
+    const go = await call('POST', '/fleet/launch', { appliers: 1 });
+    assert.deepEqual([go.status, go.json.started, go.json.scout], [202, ['w1'], undefined], 'work to do: an applier, not the Scout');
+    assert.deepEqual([queue.get('j1')?.status, queue.get('j2')?.status, queue.get('j2')?.worker], ['queued', 'queued', undefined]);
+    assert.equal(started.filter((s) => s.args[1].startsWith('/scout')).length, 0);
+    // A running applier keeps its job.
+    assert.equal((await call('GET', '/queue/next?worker=w1')).json.id, 'j1');
+    await call('POST', '/fleet/launch', { appliers: 1 });
+    assert.equal(queue.get('j1')?.worker, 'w1');
+  } finally {
+    bridge.server.close();
+  }
+});
