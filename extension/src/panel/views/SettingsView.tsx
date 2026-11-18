@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { BRIDGE_DEFAULT_URL } from '../../bridge/client';
 import { FILE_NAME_FORMATS, uploadFileName } from '../../core/documents';
 import { type ClassifierSettings, LAYA_DEFAULT_URL, type Settings } from '../../core/types';
-import { db, type ExportFile, exportAll, getProfile, getSettings, importAll, listApplications, updateSettings } from '../../db';
+import { db, type ExportFile, exportAll, getProfile, getSettings, importAll, importAnswers, isAnswersFile, listApplications, updateSettings } from '../../db';
 import type { Health } from '../App';
 import { send } from '../api';
 import { Banner, Button, Empty, formatDate, Section, SelectInput, TextInput } from '../ui';
@@ -318,7 +318,7 @@ export function SettingsView(props: { active: boolean; onSaved(): void; health: 
           >
             Export backup
           </Button>
-          <Button onClick={() => importRef.current?.click()}>Import backup…</Button>
+          <Button onClick={() => importRef.current?.click()}>Import backup or answers…</Button>
           <input
             ref={importRef}
             type="file"
@@ -327,9 +327,21 @@ export function SettingsView(props: { active: boolean; onSaved(): void; health: 
             onChange={async (e) => {
               const f = e.target.files?.[0];
               e.target.value = '';
-              if (!f || !confirm('Importing replaces your current profile, documents and saved answers. Continue?')) return;
+              if (!f) return;
               try {
-                await importAll(JSON.parse(await f.text()) as ExportFile);
+                const data: unknown = JSON.parse(await f.text());
+                // An answers file (#60, from ai-job-search) is merged in; it never replaces anything.
+                if (isAnswersFile(data)) {
+                  const { added, kept, skipped } = await importAnswers(data);
+                  setBackupMsg(
+                    `${added} answer${added === 1 ? '' : 's'} imported: they fill as "check this" until you approve them in Answers.` +
+                      (kept ? ` ${kept} kept as you had them.` : '') +
+                      (skipped ? ` ${skipped} unreadable, skipped.` : ''),
+                  );
+                  return;
+                }
+                if (!confirm('Importing replaces your current profile, documents and saved answers. Continue?')) return;
+                await importAll(data as ExportFile);
                 setBackupMsg('Backup imported.');
               } catch (err) {
                 setBackupMsg(`Import failed: ${(err as Error).message}`);

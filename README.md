@@ -240,7 +240,7 @@ In **Settings → Classifier**, choose **Jev (TypeSafe cloud)**, enter the API U
 
 - Everything is stored in the extension's IndexedDB in **this browser profile**. That includes your profile, saved answers, history, and the **original files** of your resumes, cover letters and transcripts, which are kept exactly as you added them, not just their text. Nothing is uploaded anywhere, unless you choose Jev.
 - The **Documents** tab lists every stored file. You can open, download, rename or delete each one, or make it the default for its type.
-- **Settings → Backup** exports everything (profile, documents, saved answers, history) to a JSON file and imports it again. Use this to move to another browser or computer.
+- **Settings → Backup** exports everything (profile, documents, saved answers, history) to a JSON file and imports it again. Use this to move to another browser or computer. The same button also takes an **answers file** (ai-job-search's `tools/ezaa_answers.py to-ezaa`): those answers are added, never replacing yours, and fill as "check this" until you approve them in Answers.
 - **Settings → Delete all data** wipes everything.
 - Resume and LinkedIn parsing happen in the side panel. The file never leaves your computer.
 
