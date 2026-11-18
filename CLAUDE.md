@@ -39,6 +39,8 @@ npm run icons               # regenerate public/icon/*.png (scripts/make-icons.m
 
 The issue/sprint scripts' tests run from the repo root: `node --test ".claude/tests/*.test.mjs"` (the commit guard, the Inbox log, the sprint verdicts). Their logic lives in pure modules (`hooks/guard-rules.mjs`, `ezaa-issues/inbox-rules.mjs`, `ezaa-sprint/verdict.mjs`) that the scripts import.
 
+The bridge (#16, `bridge/`, see its README): `npm start` / `npm test` / `npm run compile` from `bridge/`. Plain Node 24 TypeScript with no packages (type stripping, `node:test`; `compile` uses the extension's TypeScript, so only erasable syntax: no parameter properties or enums). 127.0.0.1 only, a token in `~/.ezautoapply/bridge-token`, the queue in `ai-job-search/apply_queue/queue.jsonl` (`src/queue.ts › QueueStore`, leases), commands for the extension long-polled on `/ext/commands`, Runs reported on `/ext/runs`, incidents to `~/.ezautoapply/incidents/`. CI runs its compile and tests in the extension job.
+
 Laya server: `classifier\start.ps1` (or `start.sh`). The first run creates `classifier/.venv` (Python 3.12, CPU-only torch, `laya[serve]`) and downloads the model. It serves `http://127.0.0.1:8000` with the `typed-decisions` checkpoint preloaded. There is no linter configured.
 
 ## Architecture

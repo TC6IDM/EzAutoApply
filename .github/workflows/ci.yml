@@ -49,6 +49,15 @@ jobs:
       - name: Unit tests
         if: success() || failure()
         run: npm test
+      # The bridge (#16) has no packages of its own: node:test, and the extension's TypeScript.
+      - name: Bridge types
+        if: success() || failure()
+        working-directory: bridge
+        run: npm run compile
+      - name: Bridge tests
+        if: success() || failure()
+        working-directory: bridge
+        run: npm test
 
   tooling:
     name: Issue and sprint scripts

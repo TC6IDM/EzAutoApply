@@ -1,0 +1,13 @@
+{
+  "name": "ezautoapply-bridge",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Local server between the EzAutoApply extension and the agent fleet (127.0.0.1 only).",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "start": "node src/main.ts",
+    "test": "node --test \"test/*.test.ts\"",
+    "compile": "node ../extension/node_modules/typescript/bin/tsc -p ."
+  }
+}
