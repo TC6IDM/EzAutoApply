@@ -2,6 +2,8 @@ import type { SystemOneBatchRequest, SystemOneRequest, SystemOneResponse } from 
 import type { Profile } from './core/profile';
 import type { AnswerValue, DocKind, DocSelection, FieldKind, SavedAnswer, Settings } from './core/types';
 import type { AdvanceKind } from './fill/advance';
+import type { BlockerKind } from './fill/blockers';
+import type { RunState } from './run/types';
 import type { DocumentPayload } from './fill/fillers';
 import type { FillProgress, FrameReport } from './fill/types';
 
@@ -50,6 +52,10 @@ export type PanelToBackground =
   | { type: 'advance'; tabId: number; frameId: number }
   /** The top frame says the application went through ("Thank you for applying"), or null. */
   | { type: 'confirmation'; tabId: number }
+  /** Run to Submit (#9): start on this tab, stop it, or read its RunState (null: never run). */
+  | { type: 'startRun'; tabId: number }
+  | { type: 'cancelRun'; tabId: number }
+  | { type: 'getRun'; tabId: number }
   | { type: 'classifierHealth' }
   | { type: 'settingsChanged' };
 
@@ -60,8 +66,17 @@ export type BackgroundToContent =
   | { type: 'clearReports' }
   | { type: 'focusField'; fieldId: string }
   | { type: 'findAdvance'; run?: boolean }
-  | { type: 'advance' }
+  /** run: press the run-mode button, and never one that reads as Submit. */
+  | { type: 'advance'; run?: boolean }
   | { type: 'confirmation' }
+  /** Run to Submit's look at this frame between steps (RunCheckResponse). */
+  | { type: 'runCheck' }
+  /** Wait for this frame to go quiet after the page moved on. */
+  | { type: 'settle' }
+  /** Tick "I accept the terms" on an account-creation form; the scanned ids ticked. */
+  | { type: 'acceptTerms' }
+  /** The site's validation messages, mapped to scanned fields (SiteError[]). */
+  | { type: 'siteErrors' }
   | { type: 'settingsChanged'; settings: Settings }
   /** All of the tab's frames together, for the top frame's floating button; null when none is filling. */
   | { type: 'fillProgress'; progress: FillProgress | null };
@@ -80,7 +95,17 @@ export interface AdvanceTarget {
 export type BackgroundBroadcast =
   | { type: 'tabStateChanged'; tabId: number }
   | { type: 'autofillStarted'; tabId: number }
-  | { type: 'fillProgress'; tabId: number; progress: FillProgress | null };
+  | { type: 'fillProgress'; tabId: number; progress: FillProgress | null }
+  | { type: 'runChanged'; tabId: number; run: RunState };
+
+/** A frame's answer to `runCheck`. */
+export interface RunCheckResponse {
+  url: string;
+  fingerprint: string;
+  blockers: { kind: BlockerKind; detail: string }[];
+  /** Top frame only: what the page said ("Thank you for applying!"), or null. */
+  confirmation: string | null;
+}
 
 export interface ContentContext {
   profile: Profile;
@@ -93,6 +118,8 @@ export interface TabState {
   selection: DocSelection;
   /** Set while any frame of the tab is filling. */
   progress: FillProgress | null;
+  /** The tab's last Run to Submit, running or stopped. */
+  run: RunState | null;
 }
 
 export type ClassifyResponse = SystemOneResponse | SystemOneResponse[];

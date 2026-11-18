@@ -242,6 +242,12 @@ export function SettingsView(props: { active: boolean; onSaved(): void; health: 
           onChange={(v) => change((x) => (x.fixSiteValues = v))}
         />
         <Toggle
+          label="Run to Submit stops at answers that need checking"
+          hint="Off: Run only stops at questions nothing could answer, and you check the rest before pressing Submit."
+          checked={s.runStopOnReview}
+          onChange={(v) => change((x) => (x.runStopOnReview = v))}
+        />
+        <Toggle
           label="Overwrite fields that already have a value"
           checked={s.overwriteFilled}
           onChange={(v) => change((x) => (x.overwriteFilled = v))}

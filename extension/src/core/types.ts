@@ -117,6 +117,10 @@ export interface Settings {
   passwordOnAnySite: boolean;
   /** Open "read and acknowledge the privacy notice" links and press Acknowledge. */
   acknowledgePrivacyNotices: boolean;
+  /** Run to Submit stops when any answer is only a guess (status review), not just at unanswered ones. */
+  runStopOnReview: boolean;
+  /** Run to Submit gives up after this many pages. */
+  runMaxPages: number;
 }
 
 export const LAYA_DEFAULT_URL = 'http://127.0.0.1:8000';
@@ -138,6 +142,8 @@ export function defaultSettings(): Settings {
     fileNameFormat: 'underscore',
     passwordOnAnySite: false,
     acknowledgePrivacyNotices: true,
+    runStopOnReview: true,
+    runMaxPages: 15,
   };
 }
 

@@ -2,7 +2,10 @@ import { type Browser, browser } from 'wxt/browser';
 import { defineBackground } from 'wxt/utils/define-background';
 import { SystemOneClient } from '../src/classifier/systemone';
 import { uploadFileName } from '../src/core/documents';
-import { isAccountSite } from '../src/core/sites';
+import { isAccountSite, isExternalRedirect } from '../src/core/sites';
+import type { SiteError } from '../src/fill/siteErrors';
+import { newRun, type PageCheck, type RunDeps, runPages } from '../src/run/loop';
+import type { RunState } from '../src/run/types';
 import type { DocKind, DocSelection } from '../src/core/types';
 import {
   blobToBase64,
@@ -24,8 +27,10 @@ import type {
   ContentToBackground,
   DocumentResponse,
   PanelToBackground,
+  RunCheckResponse,
   TabState,
 } from '../src/messages';
+import { isError } from '../src/messages';
 
 /**
  * The background worker owns the database and the classifier connection.
@@ -139,6 +144,140 @@ async function findAdvance(tabId: number, run = false): Promise<AdvanceTarget | 
   return found.filter((t): t is AdvanceTarget => !!t).sort((a, b) => b.score - a.score)[0] ?? null;
 }
 
+// ---- Run to Submit (#9, docs/agent-fleet-plan.md §6) -------------------------------------
+// One press fills a page, presses its Next / Sign in / Create account, and repeats until
+// Submit, which it never presses, or a stop (src/run/loop.ts). RunState lives in session
+// storage, so a worker that restarted (or the fleet build reloaded) carries on with the Run.
+
+const runKey = (tabId: number) => `run:${tabId}`;
+const runs = new Map<number, Promise<RunState>>();
+const cancelled = new Set<number>();
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function readRun(tabId: number): Promise<RunState | null> {
+  const key = runKey(tabId);
+  return ((await browser.storage.session.get(key))[key] as RunState | undefined) ?? null;
+}
+
+async function saveRun(run: RunState): Promise<void> {
+  await browser.storage.session.set({ [runKey(run.tabId)]: run });
+  broadcast({ type: 'runChanged', tabId: run.tabId, run });
+}
+
+/** Autofill every frame and wait until the last one is done (the message only waits for the first). */
+async function fillAndWait(tabId: number): Promise<void> {
+  await autofillTab(tabId);
+  const end = Date.now() + 180_000;
+  let quietSince = Date.now();
+  while (Date.now() < end) {
+    await sleep(250);
+    if (tabProgress(tabId)) quietSince = Date.now();
+    else if (Date.now() - quietSince >= 1000) break;
+  }
+  await tabLocks.get(tabId)?.catch(() => {}); // the frames' reports are written
+}
+
+/** Every frame's look at the page; the top frame must answer (retried while a new page loads). */
+async function checkPage(tabId: number): Promise<PageCheck> {
+  for (let tries = 0; ; tries++) {
+    const ids = await frameIds(tabId);
+    const got = await Promise.all(
+      ids.map((frameId) => (toTab(tabId, { type: 'runCheck' }, frameId) as Promise<RunCheckResponse>).then((r) => ({ frameId, r })).catch(() => null)),
+    );
+    const ok = got.filter((g): g is { frameId: number; r: RunCheckResponse } => !!g?.r && !isError(g.r)).sort((a, b) => a.frameId - b.frameId);
+    const top = ok.find((g) => g.frameId === 0);
+    if (top) {
+      return {
+        url: top.r.url,
+        fingerprint: ok.map((g) => g.r.fingerprint).join('+'),
+        blockers: ok.flatMap((g) => g.r.blockers),
+        confirmation: top.r.confirmation,
+      };
+    }
+    if (tries >= 40) throw new Error('The page stopped answering');
+    frameCache.delete(tabId);
+    await sleep(500);
+  }
+}
+
+/** Ask every frame and put the answers together (lists). */
+async function fromFrames<T>(tabId: number, msg: BackgroundToContent): Promise<T[]> {
+  const ids = await frameIds(tabId);
+  const got = await Promise.all(ids.map((frameId) => (toTab(tabId, msg, frameId) as Promise<T[]>).catch(() => [] as T[])));
+  return got.flatMap((g) => (Array.isArray(g) ? g : []));
+}
+
+/** After a press: did the page move on? Waits through full page loads, then for the page to go quiet. */
+async function waitForChange(tabId: number, before: PageCheck): Promise<boolean> {
+  const end = Date.now() + 12_000;
+  while (Date.now() < end) {
+    await sleep(500);
+    const tab = await browser.tabs.get(tabId).catch(() => null);
+    if (!tab) throw new Error('The tab was closed');
+    if (tab.status === 'loading') continue;
+    const now = await checkPage(tabId).catch(() => null);
+    if (!now) continue;
+    if (now.url.replace(/#.*$/, '') !== before.url.replace(/#.*$/, '') || now.fingerprint !== before.fingerprint) {
+      await toTab(tabId, { type: 'settle' }, 0).catch(() => {});
+      return true;
+    }
+  }
+  return false;
+}
+
+function runDeps(tabId: number): RunDeps {
+  return {
+    fill: () => fillAndWait(tabId),
+    reports: async () => Object.values((await readTab(tabId)).reports).flatMap((r) => r.fields),
+    check: () => checkPage(tabId),
+    acceptTerms: () => fromFrames<string>(tabId, { type: 'acceptTerms' }),
+    findButton: () => findAdvance(tabId, true),
+    press: async (t) => {
+      const r = (await toTab(tabId, { type: 'advance', run: true }, t.frameId).catch(() => null)) as { ok?: boolean } | null;
+      return !!r?.ok;
+    },
+    waitForChange: (before) => waitForChange(tabId, before),
+    siteErrors: () => fromFrames<SiteError>(tabId, { type: 'siteErrors' }),
+    save: saveRun,
+    cancelled: () => cancelled.has(tabId),
+    now: () => Date.now(),
+  };
+}
+
+/** Carry on with a Run (a new one, or one a restarted worker found still running). */
+function launchRun(run: RunState): Promise<RunState> {
+  const going = runs.get(run.tabId);
+  if (going) return going;
+  cancelled.delete(run.tabId);
+  const p = getSettings()
+    .then((s) => runPages(run, runDeps(run.tabId), { maxPages: s.runMaxPages, stopOnReview: s.runStopOnReview, isExternal: isExternalRedirect }))
+    .finally(() => runs.delete(run.tabId));
+  runs.set(run.tabId, p);
+  return p;
+}
+
+async function startRun(tabId: number): Promise<RunState> {
+  const current = await readRun(tabId);
+  if (current?.status === 'running' && runs.has(tabId)) return current;
+  const tab = await browser.tabs.get(tabId);
+  const run = newRun(tabId, tab.url ?? '', Date.now());
+  await saveRun(run);
+  launchRun(run).catch(() => {});
+  return run;
+}
+
+/** Runs a previous worker left running: carry on with them. */
+async function resumeRuns(): Promise<void> {
+  const all = await browser.storage.session.get(null);
+  for (const [key, value] of Object.entries(all)) {
+    const run = value as RunState;
+    if (!key.startsWith('run:') || run?.status !== 'running') continue;
+    const tab = await browser.tabs.get(run.tabId).catch(() => null);
+    if (tab) launchRun(run).catch(() => {});
+    else await browser.storage.session.remove(key);
+  }
+}
+
 async function classifier() {
   const settings = await getSettings();
   if (settings.classifier.provider === 'none') throw new Error('Classifier disabled');
@@ -238,9 +377,17 @@ async function handlePanel(msg: PanelToBackground): Promise<unknown> {
         reports: Object.values(s.reports).sort((a, b) => a.frameId - b.frameId),
         selection: s.selection,
         progress: tabProgress(msg.tabId),
+        run: await readRun(msg.tabId),
       };
       return state;
     }
+    case 'startRun':
+      return startRun(msg.tabId);
+    case 'cancelRun':
+      cancelled.add(msg.tabId);
+      return readRun(msg.tabId);
+    case 'getRun':
+      return readRun(msg.tabId);
     case 'autofillTab':
       await autofillTab(msg.tabId);
       return null;
@@ -310,8 +457,11 @@ export default defineBackground(() => {
       }).catch(() => {});
     }
   });
+  resumeRuns().catch(() => {});
+
   browser.tabs.onRemoved.addListener((tabId) => {
-    browser.storage.session.remove(tabKey(tabId)).catch(() => {});
+    cancelled.add(tabId);
+    browser.storage.session.remove([tabKey(tabId), runKey(tabId)]).catch(() => {});
     frameCache.delete(tabId);
     fillProgress.delete(tabId);
   });

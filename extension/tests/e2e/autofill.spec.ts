@@ -409,6 +409,33 @@ test('run mode reads a one-form application’s last "Apply" as Submit, and noth
   expect(await form.evaluate(() => document.body.dataset.submitted)).toBeUndefined();
 });
 
+test('Run fills every step, presses Next and Continue, and stops at "Apply" without pressing it (#9)', async ({ context, worker, extensionId, site }) => {
+  test.setTimeout(90_000);
+  const panel = await context.newPage();
+  await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+  await importResume(panel);
+  await classifierOff(panel);
+  const form = await context.newPage();
+  const url = `${site}/multistep.html`;
+  await form.goto(url);
+  // Step 2's one question isn't in the profile: answered here, as a saved answer would.
+  await form.evaluate(() => ((document.getElementById('years') as HTMLInputElement).value = '1'));
+  const tabId = await worker.evaluate(async (u) => (await chrome.tabs.query({ url: u }))[0].id!, url);
+  type Run = { status: string; page: number; stop?: { reason: string; detail?: string }; history: { page: number; pressed?: string }[] };
+  const getRun = () => panel.evaluate((id) => chrome.runtime.sendMessage({ type: 'getRun', tabId: id }), tabId) as Promise<Run | null>;
+
+  await form.bringToFront();
+  await panel.evaluate((id) => chrome.runtime.sendMessage({ type: 'startRun', tabId: id }), tabId);
+  await expect.poll(async () => (await getRun())?.status, { timeout: 60_000 }).toBe('stopped');
+  const run = (await getRun())!;
+  expect(run.stop).toMatchObject({ reason: 'submitReady' });
+  expect(run.stop?.detail).toMatch(/^"Apply"/);
+  expect(run.history.map((h) => h.pressed)).toEqual(['Next', 'Continue', undefined]);
+  expect(await form.evaluate(() => document.body.dataset.step)).toBe('3');
+  expect(await form.inputValue('#first')).toBe('Jordan');
+  expect(await form.evaluate(() => document.body.dataset.submitted)).toBeUndefined();
+});
+
 test('with Laya running: rules fill instantly, then leftovers go to the classifier', async ({ context, worker, extensionId, site }) => {
   const laya = await fetch('http://127.0.0.1:8000/health').then((r) => r.ok).catch(() => false);
   test.skip(!laya, 'needs a Laya server on 127.0.0.1:8000 (classifier\start.ps1)');

@@ -93,7 +93,7 @@ const BUSY_TEXT = /\b(parsing|uploading|processing|analy[sz]ing|reading|scanning
  * Wait for the page to finish reacting to an upload (a site reading the resume and filling the
  * form): nothing added, removed or re-worded for `quietMs`, and no "Parsing your resume…" showing.
  */
-async function settle(doc: Document, quietMs = 1500, maxMs = 15_000): Promise<void> {
+export async function settle(doc: Document, quietMs = 1500, maxMs = 15_000): Promise<void> {
   let last = Date.now();
   const obs = new MutationObserver(() => (last = Date.now()));
   obs.observe(doc.body, { childList: true, subtree: true, characterData: true });

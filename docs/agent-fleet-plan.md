@@ -36,12 +36,12 @@ These answer §17 and override anything older in this document.
 | Q1 Submit | **Agents always stop at Submit** and queue the job for the owner. Nothing presses Submit. | §6, §7.5, §12 |
 | Q2 Generative text | Agent-written (Sonnet) answers **go into the answer bank, flagged for approval**. The extension itself never generates text at runtime. | §8.1, §11.2 |
 | Q3 Billing | Agents run through **Claude Code + Claude in Chrome on the subscription**, not an API key. Costs are plan usage, shared with sprints. | §13 |
-| Q4 Volume / tiers | The **tier rule** (§5.2): default resume when it fits well, tailored CV via `/apply` otherwise, within a daily token budget; past it, everything is Tier B. | §5.2 |
+| Q4 Volume / tiers | **No caps**; runs until you stop it. The **tier rule** (§5.2): default resume when it fits well, tailored CV via `/apply` otherwise, **3 tailored a day**; past that, everything is Tier B. | §5.2 |
 | Q5 Repos | Separate repos, linked by the bridge and the queue. | §4 |
-| Q6 LinkedIn | **Still open.** Until answered: search via the guest CLI, external apply only, no Easy Apply. | §5 |
+| Q6 LinkedIn | **Company job sites only for the first month**; Easy Apply switched off (#53), revisit after. Search via the guest CLI. | §5 |
 | Q7 Recruiters | A **local page of recruiters** at any company that fits and hires developers, with messages the owner sends. | §10 |
 | Q8 Codes | Agents **may read verification codes from Gmail.** | §6.5, §12 |
-| Q9 Accounts | Accounts are **created with the saved password, always.** | §6.5, §12 |
+| Q9 Accounts | **Run creates accounts and signs in itself** with the saved password, and ticks the terms (decision #8). | §6.5, §12 |
 | Q10 Browser | A **dedicated Chrome profile** for the fleet. | §7.3 |
 | Q11 Indeed | **Skipped for now.** | §5 |
 | Q12 Bridge | `bridge/` in **this repo**. | §4.3 |
@@ -209,9 +209,9 @@ ai-job-search is built around *tailored* CVs per job; mass applying is the oppos
 - **Tier B (standard):** default resume, saved answers, agent-applied, stops at Submit.
 - **Tier C (skip):** low fit, deal-breakers (QA-only, senior titles, French required). Never queued.
 
-**The tier rule (decided 2026-11-17, built in `/queue`, #25):** the Scout's ranker (Sonnet) asks whether the **default resume fits this posting well**. If it does, the job is Tier B. If not, it is Tier A and gets a tailored CV via `/apply`, **as long as the day's tailoring token budget lasts.** Once that budget is spent, every remaining job that day is Tier B. The budget is a setting in ai-job-search, so tailoring can't quietly eat the plan's weekly limit.
+**The tier rule (decided 2026-11-17, built in `/queue`, #25):** the Scout's ranker (Sonnet) asks whether the **default resume fits this posting well**. If it does, the job is Tier B. If not, it is Tier A and gets a tailored CV via `/apply`, **up to 3 tailored CVs a day** (owner, 2026-11-17). Once those are used, every remaining job that day is Tier B. The budget is a setting in ai-job-search, so tailoring can't quietly eat the plan's weekly limit.
 
-Daily caps: start at **≤ 15 applications/day**. The real bottleneck will be your review of "ready to submit" tabs, not agent speed.
+**No application caps** (owner, 2026-11-17): the fleet runs until you press Pause or Stop all. The real bottleneck will be your review of "ready to submit" tabs, not agent speed.
 
 ---
 
@@ -250,7 +250,8 @@ type StopReason =
   | 'review'           // uncertain values and stopOnReview is on
   | 'validationErrors' // pressed Next, page complained (messages mapped to fields)
   | 'noProgress'       // pressed Next, nothing changed
-  | 'signIn' | 'createAccount' | 'verificationCode'
+  | 'submitted'        // the thank-you page (you pressed Submit)
+  | 'verificationCode' // (sign-in and account creation are steps, not stops: #8)
   | 'captcha' | 'assessment' | 'externalRedirect'
   | 'noButton' | 'maxPages' | 'interrupted' | 'cancelled';
 
@@ -280,7 +281,7 @@ Today `advance.ts` treats `Apply / Apply now / Apply for this job` as **start**.
 - **CAPTCHA:** `iframe[src*="recaptcha"|"hcaptcha"|"challenges.cloudflare"]`, `[class*=captcha]` → `captcha`. Never attempt.
 - **Verification code:** inputs labelled "verification code / one-time / OTP", "check your email" text → `verificationCode`. Run stops; **an applier agent may then read the code from Gmail** (decided 2026-11-17, #27): it searches for the newest message from the site's sender since the run began, types the code, and presses Run again. A code it can't find within a few minutes leaves the job "needs you".
 - **Assessments:** links/iframes to HackerRank, Codility, CodeSignal, TestGorilla → `assessment`.
-- **Login walls:** `signIn` with no saved account for this host, or `createAccount`. Run itself still stops at both (the extension never presses Sign in or Create account on its own). **Decided 2026-11-17:** the applier agent then **creates the account with the saved password, always** (#27): the extension fills the email and the password from `getSecret` (the agent never sees or types the password), and the agent presses Create account / Sign in, then Run again. The exact Run wording for this waits on decision #8.
+- **Login walls:** `signIn` and `createAccount` are **steps, not stops** (decision #8, 2026-11-17): Run fills the email and the saved password (`getSecret`), ticks "I accept the terms" on an account-creation form, and presses Sign in / Create account itself. A sign-in that fails shows up as the site's error (`validationErrors`). The agent never sees the password.
 
 Built in #11 (`fill/blockers.ts › findBlockers`, `core/sites.ts › isExternalRedirect`).
 - **External redirect:** top-frame navigated to a different registrable domain that isn't an ATS → `externalRedirect`.
@@ -289,9 +290,11 @@ Built in #11 (`fill/blockers.ts › findBlockers`, `core/sites.ts › isExternal
 After pressing, if the page didn't change, read `[aria-invalid="true"]`, `[role="alert"]`, `.error`-ish elements near fields, and the form's error summary. Map messages to field ids (closest field container), mark those fields `needs` with the site's message as the note, then stop. This doubles as **incident data** (§8).
 
 ### 6.7 Ground-rule change (CLAUDE.md)
-Current rule: Advance presses the page's button only when the user presses Advance. Proposed wording:
+Adopted 2026-11-17 (decision #8), now in CLAUDE.md:
 
-> The extension never presses Submit. With **Run** (one user press, or a bridge command after the user turned the bridge on), it may press the page's own **Next/Continue/Review** buttons repeatedly, and **Sign in** only when `runMayUseSavedPassword` is on. It stops at Submit, at anything it can't fill, and at every blocker in §6.5. Account creation, terms acceptance and Submit are always the user's press.
+> The extension never presses Submit. With **Run** (one press by the owner, or a bridge command after the owner turned the bridge on), it may press the page's own Next/Continue/Review buttons repeatedly, press Sign in and Create account using the saved password, and tick "I accept the terms" on an account-creation form. It stops at Submit, at anything it can't fill, and at every blocker. Submit is always the owner's press.
+
+Built in #9 (`src/run/loop.ts`).
 
 ### 6.8 Settings added
 `runStopOnReview` (default **on**), `runMayUseSavedPassword` (default off), `runMaxPages` (15), `bridgeEnabled` (off), `bridgeToken`.
@@ -512,7 +515,7 @@ Match whatever columns `/scrape`, `/rank` and `/outcome` expect. Add `applied_vi
 ## 12. Safety rules (proposed, for both CLAUDE.md files)
 
 1. Nothing presses **Submit**. Ever, in any mode. Every application ends queued for the owner (decided 2026-11-17).
-2. Run may press Next/Continue/Review (wording: decision #8). Run itself stops at Sign in and Create account; the **applier agent** signs in or **creates the account with the saved password, always** (decided 2026-11-17).
+2. Run may press Next/Continue/Review, and **Run itself** signs in and creates accounts with the saved password, ticking the terms on account creation (decision #8, 2026-11-17).
 3. Agents never read, type or log the account password; the extension fills it via `getSecret`.
 3a. Agents may read a site's **verification code from Gmail** (decided 2026-11-17): only the newest message from that site's sender since the run began, nothing else in the mailbox, and nothing is sent, labelled or deleted.
 4. Agents never solve CAPTCHAs or bypass bot checks. They stop and mark the job "needs you".
@@ -520,7 +523,7 @@ Match whatever columns `/scrape`, `/rank` and `/outcome` expect. Add `applied_vi
 6. Answers trace to records. Attestations and unknowns stop for you. Genuine gaps are answered honestly.
 7. Incidents, screenshots and DOM snapshots are redacted, stored outside git, and deletable (a purge for anything older than 30 days).
 8. Fixer changes are never committed or pushed without your approval (existing rule); the fleet runs on the uncommitted fleet build until you review them.
-9. Rate limits: ≤ 15 applications/day to start; ≤ 3 per company per week; LinkedIn Easy Apply ≤ 5/day.
+9. No application caps (owner, 2026-11-17): the fleet runs until the owner stops it. Only the number of filled-but-unsubmitted windows kept open is limited, for memory.
 10. Kill switch: one bridge endpoint / panel button stops all runs and releases all leases.
 
 ---
@@ -666,17 +669,17 @@ Kept for the record; the answers are in §0.1.
 3. **Billing:** run agents on your Claude subscription through Claude Code + Claude in Chrome, or on an API key (Agent SDK)? That changes the cost model and the parallelism limits.
    **Answer:** Claude Code + Claude in Chrome on the subscription.
 4. **Volume target:** roughly how many applications per day or week do you want? And what share should be Tier A (tailored CV/cover letter via `/apply`) vs Tier B (default resume)?
-   **Answer:** The tier rule (§5.2): default resume when it fits well, tailored CV otherwise within a daily token budget, Tier B past it.
+   **Answer:** No caps. The tier rule (§5.2): default resume when it fits well, tailored CV otherwise, 3 a day, Tier B past it.
 5. **Repos:** OK to keep them separate and link via the bridge + queue, rather than merge?
    **Answer:** Yes, separate repos.
 6. **LinkedIn risk appetite:** is automated Easy Apply on your main account acceptable at low volume, or external-apply only?
-   **Answer:** Not answered yet. Until it is: search via the guest CLI and external apply only, no Easy Apply.
+   **Answer:** Company job sites only for the first month; Easy Apply off (a switch, #53), revisit after.
 7. **Recruiters:** happy with "agent drafts, you send", via LinkedIn by hand or Gmail drafts?
    **Answer:** A local recruiter page for any fitting company hiring developers; the owner sends (§10.2).
 8. **Verification codes:** may an agent read a Workday/iCIMS email verification code from Gmail to continue an application (per-application OK, or never)?
    **Answer:** Yes: agents may read codes from Gmail.
 9. **Accounts:** many Workday tenants need a new account per company. Do you want Run to stop at account creation every time (recommended), or a "create account with saved password" option you enable per site?
-   **Answer:** Create the account with the saved password, always.
+   **Answer:** Create the account with the saved password, always. Run does it itself and may tick the terms (decision #8).
 10. **Fleet browser:** OK with a dedicated Chrome profile for agents (logged into LinkedIn), separate from your daily one?
    **Answer:** Yes, a dedicated Chrome profile.
 11. **Indeed:** worth any automation at all, or just "you browse, Run fills"?
