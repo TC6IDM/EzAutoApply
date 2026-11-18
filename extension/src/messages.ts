@@ -62,7 +62,19 @@ export type PanelToBackground =
   | { type: 'classifierHealth' }
   /** Whether the local bridge answers at the saved address. */
   | { type: 'bridgeHealth' }
+  /** Queue the posting this tab shows for the fleet's appliers (#79). */
+  | { type: 'sendToFleet'; tabId: number }
   | { type: 'settingsChanged' };
+
+/** What "Send to the fleet" did (#79): queued now, or the job the queue already had for it. */
+export interface SendToFleetResult {
+  queued: boolean;
+  id: string;
+  /** "Software Engineer at Acme", or the address when the page said nothing. */
+  name: string;
+  /** The status of the job the queue already had. */
+  status?: string;
+}
 
 /** Sent by the background to content scripts. */
 export type BackgroundToContent =

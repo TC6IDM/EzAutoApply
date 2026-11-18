@@ -2,9 +2,9 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { useEffect, useId, useMemo, useState } from 'react';
 import { FIELD_KEY_MAP } from '../../core/fieldKeys';
 import { type AnswerValue, DOC_KIND_LABELS, type DocKind, type DocumentMeta } from '../../core/types';
-import { hasProfile, listDocuments, saveAnswer } from '../../db';
+import { getSettings, hasProfile, listDocuments, saveAnswer } from '../../db';
 import type { FieldReport, FillStatus } from '../../fill/types';
-import type { AdvanceTarget, SaveAnswerRequest } from '../../messages';
+import type { AdvanceTarget, SaveAnswerRequest, SendToFleetResult } from '../../messages';
 import { NEXT_STEP, type RunState, STOP_TEXT, stepLine } from '../../run/types';
 import type { Goto } from '../App';
 import { type ActiveTab, send, setDocSelection, useTabState } from '../api';
@@ -450,6 +450,39 @@ function RunPanel(props: { tabId: number; run: RunState | null; enabled: boolean
   );
 }
 
+/** Queue this posting for the fleet's appliers (#79), shown while the bridge is on. */
+function SendToFleet(props: { tabId: number; url: string }) {
+  const { tabId, url } = props;
+  const settings = useLiveQuery(getSettings, []);
+  const [sending, setSending] = useState(false);
+  const [said, setSaid] = useState<{ ok: boolean; text: string } | null>(null);
+  useEffect(() => setSaid(null), [tabId, url]);
+  if (!settings?.bridgeEnabled || !settings.bridgeToken) return null;
+  const go = async () => {
+    setSending(true);
+    try {
+      const r = await send<SendToFleetResult>({ type: 'sendToFleet', tabId });
+      setSaid({ ok: true, text: r.queued ? `Queued for the fleet: ${r.name}. It goes ahead of the Scout's jobs.` : `Already in the queue (${r.status}): ${r.name}.` });
+    } catch (e) {
+      setSaid({ ok: false, text: (e as Error).message });
+    } finally {
+      setSending(false);
+    }
+  };
+  return (
+    <div className="send-fleet">
+      <Button onClick={go} disabled={sending} title="An applier opens this posting, presses Apply and fills the form. You press Submit.">
+        {sending ? 'Sending…' : 'Send to the fleet'}
+      </Button>
+      {said && (
+        <p className={`hint ${said.ok ? '' : 'error'}`} role="status">
+          {said.text}
+        </p>
+      )}
+    </div>
+  );
+}
+
 /** "1 needs you", "2 need you". */
 function countLabel(status: FillStatus, n: number): string {
   if (status === 'needs') return n === 1 ? 'needs you' : 'need you';
@@ -531,6 +564,7 @@ export function ApplyView(props: { tab: ActiveTab | null; goto: Goto; active: bo
         </Button>
         {tab && webPage && <RunPanel tabId={tab.id} run={state.run} enabled={!busy} onError={setError} />}
         {tab && webPage && <AdvanceButton tabId={tab.id} enabled={props.active && !busy && state.run?.status !== 'running'} onError={setError} />}
+        {tab && webPage && <SendToFleet tabId={tab.id} url={tab.url} />}
         {!webPage && <p className="hint">Open a job application in this tab to autofill it.</p>}
         {progress ? (
           // Not a live region: it changes with every field. The counts after the run are announced.

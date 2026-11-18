@@ -305,6 +305,10 @@ test('the bridge starts the Fixer a moment after a ticket opens, and only while 
     await incident('Notice period');
     await wait(60);
     assert.equal(fixers().length, 0, 'switched off: no Fixer');
+    // …but the ticket is there, open, for when the Fixer is switched on (owner, 2026-11-18).
+    const open = (await call('GET', '/tickets')).json as { open: boolean; label?: string; count?: number }[];
+    assert.equal(open.filter((t) => t.open).length, 1);
+    assert.equal(bridge.snapshot().tickets.filter((t) => t.open).length, 1, 'and the Office shows it');
 
     await call('PUT', '/settings', { parts: { fixer: true } });
     await incident('Notice period');
@@ -418,6 +422,87 @@ test('Start gives the jobs of an applier that ended mid-job to the appliers it s
     assert.equal((await call('GET', '/queue/next?worker=w1')).json.id, 'j1');
     await call('POST', '/fleet/launch', { appliers: 1 });
     assert.equal(queue.get('j1')?.worker, 'w1');
+  } finally {
+    bridge.server.close();
+  }
+});
+
+test('an applier whose job waited on the owner starts again once that job is settled and others wait (#80)', async () => {
+  const TOKEN = 'test-token-topup-01234567890';
+  const dir = mkdtempSync(join(tmpdir(), 'ezaa-topup-'));
+  const queue = new QueueStore(join(dir, 'queue.jsonl'));
+  const { spawn, started } = fakeSpawn();
+  const launcher = new Launcher({ claude: 'claude.exe', cwd: dir, logDir: join(dir, 'fleet'), spawn });
+  const bridge = createBridge({ token: TOKEN, queue, incidentsDir: join(dir, 'incidents'), port: 0, launcher });
+  await new Promise<void>((r) => bridge.server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${(bridge.server.address() as AddressInfo).port}`;
+  const call = async (method: string, path: string, body?: unknown) => {
+    const res = await fetch(base + path, { method, headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const text = await res.text();
+    return { status: res.status, json: text ? JSON.parse(text) : null };
+  };
+  const appliers = () => started.filter((s) => !s.args[1].startsWith('/scout')).length;
+  try {
+    await call('POST', '/queue', { jobs: [{ id: 'j1', applyUrl: 'https://jobs.ashbyhq.com/acme/1' }, { id: 'j2', applyUrl: 'https://jobs.lever.co/acme/2' }] });
+    assert.equal((await call('POST', '/fleet/launch', { appliers: 1 })).status, 202);
+    assert.equal(appliers(), 1);
+    // w1 takes j1, it waits on the owner, and w1 stops.
+    assert.equal((await call('GET', '/queue/next?worker=w1')).json.id, 'j1');
+    await call('POST', '/queue/j1/status', { status: 'needsYou', note: 'a question for you' });
+    started[0].child.emit('exit', 0);
+    await tick();
+    await tick();
+    assert.equal(appliers(), 1, 'one application at a time: j2 waits while j1 waits on the owner');
+    // The owner skips j1 in the Office: w1 comes back for j2.
+    await call('POST', '/queue/j1/status', { status: 'skipped', note: 'skipped in the Office' });
+    assert.equal(appliers(), 2);
+    assert.equal(started.at(-1)!.args.join(' ').includes('w1'), true);
+    // It doesn't start over and over when it ends at once.
+    started.at(-1)!.child.emit('exit', 0);
+    await tick();
+    await call('POST', '/queue', { jobs: [{ id: 'j3', applyUrl: 'https://jobs.lever.co/acme/3' }] });
+    assert.equal(appliers(), 2);
+    // A posting already queued, however it is linked, isn't queued again (#79).
+    const again = await call('POST', '/queue', { jobs: [{ id: 'own-x', applyUrl: 'https://jobs.lever.co/acme/2/?utm_source=linkedin#apply' }] });
+    assert.deepEqual(again.json, { added: [], already: [{ id: 'j2', status: 'queued' }] });
+    // Pause ends it.
+    await call('POST', '/fleet/pause');
+    assert.equal(appliers(), 2);
+  } finally {
+    bridge.server.close();
+  }
+});
+
+test('Send back: a job you fixed goes back to the applier that waited on you, which starts again (#82)', async () => {
+  const TOKEN = 'test-token-sendback-0123456789';
+  const dir = mkdtempSync(join(tmpdir(), 'ezaa-back-'));
+  const queue = new QueueStore(join(dir, 'queue.jsonl'));
+  const { spawn, started } = fakeSpawn();
+  const launcher = new Launcher({ claude: 'claude.exe', cwd: dir, logDir: join(dir, 'fleet'), spawn });
+  const bridge = createBridge({ token: TOKEN, queue, incidentsDir: join(dir, 'incidents'), port: 0, launcher });
+  await new Promise<void>((r) => bridge.server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${(bridge.server.address() as AddressInfo).port}`;
+  const call = async (method: string, path: string, body?: unknown) => {
+    const res = await fetch(base + path, { method, headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const text = await res.text();
+    return { status: res.status, json: text ? JSON.parse(text) : null };
+  };
+  try {
+    await call('POST', '/queue', { jobs: [{ id: 'j1', applyUrl: 'https://jobs.ashbyhq.com/acme/1', company: 'Acme' }] });
+    await call('POST', '/fleet/launch', { appliers: 1 });
+    await call('GET', '/queue/next?worker=w1');
+    await call('POST', '/queue/j1/status', { status: 'needsYou', note: 'Location' });
+    started[0].child.emit('exit', 0);
+    await tick();
+    assert.equal(started.length, 1);
+    const back = await call('POST', '/queue/j1/back');
+    assert.deepEqual([back.status, back.json.status, back.json.worker], [200, 'claimed', 'w1']);
+    assert.equal(started.length, 2, 'w1 starts again');
+    assert.match(started[1].args[1], /w1/);
+    // w1 is told to finish j1 first.
+    assert.equal((await call('GET', '/queue/next?worker=w1')).json.unfinished.id, 'j1');
+    assert.equal((await call('POST', '/queue/j1/back')).status, 409, 'only a job that waits on you');
+    assert.equal((await call('POST', '/queue/nope/back')).status, 404);
   } finally {
     bridge.server.close();
   }

@@ -344,6 +344,14 @@ export class Launcher {
     return { started, running: this.appliers() };
   }
 
+  /** Starts this one applier again (#80) when it isn't running. */
+  relaunch(worker: string, o: Omit<LaunchOptions, 'appliers'> = {}): boolean {
+    if (!this.claude || this.procs.has(worker) || HELPERS.includes(worker)) return false;
+    const model: Model = o.model && MODELS.includes(o.model) ? o.model : 'haiku';
+    this.start(worker, model, applierArgs(worker, model, o.jobs && o.jobs > 0 ? Math.floor(o.jobs) : undefined));
+    return true;
+  }
+
   /** The Scout (#62): fills the queue with up to `top` jobs. One at a time. */
   launchScout(top: number): boolean {
     if (!this.claude) throw new Error('Claude Code not found: set EZAA_CLAUDE to the claude executable');

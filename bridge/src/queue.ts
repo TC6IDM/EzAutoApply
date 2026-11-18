@@ -37,6 +37,27 @@ export interface QueueJob {
   history: { at: string; status: JobStatus; note?: string; page?: number }[];
 }
 
+/** Query parameters that only say where a click came from (ai-job-search's apply_queue.py, extension ownJob.ts). */
+const TRACKING = /^(utm_.*|gh_src|source|src|ref|refid|referrer|trk|trkinfo|trackingid|lever-source|lever-origin|iis|iisn|ccuid|mode|_ga|gclid|fbclid|mc_[a-z]+|sid|ebp|lipi)$/i;
+
+/** One key per posting, however it was linked: LinkedIn's job id, else the address without trackers, fragment or trailing slash. */
+export function postingKey(raw: string): string {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return raw.trim();
+  }
+  const host = url.hostname.toLowerCase();
+  if (host === 'linkedin.com' || host.endsWith('.linkedin.com')) {
+    const id = url.pathname.match(/\/jobs\/view\/(?:[^/]*?-)?(\d{6,})/)?.[1] ?? url.searchParams.get('currentJobId');
+    if (id) return `linkedin:${id}`;
+  }
+  for (const key of [...url.searchParams.keys()]) if (TRACKING.test(key)) url.searchParams.delete(key);
+  url.searchParams.sort();
+  return `${host}${url.pathname.replace(/\/+$/, '')}${url.search}`;
+}
+
 /** A claim lasts this long unless the applier reports again. */
 export const LEASE_MS = 20 * 60_000;
 const HELD: JobStatus[] = ['claimed', 'running'];
@@ -115,17 +136,35 @@ export class QueueStore {
 
   /** Add jobs not already queued (by id). Returns the ids added. */
   add(jobs: Partial<QueueJob>[]): string[] {
+    return this.addAll(jobs).added;
+  }
+
+  /**
+   * Add jobs not already queued, by id or by the posting's address (#79: the owner may send a
+   * posting the Scout queued already). `already` names the jobs that were there, with their status.
+   */
+  addAll(jobs: Partial<QueueJob>[]): { added: string[]; already: Pick<QueueJob, 'id' | 'status' | 'company' | 'title'>[] } {
     return this.change((all) => {
-      const have = new Set(all.map((j) => j.id));
+      const byId = new Map(all.map((j) => [j.id, j]));
+      const byAddress = new Map<string, QueueJob>();
+      for (const j of all) for (const u of [j.applyUrl, j.listingUrl]) if (u) byAddress.set(postingKey(u), j);
       const added: string[] = [];
+      const already: Pick<QueueJob, 'id' | 'status' | 'company' | 'title'>[] = [];
       for (const j of jobs) {
-        if (!j.id || !j.applyUrl || have.has(j.id)) continue;
+        if (!j.id || !j.applyUrl) continue;
+        const had = byId.get(j.id) ?? [j.applyUrl, j.listingUrl].map((u) => u && byAddress.get(postingKey(u))).find(Boolean);
+        if (had) {
+          already.push({ id: had.id, status: had.status, ...(had.company && { company: had.company }), ...(had.title && { title: had.title }) });
+          continue;
+        }
         const at = this.iso();
-        all.push({ ...j, id: j.id, applyUrl: j.applyUrl, status: 'queued', createdAt: j.createdAt ?? at, updatedAt: at, history: [{ at, status: 'queued' }] });
-        have.add(j.id);
-        added.push(j.id);
+        const job: QueueJob = { ...j, id: j.id, applyUrl: j.applyUrl, status: 'queued', createdAt: j.createdAt ?? at, updatedAt: at, history: [{ at, status: 'queued' }] };
+        all.push(job);
+        byId.set(job.id, job);
+        for (const u of [job.applyUrl, job.listingUrl]) if (u) byAddress.set(postingKey(u), job);
+        added.push(job.id);
       }
-      return added;
+      return { added, already };
     });
   }
 

@@ -11,7 +11,7 @@ import { readSprint } from './sprint.ts';
 import { CHANNELS, markProspect, PROSPECT_STATUSES, type ProspectStatus, readProspects, recruiterView } from './outreach.ts';
 import { groupTickets, OUTCOMES, type Outcome, readIncidentFiles, readResolutions, type Ticket, writeResolutions } from './tickets.ts';
 import { DEFAULT_SETTINGS, type FleetSettings, loadSettings, mergeSettings, saveSettings, switchedOff } from './settings.ts';
-import { JOB_STATUSES, type JobStatus, type QueueStore } from './queue.ts';
+import { JOB_STATUSES, type JobStatus, type QueueJob, type QueueStore } from './queue.ts';
 import { type LaunchOptions, type Launcher, MAX_APPLIERS, type Model } from './launcher.ts';
 
 /**
@@ -124,6 +124,51 @@ export function createBridge(o: BridgeOptions) {
     dropPending();
     note(`Jobs queued: started ${got.started.join(', ') || 'no more appliers'}`, 'ok');
   };
+  /**
+   * The appliers Start asked for (#80). An applier stops when its job waits on the owner (one
+   * application at a time, #67); it starts again once that job is done or skipped and a job it may
+   * take is queued. Pause and Stop all end this; the next Start sets it again. Not with a per-applier
+   * job limit (`jobs`), which is meant to end them.
+   */
+  let crew: LaunchOptions | null = null;
+  const toppedUpAt = new Map<string, number>();
+  const TOPUP_GAP_MS = 60_000;
+  const claimable = () => o.queue.all().filter((j) => j.status === 'queued' && !switchedOff(j, settings)).length;
+  const topUp = () => {
+    if (!crew || !o.launcher?.found || stopped || paused || pending || !settings.parts.appliers) return;
+    let jobs = claimable();
+    for (let k = 1; k <= Math.min(MAX_APPLIERS, crew.appliers); k++) {
+      const worker = `w${k}`;
+      if (o.launcher.isRunning(worker)) continue;
+      // Waiting on the owner: it takes nothing else until that job is ready (#67).
+      const held = o.queue.unfinished(worker);
+      if (held && (held.status === 'needsYou' || held.status === 'stuck')) continue;
+      if (!held && jobs <= 0) continue;
+      // An applier that ends at once (no job it can do) isn't started over and over.
+      if (now() - (toppedUpAt.get(worker) ?? 0) < TOPUP_GAP_MS) continue;
+      if (!o.launcher.relaunch(worker, crew)) continue;
+      toppedUpAt.set(worker, now());
+      if (!held) jobs--;
+      note(`${worker} started again: ${held ? `back to ${held.company ?? held.id}` : 'jobs are waiting in the queue'}`, 'ok');
+    }
+  };
+  /**
+   * The owner fixed what a job waited on (#82): it goes back to the applier that held it, which
+   * starts again if it had stopped, and carries on from the tab (apply-runner: a held job → run it again).
+   */
+  const sendBack = (id: string): QueueJob => {
+    const job = o.queue.get(id);
+    if (!job) throw new HttpError(404, 'No such job');
+    if (!job.worker || !(job.status === 'needsYou' || job.status === 'stuck')) throw new HttpError(409, `It isn't waiting on you (it is ${job.status})`);
+    const back = o.queue.setStatus(id, 'claimed', { note: `back from you: ${job.worker} carries on` })!;
+    const may = o.launcher?.found && !stopped && !paused && settings.parts.appliers;
+    if (may && !o.launcher!.isRunning(job.worker)) {
+      o.launcher!.relaunch(job.worker, crew ?? {});
+      toppedUpAt.set(job.worker, now());
+    }
+    note(`${job.company ?? id} went back to ${job.worker}${may ? '' : ' (it carries on when the appliers run again)'}`, 'ok');
+    return back;
+  };
   /** The Scout refills the queue when it runs dry while appliers work (#72). */
   const REFILL_COOLDOWN_MS = 15 * 60_000;
   let scoutJobsBefore = 0;
@@ -172,7 +217,8 @@ export function createBridge(o: BridgeOptions) {
         return;
       }
       if (worker === 'scout' && o.queue.all().length <= scoutJobsBefore) scoutFoundNothingAt = now();
-      if (worker !== 'scout' || !pending) return;
+      if (worker !== 'scout') return void setImmediate(topUp);
+      if (!pending) return;
       if (hasQueued()) startPending();
       else {
         dropPending();
@@ -259,9 +305,10 @@ export function createBridge(o: BridgeOptions) {
     if (m === 'POST' && p === '/queue') {
       const jobs = (await body(req)).jobs;
       if (!Array.isArray(jobs)) throw new HttpError(400, 'jobs must be a list');
-      const added = o.queue.add(jobs);
+      const { added, already } = o.queue.addAll(jobs);
       startPending();
-      return [201, { added }];
+      topUp();
+      return [201, { added, already }];
     }
     if (m === 'GET' && p === '/queue/next') {
       if (stopped) throw new HttpError(423, 'Stopped: POST /resume first');
@@ -280,7 +327,9 @@ export function createBridge(o: BridgeOptions) {
       if (!job) refill();
       return job ? [200, job] : [204, null];
     }
-    let hit = /^\/queue\/([^/]+)\/status$/.exec(p);
+    let hit = /^\/queue\/([^/]+)\/back$/.exec(p);
+    if (m === 'POST' && hit) return [200, sendBack(decodeURIComponent(hit[1]))];
+    hit = /^\/queue\/([^/]+)\/status$/.exec(p);
     if (m === 'POST' && hit) {
       const b = await body(req);
       const status = str(b.status, 'status') as JobStatus;
@@ -291,6 +340,7 @@ export function createBridge(o: BridgeOptions) {
         tabUrl: typeof b.tabUrl === 'string' ? b.tabUrl : undefined,
       });
       if (!job) throw new HttpError(404, 'No such job');
+      topUp();
       return [200, job];
     }
     if (m === 'POST' && p === '/run') {
@@ -403,17 +453,20 @@ export function createBridge(o: BridgeOptions) {
         const top = want.jobs ? Math.min(MAX_APPLIERS, want.appliers) * want.jobs : 10;
         const fresh = startScout(top);
         pending = want;
+        crew = want.jobs ? null : want;
         pendingTimer ??= setInterval(startPending, 3000);
         pendingTimer.unref?.();
         note(fresh ? `Scout started: finding up to ${top} jobs; appliers start with the first one` : 'The Scout is still finding jobs; appliers start with the first one');
         return [202, { started: [], running: o.launcher.appliers(), scout: true }];
       }
+      crew = want.jobs ? null : want;
       const got = o.launcher.launch(want);
       note(got.started.length ? `Started ${got.started.join(', ')}` : `All ${got.running} appliers already running`);
       return [202, got];
     }
     if (m === 'POST' && p === '/fleet/pause') {
       paused = true;
+      crew = null;
       dropPending();
       switchLog.push({ at: new Date(now()).toISOString(), who: 'You', text: 'Paused: appliers finish their job and stop', tone: 'warn' });
       return [200, fleetView()];
@@ -457,6 +510,7 @@ export function createBridge(o: BridgeOptions) {
     }
     if (m === 'POST' && p === '/stop-all') {
       stopped = true;
+      crew = null;
       const released = o.queue.releaseAll();
       // Commands not yet picked up won't run now.
       for (const c of commands) if (!c.delivered && c.type !== 'stopAll') c.delivered = true;
@@ -642,7 +696,12 @@ export function createBridge(o: BridgeOptions) {
   // Tickets left open from before the bridge started get the Fixer too.
   wantFixer();
 
+  // The Scout writes the queue file itself, and the Office's buttons change jobs: look now and then (#80).
+  const topUpTimer = o.launcher ? setInterval(topUp, 15_000) : undefined;
+  topUpTimer?.unref?.();
+
   server.on('close', () => {
+    clearInterval(topUpTimer);
     dropFixer();
     if (officeTimer) clearInterval(officeTimer);
     officeTimer = undefined;

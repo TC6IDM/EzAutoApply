@@ -9,6 +9,10 @@ import { readSiteErrors } from '../src/fill/siteErrors';
 import type { Settings } from '../src/core/types';
 import { type BackgroundToContent, call, type ContentToBackground, type RunCheckResponse } from '../src/messages';
 import { acceptAccountTerms, pageFingerprint } from '../src/run/page';
+import { quietAlerts } from '../src/content/quietAlerts';
+
+/** How long after a fill or a Next the page's alerts still close themselves (sites answer an upload late). */
+const QUIET_AFTER_MS = 20_000;
 
 /** Applicant-tracking systems whose pages always get the Autofill button. */
 const ATS =
@@ -55,10 +59,15 @@ export default defineContentScript({
     browser.runtime.onMessage.addListener((msg: BackgroundToContent, _sender, sendResponse) => {
       switch (msg.type) {
         case 'autofill':
-          controller.autofill().then(
-            () => sendResponse({ ok: true }),
-            (e: Error) => sendResponse({ error: e.message }),
-          );
+          // The page's alerts close themselves while it fills, and for a little after (#83).
+          quietAlerts(document, 10 * 60_000);
+          controller
+            .autofill()
+            .finally(() => quietAlerts(document, QUIET_AFTER_MS))
+            .then(
+              () => sendResponse({ ok: true }),
+              (e: Error) => sendResponse({ error: e.message }),
+            );
           return true;
         case 'applyAnswer':
           controller.applyAnswer(msg.fieldId, msg.answer).then(sendResponse, (e: Error) => sendResponse({ error: e.message }));
@@ -86,7 +95,10 @@ export default defineContentScript({
             sendResponse({ ok: false, reason: 'That button is Submit' });
             return false;
           }
-          if (b) pressAdvance(b);
+          if (b) {
+            quietAlerts(document, QUIET_AFTER_MS);
+            pressAdvance(b);
+          }
           sendResponse(b ? { ok: true, label: b.label } : { ok: false, reason: 'That button is no longer on the page' });
           return false;
         }

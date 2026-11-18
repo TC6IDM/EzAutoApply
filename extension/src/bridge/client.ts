@@ -101,6 +101,11 @@ export class BridgeClient {
     return this.call('POST', '/ext/screens', { jobId, image });
   }
 
+  /** Postings the owner sent (#79): `already` lists those the queue had, with their status. */
+  queueJobs(jobs: unknown[]): Promise<{ added: string[]; already?: { id: string; status: string; company?: string; title?: string }[] }> {
+    return this.call('POST', '/queue', { jobs });
+  }
+
   /** For #18: an incident (already redacted by the caller). */
   postIncident(incident: Record<string, unknown>): Promise<{ id: string }> {
     return this.call('POST', '/incidents', incident);
