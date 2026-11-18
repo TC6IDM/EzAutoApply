@@ -16,7 +16,8 @@
     "postinstall": "wxt prepare",
     "test:e2e": "wxt build && playwright test",
     "icons": "node scripts/make-icons.mjs",
-    "smoke:classifier": "tsx scripts/classifier-smoke.ts"
+    "smoke:classifier": "tsx scripts/classifier-smoke.ts",
+    "replay": "vitest run --config vitest.replay.config.ts"
   },
   "dependencies": {
     "dexie": "^4.4.6",
