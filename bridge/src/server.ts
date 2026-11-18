@@ -43,6 +43,8 @@ export interface BridgeOptions {
   sprint?: { dir: string; script: string };
   /** Starts and ends the appliers for the Office's Start button (#36). Without it, Start answers 501. */
   launcher?: Launcher;
+  /** How long after a ticket opens the Fixer starts (#69), so a burst of incidents is one start. */
+  fixerDelayMs?: number;
 }
 
 export const OFFICE_FILE = fileURLToPath(new URL('../office/index.html', import.meta.url));
@@ -122,8 +124,38 @@ export function createBridge(o: BridgeOptions) {
     dropPending();
     note(`Jobs queued: started ${got.started.join(', ') || 'no more appliers'}`, 'ok');
   };
+  /** The Fixer (#69): starts by itself a little after a ticket opens, one at a time. */
+  let fixerTimer: ReturnType<typeof setTimeout> | undefined;
+  let fixerStartedAt = 0;
+  const fixerMayRun = () => !!o.launcher?.found && !stopped && settings.parts.fixer;
+  const wantFixer = () => {
+    if (!fixerMayRun() || fixerTimer || o.launcher!.fixerRunning()) return;
+    if (!tickets().some((t) => t.open)) return;
+    fixerTimer = setTimeout(() => {
+      fixerTimer = undefined;
+      if (!fixerMayRun() || !tickets().some((t) => t.open)) return;
+      try {
+        if (o.launcher!.launchFixer()) {
+          fixerStartedAt = now();
+          note('A ticket is open: the Fixer started', 'ok');
+        }
+      } catch (e) {
+        note(`The Fixer couldn't start: ${e instanceof Error ? e.message : String(e)}`, 'warn');
+      }
+    }, o.fixerDelayMs ?? 20_000);
+    fixerTimer.unref?.();
+  };
+  const dropFixer = () => {
+    clearTimeout(fixerTimer);
+    fixerTimer = undefined;
+  };
   if (o.launcher) {
     o.launcher.onEnd = (worker) => {
+      // Tickets that came in while it worked get a fresh start; the ones it left open wait for the next incident.
+      if (worker === 'fixer') {
+        if (tickets().some((t) => t.open && Date.parse(t.last) > fixerStartedAt)) wantFixer();
+        return;
+      }
       if (worker !== 'scout' || !pending) return;
       if (hasQueued()) startPending();
       else {
@@ -219,12 +251,15 @@ export function createBridge(o: BridgeOptions) {
       if (stopped) throw new HttpError(423, 'Stopped: POST /resume first');
       if (!settings.parts.appliers) throw new HttpError(423, 'Appliers are switched off (PUT /settings)');
       if (paused) throw new HttpError(423, 'Paused: finish the job you have and stop');
+      const worker = url.searchParams.get('worker') || 'worker';
+      if (!workersSeen.has(worker)) workersSeen.set(worker, now());
+      // One application at a time: a worker finishes its job (ready) before it gets another (#67).
+      const unfinished = o.queue.unfinished(worker);
+      if (unfinished) return [409, { error: `Finish ${unfinished.company ?? unfinished.id} first: it is ${unfinished.status}`, unfinished }];
       // Each ready job keeps its tab open for the owner; past the limit the appliers wait (#29).
       const ready = o.queue.all().filter((j) => j.status === 'ready').length;
       const limit = o.maxReadyOpen ?? MAX_READY_OPEN;
       if (ready >= limit) return [429, { error: `Paused: ${ready} jobs wait for your Submit`, ready, maxReadyOpen: limit }];
-      const worker = url.searchParams.get('worker') || 'worker';
-      if (!workersSeen.has(worker)) workersSeen.set(worker, now());
       const job = o.queue.claim(worker, (j) => !switchedOff(j, settings));
       return job ? [200, job] : [204, null];
     }
@@ -283,6 +318,7 @@ export function createBridge(o: BridgeOptions) {
       const day = at.toISOString().slice(0, 10);
       incidentsByDay.set(day, (incidentsByDay.get(day) ?? 0) + 1);
       ticketsCache = null;
+      wantFixer();
       return [201, { id, file }];
     }
     if (m === 'GET' && p === '/ready') {
@@ -396,6 +432,7 @@ export function createBridge(o: BridgeOptions) {
       switchLog.splice(0, Math.max(0, switchLog.length - 30));
       settings = next;
       if (o.settingsFile) saveSettings(o.settingsFile, settings);
+      wantFixer();
       return [200, settings];
     }
     if (m === 'POST' && p === '/stop-all') {
@@ -405,12 +442,14 @@ export function createBridge(o: BridgeOptions) {
       for (const c of commands) if (!c.delivered && c.type !== 'stopAll') c.delivered = true;
       queueCommand({ type: 'stopAll' });
       dropPending();
+      dropFixer();
       const ended = o.launcher?.stopAll() ?? 0;
       return [200, { stopped: true, released, ended }];
     }
     if (m === 'POST' && p === '/resume') {
       stopped = false;
       paused = false;
+      wantFixer();
       return [200, { stopped: false }];
     }
 
@@ -431,7 +470,10 @@ export function createBridge(o: BridgeOptions) {
       if (!run || typeof run !== 'object') throw new HttpError(400, 'run is required');
       runs.set(jobId, { run, fields: Array.isArray(b.fields) ? b.fields : [], at: now() });
       if (run.status === 'running') o.queue.setStatus(jobId, 'running', { page: run.page });
-      else if (run.stop && AFTER_RUN[run.stop.reason]) {
+      else if (run.stop?.reason === 'submitReady' && o.queue.get(jobId)?.worker) {
+        // An applier holds it: it is ready once the applier has checked every field (#67).
+        o.queue.setStatus(jobId, 'running', { note: `at Submit (${run.stop.detail ?? 'Submit'}): the applier is checking every field`, page: run.page });
+      } else if (run.stop && AFTER_RUN[run.stop.reason]) {
         const note = run.stop.detail ? `${run.stop.reason}: ${run.stop.detail}` : run.stop.reason;
         o.queue.setStatus(jobId, AFTER_RUN[run.stop.reason]!, { note, page: run.page });
       }
@@ -456,6 +498,7 @@ export function createBridge(o: BridgeOptions) {
     max: MAX_APPLIERS,
     appliers: o.launcher?.list() ?? [],
     scouting: o.launcher?.scoutRunning() ?? false,
+    fixing: o.launcher?.fixerRunning() ?? false,
     waiting: pending?.appliers ?? 0,
   });
 
@@ -576,7 +619,11 @@ export function createBridge(o: BridgeOptions) {
     );
   });
 
+  // Tickets left open from before the bridge started get the Fixer too.
+  wantFixer();
+
   server.on('close', () => {
+    dropFixer();
     if (officeTimer) clearInterval(officeTimer);
     officeTimer = undefined;
   });

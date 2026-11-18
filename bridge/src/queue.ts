@@ -40,6 +40,8 @@ export interface QueueJob {
 /** A claim lasts this long unless the applier reports again. */
 export const LEASE_MS = 20 * 60_000;
 const HELD: JobStatus[] = ['claimed', 'running'];
+/** A worker keeps these too, without a lease: it may not take another job until this one is ready (#67). */
+const KEPT: JobStatus[] = ['needsYou', 'stuck'];
 
 export class QueueStore {
   readonly file: string;
@@ -145,6 +147,12 @@ export class QueueStore {
     });
   }
 
+  /** The job `worker` hasn't finished yet (#67): held, or waiting on a field or a blocker. */
+  unfinished(worker: string): QueueJob | null {
+    const job = this.all().find((j) => j.worker === worker && (HELD.includes(j.status) || KEPT.includes(j.status)));
+    return job ? structuredClone(job) : null;
+  }
+
   /** Note that an agent answered one of the job's fields (#29). */
   noteAgentAnswer(id: string, fieldId: string): void {
     this.change((all) => {
@@ -155,12 +163,13 @@ export class QueueStore {
     });
   }
 
-  /** A new status for a job. A held status renews the lease; any other one ends it. */
+  /** A new status for a job. A held status renews the lease; needsYou and stuck keep the worker; any other one ends the claim. */
   setStatus(id: string, status: JobStatus, o: { note?: string; page?: number; tabUrl?: string } = {}): QueueJob | null {
     return this.change((all) => {
       const job = all.find((j) => j.id === id);
       if (!job) return null;
       if (HELD.includes(status)) job.leaseUntil = this.iso(this.now() + LEASE_MS);
+      else if (KEPT.includes(status)) delete job.leaseUntil;
       else {
         delete job.leaseUntil;
         delete job.worker;

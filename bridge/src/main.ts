@@ -35,7 +35,8 @@ const token = readFileSync(tokenFile, 'utf8').trim();
 
 // The Office's Start button (#36): one headless Claude Code per applier, run in ai-job-search, logs in ~/.ezautoapply/fleet.
 const claude = findClaude(process.env, homedir());
-const launcher = new Launcher({ claude, cwd: jobSearch, logDir: join(home, 'fleet') });
+// The Fixer (#69) starts by itself when a ticket opens, in a worktree made from this checkout.
+const launcher = new Launcher({ claude, cwd: jobSearch, logDir: join(home, 'fleet'), repo });
 
 const { server } = createBridge({ token, queue: new QueueStore(queueFile), incidentsDir: join(home, 'incidents'), port, maxReadyOpen, settingsFile: join(home, 'fleet-settings.json'), prospectsFile, sprint, launcher });
 // Ending the bridge ends the appliers it started.
