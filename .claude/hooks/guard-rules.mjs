@@ -4,8 +4,11 @@
  * .claude/tests/guard.test.mjs, because this is what enforces CLAUDE.md's
  * first ground rule.
  *
- *   ask   commit and push, every time (not deny: the owner does commit, they want
- *         to be asked first, and "ask" cannot be allowlisted away).
+ *   ask   a commit on main, a push naming main or upstream, and any commit or push
+ *         while a sprint runs that reaches outside its own branches ("ask" cannot be
+ *         allowlisted away).
+ *   null  also a commit or push on a branch with no sprint running: the owner gives
+ *         their yes in chat, and the allow rules in settings.local.json skip the popup.
  *   deny  a bare `git push` from main, a force-push anywhere, and `gh pr merge`
  *         while a sprint runs.
  *   allow commit and push on a running sprint's own branches (the sprint exception).
@@ -104,10 +107,17 @@ export function decide(cmd, { branch = '', state = null, now = Date.now(), place
   const onSprint = allowed.every(Boolean) ? [...new Set(allowed)].join(', ') : null;
   if (isMerge(cmd) && allowed.some(Boolean)) return { decision: 'deny', reason: 'A sprint never merges (ezaa-sprint SKILL.md). The owner merges the sprint PR.' };
   if (isCommit(cmd) || isPush(cmd)) {
-    if (onSprint && !(isPush(cmd) && (namesMain(cmd) || pushesUpstream(cmd)))) {
+    const toMain = isPush(cmd) && (namesMain(cmd) || pushesUpstream(cmd));
+    if (onSprint && !toMain) {
       return { decision: 'allow', reason: `ezaa-sprint is running on ${onSprint}: the sprint exception to the commit rule (its own branches only).` };
     }
-    return { decision: 'ask', reason: 'CLAUDE.md ground rule: never commit or push without the owner\'s yes for this specific commit or push.' };
+    // The owner's yes is given in chat (2026-11-18: "dont pop open this allow this bash command thing").
+    // On a branch, with no sprint running, the permission rules decide (settings.local.json allows it).
+    // Main, upstream, and anything a running sprint reaches outside its own branches still ask.
+    const onMain = where.some(p => /^(main|master)$/.test(p.branch || ''));
+    if (toMain || onMain || sprintBranch(state, state?.branch, now)) {
+      return { decision: 'ask', reason: 'CLAUDE.md ground rule: main, upstream, and anything outside a running sprint\'s branches need the owner\'s yes here.' };
+    }
   }
   return null;
 }
