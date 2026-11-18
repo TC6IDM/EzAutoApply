@@ -4,6 +4,7 @@ import { DEFAULT_SETTINGS, type FleetSettings } from './settings.ts';
 import type { Prospect } from './outreach.ts';
 import type { SprintView } from './sprint.ts';
 import type { Ticket } from './tickets.ts';
+import type { Applier } from './launcher.ts';
 
 /**
  * What the Fleet Office page shows (#35): the queue, each applier and its job, the owner's
@@ -71,6 +72,21 @@ export interface OfficeSnapshot {
   /** Real people's names: served only on the token-gated stream, never written anywhere by the bridge. */
   recruiters: Prospect[];
   sprint: SprintView | null;
+  /** The appliers the Office's Start button launched (#36), and whether claims are paused. */
+  fleet: FleetView;
+}
+
+export interface FleetView {
+  /** Whether the bridge found Claude Code to start appliers with. */
+  found: boolean;
+  paused: boolean;
+  max: number;
+  /** Every agent the bridge started, the Scout (`scout`) included. */
+  appliers: Applier[];
+  /** The Scout is finding jobs (#62). */
+  scouting: boolean;
+  /** Appliers that start when the Scout queues the first job. */
+  waiting: number;
 }
 
 /** Ticker lines for a change of switches: "Switched off: LinkedIn Easy Apply". */
@@ -227,6 +243,7 @@ export function officeSnapshot(o: {
   sprint?: SprintView | null;
   /** Lines that come from the bridge rather than a job (switch changes). */
   extraEvents?: OfficeEvent[];
+  fleet?: FleetView;
   now: number;
 }): OfficeSnapshot {
   const today = new Date(o.now).toISOString().slice(0, 10);
@@ -263,5 +280,6 @@ export function officeSnapshot(o: {
     tickets: o.tickets ?? [],
     recruiters: o.recruiters ?? [],
     sprint: o.sprint ?? null,
+    fleet: o.fleet ?? { found: false, paused: false, max: 4, appliers: [], scouting: false, waiting: 0 },
   };
 }

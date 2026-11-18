@@ -64,6 +64,9 @@ button { font: inherit; color: inherit; }
 #tokenForm input { flex: 1; min-width: 0; font: 400 13px var(--f-mono); color: var(--ink); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
 #tokenForm code { font: 400 12px var(--f-mono); }
 .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.start { display: inline-flex; align-items: center; gap: 6px; }
+.start label { color: var(--ink-2); font-size: 13px; }
+.start select { font: inherit; height: 32px; padding: 0 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
 .seg { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); padding: 2px; gap: 2px; }
 .seg > span { font-size: 12px; color: var(--ink-2); padding: 0 6px 0 8px; }
 .seg button { border: 0; background: transparent; border-radius: 6px; min-width: 30px; height: 28px; cursor: pointer; font-variant-numeric: tabular-nums; }
@@ -281,6 +284,13 @@ table.src tr.skip td { color: var(--ink-3); }
       <div class="controls">
         <button type="button" class="btn" id="sprintBtn" hidden>Sprint</button>
         <button type="button" class="btn" id="switchesBtn">Switches</button>
+        <span class="start" id="startGroup" hidden>
+          <label for="nAppliers">Appliers</label>
+          <select id="nAppliers" aria-describedby="startHint"><option>1</option><option>2</option><option>3</option><option>4</option></select>
+          <button type="button" class="btn primary" id="start">Start</button>
+          <span class="sr-only" id="startHint">How many appliers run at once. Each takes jobs from the queue and stops at Submit.</span>
+        </span>
+        <button type="button" class="btn" id="pause" hidden>Pause</button>
         <button type="button" class="btn primary" id="launch" hidden>Resume fleet</button>
         <button type="button" class="btn danger" id="stop" disabled>Stop all</button>
       </div>
@@ -291,7 +301,7 @@ table.src tr.skip td { color: var(--ink-3); }
       <div><label class="sr-only" for="tokenInput">Bridge token</label><input id="tokenInput" type="password" autocomplete="off" spellcheck="false" required><button type="submit" class="btn primary">Connect</button></div>
     </form>
     <div class="confirm" id="stopConfirm" role="alertdialog" aria-labelledby="stopText" hidden>
-      <p id="stopText">Stop every agent? Runs in progress are cancelled, their jobs go back to the queue, and nothing is claimed until you resume.</p>
+      <p id="stopText">Stop every agent? The appliers you started are closed, Runs in progress are cancelled, their jobs go back to the queue, and nothing is claimed until you resume.</p>
       <div><button type="button" class="btn" id="stopNo">Keep running</button><button type="button" class="btn primary" id="stopYes">Stop all</button></div>
     </div>
   </header>
@@ -342,6 +352,7 @@ table.src tr.skip td { color: var(--ink-3); }
     mode: 'stopped', count: 4, speed: 1, link: 'connecting',
     queue: [], ready: [], needs: [], answers: [], drafts: [], recruiters: [], tickets: [], events: [],
     submitted: 0, fixes: 0, sent: 0, spend: 0, incidents: 0, stuck: 0, counts: {}, maxReadyOpen: 6,
+    fleet: { found: false, paused: false, max: 4, appliers: [] },
     agents: {
       scout: agent('scout', 'Scout', 'sonnet', 'Finds and ranks jobs, fills the queue', 'scout', { step: -1, run: {}, today: {}, live: false }),
       w1: agent('w1', 'Applier 1', 'haiku', 'Runs EzAutoApply on queued jobs', 'applier', { slot: 1, phase: 'off', job: null }),
@@ -355,7 +366,10 @@ table.src tr.skip td { color: var(--ink-3); }
   const A = S.agents;
   const APPLIERS = [A.w1, A.w2, A.w3, A.w4];
   const NOT_YET = 'Not running yet. It joins when its agent is built.';
-  for (const a of [A.scout, A.fixer, A.outreach]) a.now = NOT_YET;
+  for (const a of [A.fixer, A.outreach]) a.now = NOT_YET;
+  // The Scout (#62) runs when Start finds the queue empty.
+  A.scout.live = true;
+  A.scout.now = 'Runs when you press Start with an empty queue.';
   const OUTCOME_WORDS = { fixed: 'Fixed', answered: 'Answered', cantFix: 'Can’t fix', needsYou: 'Needs you' };
   const KIND_WORDS = { unmatched: 'no answer', rejected: 'the site refused it', widgetFailed: 'the widget didn’t take it', navigation: 'the page wouldn’t move' };
   // A navigation ticket is named by why the Run stopped (run/types.ts › StopReason).
@@ -390,6 +404,8 @@ table.src tr.skip td { color: var(--ink-3); }
     S.incidents = snap.incidentsToday;
     S.counts = snap.counts;
     S.maxReadyOpen = snap.maxReadyOpen;
+    S.fleet = snap.fleet || S.fleet;
+    A.scout.now = S.fleet.scouting ? `Finding, ranking and queuing jobs${S.fleet.waiting ? `; ${S.fleet.waiting} applier${S.fleet.waiting === 1 ? '' : 's'} start with the first` : ''}` : 'Runs when you press Start with an empty queue.';
     S.settings = snap.settings;
     // The Fixer (#32): its open tickets and what it did lately. It counts as at work while it
     // resolved something in the last hour (it runs as a Claude Code session, not a worker).
@@ -563,6 +579,7 @@ table.src tr.skip td { color: var(--ink-3); }
     }
     if (a.kind === 'outreach' && S.drafts.length) return { label: `${S.drafts.length} to send`, tone: 'ok' };
     if (a.kind === 'applier' && (a.phase === 'off' || (S.mode === 'stopped'))) return { label: 'Empty desk', tone: 'idle' };
+    if (a.kind === 'scout') return S.fleet.scouting ? { label: 'Finding jobs', tone: 'run' } : { label: 'Idle', tone: 'idle' };
     if (a.kind !== 'applier') return { label: 'Not running', tone: 'idle' };
     if (S.mode === 'stopped') return { label: 'Off', tone: 'idle' };
     switch (a.phase) {
@@ -654,9 +671,10 @@ table.src tr.skip td { color: var(--ink-3); }
   function scoutHTML(a) {
     const rows = S.queue.length
       ? `<ul class="rows">${S.queue.slice(0, 8).map((j) => `<li><span><b>${esc(j.company)}</b> · ${esc(j.role)}</span><span class="mono">${j.fit === '–' ? '' : 'fit ' + j.fit}</span><span class="sub">${meta(j.ats, `Tier ${j.tier}`, j.doc)}</span></li>`).join('')}</ul>`
-      : '<p class="empty">The queue is empty. Run /queue in ai-job-search to add ranked jobs.</p>';
-    return notYetHTML(a, 'For now jobs come from /queue in ai-job-search, which ranks them, picks a resume and writes apply_queue/queue.jsonl. The bridge reads that file as it changes.',
-      `<div class="sect"><div class="sect-h"><span>Queue</span><span class="num">${S.counts.queued ?? 0} jobs</span></div>${rows}</div>`);
+      : '<p class="empty">The queue is empty. Press Start: the Scout fills it first.</p>';
+    return `<div class="now-row">${pill(statusOf(a.id))}<p class="now">${esc(a.now)}</p></div>
+      <div class="callout info"><strong>Start fills the queue</strong><p>When you press Start and the queue is empty, the bridge runs /scout in ai-job-search: it scrapes the job sources you have switched on, ranks what it finds and queues the good ones. The appliers start with the first queued job. You can still run /rank and /queue yourself.</p></div>
+      <div class="sect"><div class="sect-h"><span>Queue</span><span class="num">${S.counts.queued ?? 0} jobs</span></div>${rows}</div>`;
   }
   function outreachHTML(a) {
     const sent = S.recruiters.filter((r) => r.status !== 'found').length;
@@ -847,8 +865,8 @@ table.src tr.skip td { color: var(--ink-3); }
     setHTML($('#roster'), Fleet.ids.map((id) => {
       const st = statusOf(id);
       const model = id === 'you' ? 'you' : A[id].model;
-      const off = id !== 'you' && (A[id].kind === 'applier' ? A[id].phase === 'off' || S.mode === 'stopped' : true);
-      const line = id === 'you' ? `${S.ready.length} ready · ${S.needs.length} need you` : A[id].kind === 'fixer' || A[id].kind === 'outreach' ? A[id].now : A[id].kind !== 'applier' ? 'Not built yet' : off ? 'Empty desk' : A[id].now || st.label;
+      const off = id !== 'you' && (A[id].kind === 'applier' ? A[id].phase === 'off' || S.mode === 'stopped' : !A[id].live);
+      const line = id === 'you' ? `${S.ready.length} ready · ${S.needs.length} need you` : A[id].kind === 'fixer' || A[id].kind === 'outreach' || A[id].kind === 'scout' ? A[id].now : A[id].kind !== 'applier' ? 'Not built yet' : off ? 'Empty desk' : A[id].now || st.label;
       return `<li><button type="button" class="r-item ${wins.has(id) ? 'open' : ''} ${off ? 'off' : ''}" data-open="${id}" style="--c:${MODEL[model].c}">
         <span class="dot"></span><span><span class="nm">${esc(Fleet.name(id))}</span> <span class="md">${esc(MODEL[model].label)}</span></span>${pill(st)}<span class="ln">${esc(line)}</span></button></li>`;
     }).join(''));
@@ -860,6 +878,21 @@ table.src tr.skip td { color: var(--ink-3); }
     const live = S.link === 'live';
     $('#launch').hidden = !(live && S.mode === 'stopped');
     $('#stop').disabled = !live || S.mode === 'stopped';
+    // Start (#36): the bridge starts N appliers; Pause lets each finish its job, then stop.
+    const f = S.fleet, running = f.appliers.filter((a) => a.status === 'running').length;
+    const n = Number($('#nAppliers').value) || 1;
+    $('#startGroup').hidden = !(live && S.mode !== 'stopped');
+    const start = $('#start');
+    start.disabled = !f.found || f.scouting || (running >= n && !f.paused);
+    start.textContent = running && !f.paused ? 'Start more' : 'Start';
+    start.title = !f.found ? 'The bridge found no Claude Code to start appliers with: set EZAA_CLAUDE and restart it'
+      : f.scouting ? 'The Scout is finding jobs; the appliers start with the first one'
+      : !S.counts.queued ? `The queue is empty: the Scout finds jobs first, then ${n} applier${n === 1 ? '' : 's'} start`
+      : running >= n && !f.paused ? `${running} running` : `Start ${n} applier${n === 1 ? '' : 's'} on the queue`;
+    const pause = $('#pause');
+    pause.hidden = !(live && (running || f.waiting));
+    pause.disabled = f.paused;
+    pause.textContent = f.paused ? `Pausing… (${running} finishing)` : running ? `Pause (${running} running)` : `Pause (${f.waiting} waiting for jobs)`;
     const sp = S.sprint, sb = $('#sprintBtn');
     sb.hidden = !sp;
     if (sp) setHTML(sb, `Sprint <b class="mono">${esc(sp.verdict)}</b>`);
@@ -873,6 +906,12 @@ table.src tr.skip td { color: var(--ink-3); }
   $('#stats').addEventListener('click', (e) => { const b = e.target.closest('[data-tab]'); if (b) openWin('you', b.dataset.tab); });
   // Stopped by Stop all: appliers get no new jobs until you resume.
   $('#launch').addEventListener('click', () => tell(post('/resume'), 'Fleet resumed: appliers can take jobs again'));
+  try { const n = localStorage.getItem('ezaa-office-appliers'); if (n) $('#nAppliers').value = n; } catch {}
+  $('#nAppliers').addEventListener('change', (e) => { try { localStorage.setItem('ezaa-office-appliers', e.target.value); } catch {} renderControls(); });
+  $('#start').addEventListener('click', () => tell(post('/fleet/launch', { appliers: Number($('#nAppliers').value) || 1 }),
+    (r) => r.scout ? 'Finding jobs first: the Scout is scraping and ranking. The appliers start with the first queued job.'
+      : r.started.length ? `Started ${r.started.join(', ')}: they take jobs from the queue and stop at Submit` : `${r.running} already running`));
+  $('#pause').addEventListener('click', () => tell(post('/fleet/pause'), 'Paused: each applier finishes the job it has, then stops'));
   $('#switchesBtn').addEventListener('click', () => openWin('switches'));
   $('#sprintBtn').addEventListener('click', () => openWin('sprint'));
   $('#stop').addEventListener('click', () => { $('#stopConfirm').hidden = false; $('#stopNo').focus(); });

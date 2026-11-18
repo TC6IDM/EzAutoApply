@@ -12,6 +12,7 @@ import { CHANNELS, markProspect, PROSPECT_STATUSES, type ProspectStatus, readPro
 import { groupTickets, OUTCOMES, type Outcome, readIncidentFiles, readResolutions, type Ticket, writeResolutions } from './tickets.ts';
 import { DEFAULT_SETTINGS, type FleetSettings, loadSettings, mergeSettings, saveSettings, switchedOff } from './settings.ts';
 import { JOB_STATUSES, type JobStatus, type QueueStore } from './queue.ts';
+import { type LaunchOptions, type Launcher, MAX_APPLIERS, type Model } from './launcher.ts';
 
 /**
  * The local bridge (#16, docs/agent-fleet-plan.md §4.3): 127.0.0.1 only, every call but
@@ -40,6 +41,8 @@ export interface BridgeOptions {
   prospectsFile?: string;
   /** A running /ezaa-sprint (#50): its folder (`<temp>/ezaa-sprint`) and its script, for Wind down. Without them, no sprint shows. */
   sprint?: { dir: string; script: string };
+  /** Starts and ends the appliers for the Office's Start button (#36). Without it, Start answers 501. */
+  launcher?: Launcher;
 }
 
 export const OFFICE_FILE = fileURLToPath(new URL('../office/index.html', import.meta.url));
@@ -97,6 +100,38 @@ export function createBridge(o: BridgeOptions) {
   const runs = new Map<string, { run: RunState; fields: unknown[]; at: number }>();
   const waiters = new Set<() => void>();
   let stopped = false;
+  /** Pause (#36): no new claims; each applier finishes its job and stops. Start or Resume clears it. */
+  let paused = false;
+  /** Start on an empty queue (#62): the appliers wait here while the Scout fills it. */
+  let pending: LaunchOptions | null = null;
+  let pendingTimer: ReturnType<typeof setInterval> | undefined;
+  const note = (text: string, tone?: 'ok' | 'warn') => {
+    switchLog.push({ at: new Date(now()).toISOString(), who: 'Fleet', text, ...(tone && { tone }) });
+    switchLog.splice(0, Math.max(0, switchLog.length - 30));
+  };
+  const hasQueued = () => o.queue.all().some((j) => j.status === 'queued');
+  const dropPending = () => {
+    pending = null;
+    clearInterval(pendingTimer);
+    pendingTimer = undefined;
+  };
+  /** The appliers that waited for the Scout start once a job is queued. */
+  const startPending = () => {
+    if (!pending || !o.launcher || stopped || paused || !settings.parts.appliers || !hasQueued()) return;
+    const got = o.launcher.launch(pending);
+    dropPending();
+    note(`Jobs queued: started ${got.started.join(', ') || 'no more appliers'}`, 'ok');
+  };
+  if (o.launcher) {
+    o.launcher.onEnd = (worker) => {
+      if (worker !== 'scout' || !pending) return;
+      if (hasQueued()) startPending();
+      else {
+        dropPending();
+        note('The Scout found nothing to queue: no appliers started', 'warn');
+      }
+    };
+  }
   /** Worker name → when it first asked for a job: the Office's applier desks. */
   let settings: FleetSettings = o.settingsFile ? loadSettings(o.settingsFile) : structuredClone(DEFAULT_SETTINGS);
   /** Switch changes since the bridge started, for the Office's ticker. */
@@ -176,11 +211,14 @@ export function createBridge(o: BridgeOptions) {
     if (m === 'POST' && p === '/queue') {
       const jobs = (await body(req)).jobs;
       if (!Array.isArray(jobs)) throw new HttpError(400, 'jobs must be a list');
-      return [201, { added: o.queue.add(jobs) }];
+      const added = o.queue.add(jobs);
+      startPending();
+      return [201, { added }];
     }
     if (m === 'GET' && p === '/queue/next') {
       if (stopped) throw new HttpError(423, 'Stopped: POST /resume first');
       if (!settings.parts.appliers) throw new HttpError(423, 'Appliers are switched off (PUT /settings)');
+      if (paused) throw new HttpError(423, 'Paused: finish the job you have and stop');
       // Each ready job keeps its tab open for the owner; past the limit the appliers wait (#29).
       const ready = o.queue.all().filter((j) => j.status === 'ready').length;
       const limit = o.maxReadyOpen ?? MAX_READY_OPEN;
@@ -289,6 +327,42 @@ export function createBridge(o: BridgeOptions) {
     }
     if (m === 'POST' && p === '/fleet/reload') return [202, { commandId: queueCommand({ type: 'reload' }).id }];
 
+    // The Office's Start and Pause (#36): the bridge starts the appliers itself (launcher.ts).
+    if (m === 'GET' && p === '/fleet') return [200, fleetView()];
+    if (m === 'POST' && p === '/fleet/launch') {
+      if (!o.launcher) throw new HttpError(501, 'This bridge was started without a launcher');
+      if (stopped) throw new HttpError(423, 'Stopped: press Resume first');
+      if (!settings.parts.appliers) throw new HttpError(423, 'Appliers are switched off in Switches');
+      if (!o.launcher.found) throw new HttpError(503, 'Claude Code not found: set EZAA_CLAUDE to the claude executable and restart the bridge');
+      const b = await body(req);
+      const want: LaunchOptions = {
+        appliers: typeof b.appliers === 'number' ? b.appliers : 1,
+        model: typeof b.model === 'string' ? (b.model as Model) : undefined,
+        jobs: typeof b.jobs === 'number' ? b.jobs : undefined,
+      };
+      paused = false;
+      // An empty queue (#62): the Scout fills it first, and the appliers start with the first job.
+      if (!hasQueued()) {
+        if (!settings.parts.scout) throw new HttpError(409, 'The queue is empty and the Scout is switched off: turn it on in Switches, or run /rank and /queue in ai-job-search');
+        const top = want.jobs ? Math.min(MAX_APPLIERS, want.appliers) * want.jobs : 10;
+        const fresh = o.launcher.launchScout(top);
+        pending = want;
+        pendingTimer ??= setInterval(startPending, 3000);
+        pendingTimer.unref?.();
+        note(fresh ? `Scout started: finding up to ${top} jobs; appliers start with the first one` : 'The Scout is still finding jobs; appliers start with the first one');
+        return [202, { started: [], running: o.launcher.appliers(), scout: true }];
+      }
+      const got = o.launcher.launch(want);
+      note(got.started.length ? `Started ${got.started.join(', ')}` : `All ${got.running} appliers already running`);
+      return [202, got];
+    }
+    if (m === 'POST' && p === '/fleet/pause') {
+      paused = true;
+      dropPending();
+      switchLog.push({ at: new Date(now()).toISOString(), who: 'You', text: 'Paused: appliers finish their job and stop', tone: 'warn' });
+      return [200, fleetView()];
+    }
+
     // A running sprint (#50): read-only, and Wind down, which the sprint obeys after the issue it is on.
     if (m === 'GET' && p === '/sprint') return [200, o.sprint ? readSprint(o.sprint.dir, now()) : null];
     if (m === 'POST' && p === '/sprint/wind-down') {
@@ -330,10 +404,13 @@ export function createBridge(o: BridgeOptions) {
       // Commands not yet picked up won't run now.
       for (const c of commands) if (!c.delivered && c.type !== 'stopAll') c.delivered = true;
       queueCommand({ type: 'stopAll' });
-      return [200, { stopped: true, released }];
+      dropPending();
+      const ended = o.launcher?.stopAll() ?? 0;
+      return [200, { stopped: true, released, ended }];
     }
     if (m === 'POST' && p === '/resume') {
       stopped = false;
+      paused = false;
       return [200, { stopped: false }];
     }
 
@@ -373,6 +450,15 @@ export function createBridge(o: BridgeOptions) {
     throw new HttpError(404, 'Not found');
   }
 
+  const fleetView = () => ({
+    found: o.launcher?.found ?? false,
+    paused,
+    max: MAX_APPLIERS,
+    appliers: o.launcher?.list() ?? [],
+    scouting: o.launcher?.scoutRunning() ?? false,
+    waiting: pending?.appliers ?? 0,
+  });
+
   // ---- the Fleet Office (#35): the page, and a stream of snapshots while it is open ----
   const officeClients = new Set<{ res: ServerResponse; last: string }>();
   let officeTimer: ReturnType<typeof setInterval> | undefined;
@@ -391,6 +477,7 @@ export function createBridge(o: BridgeOptions) {
       recruiters: o.prospectsFile ? recruiterView(readProspects(o.prospectsFile)) : [],
       sprint: o.sprint ? readSprint(o.sprint.dir, now()) : null,
       extraEvents: switchLog,
+      fleet: fleetView(),
       now: now(),
     });
   /** Send each open page the latest snapshot when it changed, and a ping now and then to keep it open. */
