@@ -4,6 +4,7 @@
       "Bash(npm run compile*)",
       "Bash(npm test*)",
       "Bash(npx vitest run*)",
+      "Bash(node --test*)",
       "Bash(git status*)",
       "Bash(git diff*)",
       "Bash(git log*)",
