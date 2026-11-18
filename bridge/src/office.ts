@@ -1,6 +1,7 @@
 import type { RunState } from '../../extension/src/run/types.ts';
 import { JOB_STATUSES, type JobStatus, type QueueJob } from './queue.ts';
 import { DEFAULT_SETTINGS, type FleetSettings } from './settings.ts';
+import type { Ticket } from './tickets.ts';
 
 /**
  * What the Fleet Office page shows (#35): the queue, each applier and its job, the owner's
@@ -64,6 +65,7 @@ export interface OfficeSnapshot {
   events: OfficeEvent[];
   /** The fleet switches (#54), for the Office's Switches panel (#55). */
   settings: FleetSettings;
+  tickets: Ticket[];
 }
 
 /** Ticker lines for a change of switches: "Switched off: LinkedIn Easy Apply". */
@@ -188,6 +190,19 @@ export function jobEvents(j: QueueJob): OfficeEvent[] {
   return out;
 }
 
+/** A navigation ticket is named by why the Run stopped (run/types.ts › StopReason). */
+const STOP_LABELS: Record<string, string> = { noProgress: 'Next didn’t change the page', noButton: 'No Next button found', validationErrors: 'The site showed errors after Next' };
+const OUTCOME_WORDS: Record<string, string> = { fixed: 'Fixed', answered: 'Answered with an agent answer for you to approve', cantFix: 'Can’t fix', needsYou: 'Needs you' };
+
+/** The Fixer's resolution of a ticket, as a ticker line (#32). */
+export function ticketEvents(t: Ticket): OfficeEvent[] {
+  const r = t.resolution;
+  if (!r) return [];
+  const tone = r.outcome === 'fixed' || r.outcome === 'answered' ? 'ok' : 'warn';
+  const label = STOP_LABELS[t.label] ?? t.label;
+  return [{ at: r.at, who: 'Fixer', text: `${OUTCOME_WORDS[r.outcome] ?? r.outcome}: “${label}” on ${t.ats}`, tone }];
+}
+
 export function officeSnapshot(o: {
   jobs: QueueJob[];
   runs: Map<string, { run: RunState; fields: unknown[] }>;
@@ -199,6 +214,8 @@ export function officeSnapshot(o: {
   /** Job id → when its latest screenshot came in. */
   screens?: Map<string, string>;
   settings?: FleetSettings;
+  /** The Fixer's latest tickets (#32), newest first. */
+  tickets?: Ticket[];
   /** Lines that come from the bridge rather than a job (switch changes). */
   extraEvents?: OfficeEvent[];
   now: number;
@@ -232,7 +249,8 @@ export function officeSnapshot(o: {
     ready: o.jobs.filter((j) => j.status === 'ready').sort(newest).map(view),
     needs: o.jobs.filter((j) => j.status === 'needsYou').sort(newest).map(view),
     stuck: o.jobs.filter((j) => j.status === 'stuck').sort(newest).slice(0, 12).map(view),
-    events: [...o.jobs.flatMap(jobEvents), ...(o.extraEvents ?? [])].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 30),
+    events: [...o.jobs.flatMap(jobEvents), ...(o.tickets ?? []).flatMap(ticketEvents), ...(o.extraEvents ?? [])].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 30),
     settings: o.settings ?? DEFAULT_SETTINGS,
+    tickets: o.tickets ?? [],
   };
 }

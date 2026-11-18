@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { RunState, StopReason } from '../../extension/src/run/types.ts';
 import { type OfficeEvent, officeSnapshot, switchEvents } from './office.ts';
+import { groupTickets, OUTCOMES, type Outcome, readIncidentFiles, readResolutions, type Ticket, writeResolutions } from './tickets.ts';
 import { DEFAULT_SETTINGS, type FleetSettings, loadSettings, mergeSettings, saveSettings, switchedOff } from './settings.ts';
 import { JOB_STATUSES, type JobStatus, type QueueStore } from './queue.ts';
 
@@ -48,7 +49,9 @@ export type Command =
   | { id: string; type: 'answer'; jobId: string; fieldId: string; frameId?: number; answer: unknown; save?: unknown; at: number }
   | { id: string; type: 'stopAll'; at: number }
   /** Bring the job's tab and window to the front (the ready list's "go to tab", #29). */
-  | { id: string; type: 'focus'; jobId: string; at: number };
+  | { id: string; type: 'focus'; jobId: string; at: number }
+  /** The Fixer rebuilt the fleet build: reload it (only "EzAutoApply (fleet)" obeys; #32). */
+  | { id: string; type: 'reload'; at: number };
 
 /** A command before it gets its id and time (Omit over each member of the union). */
 type NewCommand = Command extends infer C ? (C extends Command ? Omit<C, 'id' | 'at'> : never) : never;
@@ -99,6 +102,10 @@ export function createBridge(o: BridgeOptions) {
    * only with the token.
    */
   const screens = new Map<string, { image: Buffer; type: string; at: string }>();
+  /** The Fixer's tickets (#32), rebuilt from the incident files after any write. */
+  const ticketsFile = join(o.incidentsDir, 'tickets.json');
+  let ticketsCache: Ticket[] | null = null;
+  const tickets = () => (ticketsCache ??= groupTickets(readIncidentFiles(o.incidentsDir), readResolutions(ticketsFile)));
 
   const queueCommand = (c: NewCommand): Command => {
     const cmd = { ...c, id: randomUUID(), at: now() } as Command;
@@ -230,6 +237,7 @@ export function createBridge(o: BridgeOptions) {
       writeFileSync(file, JSON.stringify({ ...b, id, receivedAt: at.toISOString() }, null, 2));
       const day = at.toISOString().slice(0, 10);
       incidentsByDay.set(day, (incidentsByDay.get(day) ?? 0) + 1);
+      ticketsCache = null;
       return [201, { id, file }];
     }
     if (m === 'GET' && p === '/ready') {
@@ -247,6 +255,33 @@ export function createBridge(o: BridgeOptions) {
       if (!o.queue.get(jobId)) throw new HttpError(404, 'No such job');
       return [202, { commandId: queueCommand({ type: 'focus', jobId }).id }];
     }
+    // ---- the Fixer (#32) ----
+    if (m === 'GET' && p === '/tickets') {
+      const open = url.searchParams.get('open') === '1';
+      return [200, tickets().filter((t) => !open || t.open)];
+    }
+    hit = /^\/tickets\/(t-[0-9a-f]{10})$/.exec(p);
+    if (m === 'GET' && hit) {
+      const t = tickets().find((x) => x.key === hit![1]);
+      if (!t) throw new HttpError(404, 'No such ticket');
+      const ids = new Set(t.incidents);
+      return [200, { ...t, details: readIncidentFiles(o.incidentsDir).filter((i) => ids.has(i.id)) }];
+    }
+    hit = /^\/tickets\/(t-[0-9a-f]{10})\/resolution$/.exec(p);
+    if (m === 'POST' && hit) {
+      const key = hit[1];
+      if (!tickets().some((x) => x.key === key)) throw new HttpError(404, 'No such ticket');
+      const b = await body(req);
+      const outcome = str(b.outcome, 'outcome') as Outcome;
+      if (!OUTCOMES.includes(outcome)) throw new HttpError(400, `outcome must be one of ${OUTCOMES.join(', ')}`);
+      const all = readResolutions(ticketsFile);
+      all[key] = { outcome, ...(typeof b.note === 'string' && b.note && { note: b.note.slice(0, 2000) }), at: new Date(now()).toISOString() };
+      writeResolutions(ticketsFile, all);
+      ticketsCache = null;
+      return [200, tickets().find((x) => x.key === key)];
+    }
+    if (m === 'POST' && p === '/fleet/reload') return [202, { commandId: queueCommand({ type: 'reload' }).id }];
+
     // The fleet switches (#54): every agent reads them here; PUT takes a partial update.
     if (m === 'GET' && p === '/settings') return [200, settings];
     if (m === 'PUT' && p === '/settings') {
@@ -321,6 +356,7 @@ export function createBridge(o: BridgeOptions) {
       incidentsToday: incidentsByDay.get(new Date(now()).toISOString().slice(0, 10)) ?? 0,
       screens: new Map([...screens].map(([id, s]) => [id, s.at])),
       settings,
+      tickets: tickets().slice(0, 12),
       extraEvents: switchLog,
       now: now(),
     });

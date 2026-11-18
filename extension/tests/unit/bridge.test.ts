@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BridgeClient, bridgeFields, findJobTab, screenMoment } from '../../src/bridge/client';
+import { BridgeClient, bridgeFields, findJobTab, obeysReload, screenMoment } from '../../src/bridge/client';
 import type { FieldReport } from '../../src/fill/types';
 import { newRun } from '../../src/run/loop';
 
@@ -29,6 +29,11 @@ describe('the local bridge client (#17)', () => {
     expect(sent.fields).toEqual([{ id: 'f1', frameId: 0, label: 'Phone', kind: 'text', status: 'filled', required: true, options: [], key: 'phone', source: 'rule' }]);
     expect(bridgeFields([{ ...field, status: 'needs', source: 'none' }])[0]).not.toHaveProperty('source');
     expect(JSON.stringify(sent)).not.toContain('555 0100');
+  });
+
+  it('only the fleet build reloads for the Fixer (#32)', () => {
+    expect(obeysReload('EzAutoApply (fleet)')).toBe(true);
+    expect(obeysReload('EzAutoApply')).toBe(false);
   });
 
   it('sends one screenshot per page and one when the Run stops (#37)', () => {

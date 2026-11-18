@@ -92,6 +92,25 @@ test('incidents land in the day\'s folder, and an id can\'t climb out of it', as
   assert.equal(JSON.parse(readFileSync(r.json.file, 'utf8')).field.label, 'Mobile #');
 });
 
+test('the Fixer (#32): incidents become tickets, a resolution closes one, and the fleet build can be told to reload', async () => {
+  await call('POST', '/incidents', { id: 'tk1', at: '2026-11-18T01:00:00.000Z', ats: 'lever', kind: 'unmatched', jobId: 'j9', field: { label: 'Notice period' } });
+  await call('POST', '/incidents', { id: 'tk2', at: '2026-11-18T01:05:00.000Z', ats: 'lever', kind: 'unmatched', jobId: 'j10', field: { label: 'Notice period?' } });
+  const open = (await call('GET', '/tickets?open=1')).json as { key: string; label: string; count: number }[];
+  const t = open.find((x) => x.label === 'Notice period');
+  assert.equal(t?.count, 2);
+  const one = await call('GET', `/tickets/${t!.key}`);
+  assert.deepEqual(one.json.details.map((d: { id: string }) => d.id).sort(), ['tk1', 'tk2']);
+
+  assert.equal((await call('POST', `/tickets/${t!.key}/resolution`, { outcome: 'maybe' })).status, 400);
+  assert.equal((await call('POST', '/tickets/t-0000000000/resolution', { outcome: 'fixed' })).status, 404);
+  const done = await call('POST', `/tickets/${t!.key}/resolution`, { outcome: 'answered', note: 'Saved an agent answer for review' });
+  assert.deepEqual([done.status, done.json.open, done.json.resolution.outcome], [200, false, 'answered']);
+  assert.equal(((await call('GET', '/tickets?open=1')).json as { key: string }[]).some((x) => x.key === t!.key), false);
+
+  assert.equal((await call('POST', '/fleet/reload')).status, 202);
+  assert.deepEqual((await call('GET', '/ext/commands')).json.map((c: { type: string }) => c.type), ['reload']);
+});
+
 test('Stop all releases every lease, drops waiting commands and refuses new work until resumed', async () => {
   queue.add([job('j3')]);
   await call('GET', '/queue/next?worker=w2');

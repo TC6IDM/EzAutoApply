@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { RunState } from '../../extension/src/run/types.ts';
-import { jobEvents, officeJob, officeSnapshot, switchEvents } from '../src/office.ts';
+import { jobEvents, officeJob, officeSnapshot, switchEvents, ticketEvents } from '../src/office.ts';
 import { DEFAULT_SETTINGS, mergeSettings } from '../src/settings.ts';
 import type { QueueJob } from '../src/queue.ts';
 
@@ -98,4 +98,11 @@ test('the snapshot: desks by first-seen worker, the queue in claim order, the in
   assert.equal(snap.submittedToday, 1);
   assert.equal(snap.incidentsToday, 3);
   assert.ok(snap.events.length > 0 && snap.events.every((e, i, a) => i === 0 || a[i - 1].at >= e.at), 'newest first');
+});
+
+test('a ticket the Fixer resolved goes on the ticker; an unresolved one doesn\'t (#32)', () => {
+  const base = { key: 't-0123456789', ats: 'lever', kind: 'unmatched', label: 'Notice period', count: 2, first: '2026-11-18T01:00:00Z', last: '2026-11-18T01:05:00Z', incidents: ['a', 'b'], jobIds: ['j1'], open: true, resolution: null };
+  assert.deepEqual(ticketEvents(base), []);
+  const [e] = ticketEvents({ ...base, open: false, resolution: { outcome: 'cantFix', at: '2026-11-18T02:00:00Z' } });
+  assert.deepEqual([e.who, e.tone, e.text.startsWith('Can’t fix: “Notice period” on lever')], ['Fixer', 'warn', true]);
 });

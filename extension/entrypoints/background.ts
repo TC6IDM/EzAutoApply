@@ -1,6 +1,6 @@
 import { type Browser, browser } from 'wxt/browser';
 import { defineBackground } from 'wxt/utils/define-background';
-import { type BridgeCommand, BridgeClient, bridgeFields, findJobTab, screenMoment } from '../src/bridge/client';
+import { type BridgeCommand, BridgeClient, bridgeFields, findJobTab, obeysReload, screenMoment } from '../src/bridge/client';
 import { SystemOneClient } from '../src/classifier/systemone';
 import { uploadFileName } from '../src/core/documents';
 import { isAccountSite, isExternalRedirect } from '../src/core/sites';
@@ -279,6 +279,11 @@ async function checkSubmitted(tabId: number): Promise<void> {
 }
 
 async function onBridgeCommand(client: BridgeClient, cmd: BridgeCommand): Promise<void> {
+  if (cmd.type === 'reload') {
+    // The Fixer's rebuilt fleet build (#32). Running Runs resume after the reload (resumeRuns).
+    if (obeysReload(browser.runtime.getManifest().name)) setTimeout(() => browser.runtime.reload(), 250);
+    return;
+  }
   if (cmd.type === 'stopAll') {
     for (const tabId of runs.keys()) cancelled.add(tabId);
     return;

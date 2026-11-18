@@ -32,7 +32,9 @@ Every call except `GET /health` and the Office page needs `Authorization: Bearer
 - Stop all and Resume.
 - **Switches** (#55): every fleet switch, grouped, each saying what turning it off does. Toggling one saves it through `PUT /settings`. A desk whose part is off shows "Switched off", and the ticker says who switched what.
 
-Scout, Fixer and Outreach show as not running until their agents exist.
+- **The Fixer's desk** (#32): its open tickets (incidents grouped by site, kind and question, with how many times each happened) and what it resolved lately. Each resolution also goes on the ticker. The desk counts as at work while the Fixer resolved something in the last hour.
+
+Scout and Outreach show as not running until their agents exist.
 
 Each applier's window and each ready job also shows the latest screenshot of the job's tab (#37). A screenshot shows your answers. So the bridge keeps it in memory only: the latest per job, for at most 16 jobs. It never writes one to disk or puts one in an incident, and it serves them only with the token.
 
@@ -54,6 +56,9 @@ Without WebGL (or offline, since three.js comes from a CDN) the office falls bac
 | `GET /tabs/:jobId/status` | the latest `RunState` the extension reported |
 | `POST /answers {jobId, fieldId, frameId?, answer, save?}` | ask the extension to fill a field. With `save: {scope, sourceRefs?, createdBy?}` (scope `global` or a hostname) the answer is also saved as an agent's, which fills for review until the owner approves it in Answers (#21). It never replaces an answer the owner wrote. |
 | `POST /incidents {…}` | write an incident to `incidents/<date>/<id>.json` |
+| `GET /tickets[?open=1]` · `GET /tickets/:key` | for the Fixer (#32, `.claude/skills/ezaa-fixer`): incidents grouped into tickets by `(ats, kind, normalized label)`, newest first; one ticket with `details`, its incident files |
+| `POST /tickets/:key/resolution {outcome, note?}` | `outcome`: `fixed`, `answered`, `cantFix` or `needsYou`. Kept in `incidents/tickets.json`. An incident filed after it opens the ticket again (the fix didn't hold). |
+| `POST /fleet/reload` | tell the extension to reload after the Fixer rebuilt the fleet build (`npm run build:fleet`). Only the fleet's copy obeys (`obeysReload`); running Runs resume after it. |
 | `GET /ready` | jobs waiting for your Submit, each with `agentAnswered` (the labels of the fields an agent answered, to check first) |
 | `POST /ready/:id/focus` | bring that job's tab and window to the front ("go to tab") |
 | `POST /queue/:id/status {status: "submitted"}` | mark a job submitted by hand; the extension also does it when the tab shows the site's confirmation page after your Submit |

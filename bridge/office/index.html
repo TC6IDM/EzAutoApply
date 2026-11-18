@@ -354,6 +354,11 @@ table.src tr.skip td { color: var(--ink-3); }
   const APPLIERS = [A.w1, A.w2, A.w3, A.w4];
   const NOT_YET = 'Not running yet. It joins when its agent is built.';
   for (const a of [A.scout, A.fixer, A.outreach]) a.now = NOT_YET;
+  const OUTCOME_WORDS = { fixed: 'Fixed', answered: 'Answered', cantFix: 'Can’t fix', needsYou: 'Needs you' };
+  const KIND_WORDS = { unmatched: 'no answer', rejected: 'the site refused it', widgetFailed: 'the widget didn’t take it', navigation: 'the page wouldn’t move' };
+  // A navigation ticket is named by why the Run stopped (run/types.ts › StopReason).
+  const STOP_LABELS = { noProgress: 'Next didn’t change the page', noButton: 'No Next button found', validationErrors: 'The site showed errors after Next' };
+  const ticketLabel = (t) => STOP_LABELS[t.label] ?? t.label;
 
   const hhmmss = (iso) => { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }); };
   const STATUS_WORDS = { needsYou: 'Needs you', stuck: 'Stuck' };
@@ -384,7 +389,16 @@ table.src tr.skip td { color: var(--ink-3); }
     S.counts = snap.counts;
     S.maxReadyOpen = snap.maxReadyOpen;
     S.settings = snap.settings;
-    S.events = snap.events.map((e) => ({ t: hhmmss(e.at), who: deskName(e.who) || e.who, text: e.text, tone: e.tone }));
+    // The Fixer (#32): its open tickets and what it did lately. It counts as at work while it
+    // resolved something in the last hour (it runs as a Claude Code session, not a worker).
+    const tickets = snap.tickets ?? [];
+    S.tickets = tickets.filter((t) => t.open);
+    const resolved = tickets.filter((t) => t.resolution).sort((a, b) => b.resolution.at.localeCompare(a.resolution.at));
+    S.fixes = resolved.filter((t) => t.resolution.outcome === 'fixed' && t.resolution.at.slice(0, 10) === snap.at.slice(0, 10)).length;
+    A.fixer.recent = resolved.slice(0, 6);
+    A.fixer.live = resolved.some((t) => Date.parse(snap.at) - Date.parse(t.resolution.at) < 3600e3);
+    A.fixer.now = A.fixer.live ? `Last: ${OUTCOME_WORDS[resolved[0].resolution.outcome]}, ${ticketLabel(resolved[0])}` : 'Not running. Start it with /ezaa-fixer in Claude Code.';
+    S.events =snap.events.map((e) => ({ t: hhmmss(e.at), who: deskName(e.who) || e.who, text: e.text, tone: e.tone }));
 
     APPLIERS.forEach((a, i) => {
       const w = snap.workers[i];
@@ -509,6 +523,10 @@ table.src tr.skip td { color: var(--ink-3); }
     }
     const a = A[id];
     if (S.settings && S.settings.parts[PART_OF[a.kind]] === false) return { label: 'Switched off', tone: 'idle' };
+    if (a.kind === 'fixer') {
+      const n = S.tickets.length;
+      return a.live ? { label: n ? `${n} open` : 'All fixed', tone: n ? 'run' : 'ok' } : { label: n ? `${n} waiting` : 'Not running', tone: n ? 'warn' : 'idle' };
+    }
     if (a.kind === 'applier' && (a.phase === 'off' || (S.mode === 'stopped'))) return { label: 'Empty desk', tone: 'idle' };
     if (a.kind !== 'applier') return { label: 'Not running', tone: 'idle' };
     if (S.mode === 'stopped') return { label: 'Off', tone: 'idle' };
@@ -587,8 +605,16 @@ table.src tr.skip td { color: var(--ink-3); }
     return `<div class="now-row">${pill(statusOf(a.id))}<p class="now">${esc(NOT_YET)}</p></div><div class="callout info"><strong>Not built yet</strong><p>${what}</p></div>${more}`;
   }
   function fixerHTML(f) {
-    return notYetHTML(f, 'The Fixer will pick up incidents: fields the extension couldn’t fill, written to ~/.ezautoapply/incidents. Fixes load into the fleet’s copy of the extension only after the tests pass; your own copy gets them after you approve the commit.',
-      `<div class="sect"><div class="sect-h"><span>Incidents today</span><span class="num">${S.incidents}</span></div><p class="empty">${S.incidents ? 'Waiting in ~/.ezautoapply/incidents for the Fixer.' : 'None yet.'}</p></div>`);
+    let h = `<div class="now-row">${pill(statusOf(f.id))}<p class="now">${esc(f.now)}</p></div>`;
+    if (!f.live) h += `<div class="callout info"><strong>Runs in Claude Code</strong><p>Start it with /ezaa-fixer. It answers a missing record with an agent answer you approve, and fixes code on its own branch with a failing test first. The fleet’s copy of the extension reloads only after the tests pass; your own copy gets a fix after you approve the commit.</p></div>`;
+    const open = S.tickets.length
+      ? `<ul class="rows">${S.tickets.slice(0, 8).map((t) => `<li><span><b>${esc(ticketLabel(t))}</b></span><span class="mono">${t.count}×</span><span class="sub">${meta(t.ats, KIND_WORDS[t.kind] ?? t.kind, t.resolution ? `came back after “${OUTCOME_WORDS[t.resolution.outcome]}”` : '', `last ${hhmmss(t.last)}`)}</span></li>`).join('')}</ul>`
+      : '<p class="empty">No open tickets. Fields the extension couldn’t fill show up here, grouped by site and question.</p>';
+    h += `<div class="sect"><div class="sect-h"><span>Open tickets</span><span class="num">${S.tickets.length} · ${S.incidents} incidents today</span></div>${open}</div>`;
+    if (f.recent.length) {
+      h += `<div class="sect"><div class="sect-h"><span>Lately</span><span class="num">${S.fixes} fixed today</span></div><ul class="rows">${f.recent.map((t) => `<li><span><b>${esc(OUTCOME_WORDS[t.resolution.outcome])}</b> · ${esc(ticketLabel(t))}</span><span class="mono">${hhmmss(t.resolution.at)}</span>${t.resolution.note ? `<span class="sub">${esc(t.resolution.note)}</span>` : ''}</li>`).join('')}</ul></div>`;
+    }
+    return h;
   }
   function scoutHTML(a) {
     const rows = S.queue.length
@@ -737,7 +763,7 @@ table.src tr.skip td { color: var(--ink-3); }
       const st = statusOf(id);
       const model = id === 'you' ? 'you' : A[id].model;
       const off = id !== 'you' && (A[id].kind === 'applier' ? A[id].phase === 'off' || S.mode === 'stopped' : true);
-      const line = id === 'you' ? `${S.ready.length} ready · ${S.needs.length} need you` : A[id].kind !== 'applier' ? 'Not built yet' : off ? 'Empty desk' : A[id].now || st.label;
+      const line = id === 'you' ? `${S.ready.length} ready · ${S.needs.length} need you` : A[id].kind === 'fixer' ? A[id].now : A[id].kind !== 'applier' ? 'Not built yet' : off ? 'Empty desk' : A[id].now || st.label;
       return `<li><button type="button" class="r-item ${wins.has(id) ? 'open' : ''} ${off ? 'off' : ''}" data-open="${id}" style="--c:${MODEL[model].c}">
         <span class="dot"></span><span><span class="nm">${esc(Fleet.name(id))}</span> <span class="md">${esc(MODEL[model].label)}</span></span>${pill(st)}<span class="ln">${esc(line)}</span></button></li>`;
     }).join(''));
@@ -1083,7 +1109,8 @@ function drawFixer(c, f) {
   header(c, 'fixer', t ? '#' + t.id : 'idle', SC.opus);
   if (S.mode === 'stopped') return;
   if (!t) {
-    c.font = '15px ' + MONO; c.fillStyle = SC.ok; c.fillText('✓ no open tickets', 14, 80);
+    const n = S.tickets.length;
+    c.font = '15px ' + MONO; c.fillStyle = n ? SC.warn : SC.ok; c.fillText(n ? `${n} open ticket${n === 1 ? '' : 's'}` : '✓ no open tickets', 14, 80);
     c.fillStyle = SC.dim; c.fillText(`${S.fixes} fixed today`, 14, 106);
     return;
   }

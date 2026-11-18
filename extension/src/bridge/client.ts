@@ -15,7 +15,15 @@ export type BridgeCommand =
   | { id: string; type: 'answer'; jobId: string; fieldId: string; frameId?: number; answer: unknown; save?: unknown }
   | { id: string; type: 'stopAll' }
   /** The ready list's "go to tab" (#29): bring the job's tab and window to the front. */
-  | { id: string; type: 'focus'; jobId: string };
+  | { id: string; type: 'focus'; jobId: string }
+  /** The Fixer rebuilt the fleet build (#32): reload it so the fix takes effect. */
+  | { id: string; type: 'reload' };
+
+/**
+ * Only the fleet's own copy reloads for the Fixer (#32, #33): the owner's copy keeps running
+ * what the owner approved, whatever the bridge says.
+ */
+export const obeysReload = (manifestName: string): boolean => manifestName === 'EzAutoApply (fleet)';
 
 /** A field as the bridge sees it: what an agent needs to answer it, never its value. */
 export interface BridgeField {
