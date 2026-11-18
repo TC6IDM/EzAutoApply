@@ -357,3 +357,40 @@ export function mountWorkdaySelect(
   });
   return { chosen: () => (button.textContent === 'Select One' ? '' : button.textContent), list, button };
 }
+
+/**
+ * Pages Run to Submit must stop at (#11), shaped like the real ones, plus look-alikes that
+ * must not stop it (the invisible reCAPTCHA v3 badge on most Greenhouse forms).
+ */
+export const BLOCKER_PAGES = {
+  recaptchaChallenge: `
+    <form><input name="email" value="sam@example.com">
+    <div class="g-recaptcha" data-sitekey="x"><iframe title="reCAPTCHA" src="https://www.google.com/recaptcha/api2/anchor?k=x&size=normal"></iframe></div>
+    <button type="submit">Submit application</button></form>`,
+  invisibleRecaptcha: `
+    <form id="application_form"><input id="first_name" value="Sam">
+    <div class="grecaptcha-badge" data-style="bottomright"><iframe title="reCAPTCHA" src="https://www.google.com/recaptcha/api2/anchor?k=x&size=invisible"></iframe></div>
+    <button type="submit">Submit application</button></form>`,
+  hcaptcha: `<div class="h-captcha" data-sitekey="x"><iframe src="https://newassets.hcaptcha.com/captcha/v1/x/static/hcaptcha.html#frame=checkbox"></iframe></div>`,
+  cloudflare: `<h1>Verify you are human</h1><iframe src="https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/turnstile/if/ov2/av0/rcv0/0/x"></iframe>`,
+  workdayEmailCode: `
+    <h2>Verify Your Account</h2>
+    <p>We have sent you an email to verify your email address. Check your inbox for the link.</p>`,
+  otpBox: `<form><label for="code">Verification code</label><input id="code" inputmode="numeric"><button>Verify</button></form>`,
+  otpAutocomplete: `<form><input autocomplete="one-time-code" name="c"><button>Continue</button></form>`,
+  hackerrank: `<h2>Next step: online assessment</h2><p>Please complete the <a href="https://www.hackerrank.com/test/abc123">coding test</a> within 7 days.</p>`,
+  codilityFrame: `<iframe src="https://app.codility.com/c/run/xyz"></iframe>`,
+  workdaySignIn: `
+    <div><label for="email">Email Address</label><input id="email" data-automation-id="email" type="text">
+    <label for="password">Password</label><input id="password" data-automation-id="password" type="password">
+    <button data-automation-id="signInSubmitButton">Sign In</button>
+    <button data-automation-id="createAccountLink">Create Account</button></div>`,
+  workdayCreateAccount: `
+    <div><label for="email">Email Address</label><input id="email" type="text">
+    <label for="password">Password</label><input id="password" type="password">
+    <label for="verifyPassword">Verify New Password</label><input id="verifyPassword" type="password">
+    <button data-automation-id="createAccountSubmitButton">Create Account</button></div>`,
+  jobPostingMentioningTests: `
+    <h1>Junior Developer</h1><p>Our process: a short HackerRank exercise, then two interviews. We never ask for a verification code by phone.</p>
+    <a href="/apply" class="btn">Apply</a>`,
+} as const;
