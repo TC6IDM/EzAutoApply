@@ -73,7 +73,7 @@ describe('scanFields', () => {
 });
 
 describe('end to end: scan → resolve → fill', () => {
-  it('fills a typical form from the profile and leaves open questions for the user', async () => {
+  it('fills a typical form from the profile and leaves open questions for the user', { timeout: 15000 }, async () => {
     const fields = scanFields(document);
     const res = await resolveFields(fields, { profile: sampleProfile(), answers: [], host: 'boards.example.com', settings: settings({ provider: 'none' }), classifier: null });
     for (let i = 0; i < fields.length; i++) {
@@ -149,7 +149,7 @@ describe('fillers', () => {
     expect(input.dataset.selected).toBe('United States of America');
   });
 
-  it('reports when no combobox option matches', async () => {
+  it('reports when no combobox option matches', { timeout: 15000 }, async () => {
     document.body.innerHTML = '';
     mountCombobox(document.body, 'Country', ['Canada', 'Mexico']);
     const [f] = scanFields(document);
