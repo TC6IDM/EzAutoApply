@@ -405,17 +405,23 @@ table.src tr.skip td { color: var(--ink-3); }
     S.counts = snap.counts;
     S.maxReadyOpen = snap.maxReadyOpen;
     S.fleet = snap.fleet || S.fleet;
-    A.scout.now = S.fleet.scouting ? `Finding, ranking and queuing jobs${S.fleet.waiting ? `; ${S.fleet.waiting} applier${S.fleet.waiting === 1 ? '' : 's'} start with the first` : ''}` : 'Runs when you press Start with an empty queue.';
+    const scoutLast = S.fleet.scouting ? launchedAs('scout')?.activity.at(-1)?.text : null;
+    A.scout.now = scoutLast ? scoutLast : S.fleet.scouting ? `Finding, ranking and queuing jobs${S.fleet.waiting ? `; ${S.fleet.waiting} applier${S.fleet.waiting === 1 ? '' : 's'} start with the first` : ''}` : 'Runs when you press Start with an empty queue.';
     S.settings = snap.settings;
-    // The Fixer (#32): its open tickets and what it did lately. It counts as at work while it
-    // resolved something in the last hour (it runs as a Claude Code session, not a worker).
+    // The Fixer (#32): its open tickets and what it did lately. The bridge starts it when a ticket
+    // opens (#69); it also counts as at work while it resolved something in the last hour.
     const tickets = snap.tickets ?? [];
     S.tickets = tickets.filter((t) => t.open);
     const resolved = tickets.filter((t) => t.resolution).sort((a, b) => b.resolution.at.localeCompare(a.resolution.at));
     S.fixes = resolved.filter((t) => t.resolution.outcome === 'fixed' && t.resolution.at.slice(0, 10) === snap.at.slice(0, 10)).length;
     A.fixer.recent = resolved.slice(0, 6);
-    A.fixer.live = resolved.some((t) => Date.parse(snap.at) - Date.parse(t.resolution.at) < 3600e3);
-    A.fixer.now = A.fixer.live ? `Last: ${OUTCOME_WORDS[resolved[0].resolution.outcome]}, ${ticketLabel(resolved[0])}` : 'Not running. Start it with /ezaa-fixer in Claude Code.';
+    const fixing = !!S.fleet.fixing;
+    A.fixer.live = fixing || resolved.some((t) => Date.parse(snap.at) - Date.parse(t.resolution.at) < 3600e3);
+    const fixerLast = fixing ? launchedAs('fixer')?.activity.at(-1)?.text : null;
+    A.fixer.now = fixerLast ? fixerLast
+      : fixing ? 'Starting on the open tickets'
+      : resolved.length && A.fixer.live ? `Last: ${OUTCOME_WORDS[resolved[0].resolution.outcome]}, ${ticketLabel(resolved[0])}`
+      : S.tickets.length ? 'Starts by itself in a moment' : 'Starts by itself when a ticket opens';
     S.sprint = snap.sprint ?? null;
     // The recruiter page (#41): people with messages to send (S.drafts), then those written to.
     S.recruiters = snap.recruiters ?? [];
@@ -575,7 +581,8 @@ table.src tr.skip td { color: var(--ink-3); }
     if (S.settings && S.settings.parts[PART_OF[a.kind]] === false) return { label: 'Switched off', tone: 'idle' };
     if (a.kind === 'fixer') {
       const n = S.tickets.length;
-      return a.live ? { label: n ? `${n} open` : 'All fixed', tone: n ? 'run' : 'ok' } : { label: n ? `${n} waiting` : 'Not running', tone: n ? 'warn' : 'idle' };
+      if (S.fleet.fixing) return { label: `Fixing · ${n} open`, tone: 'run' };
+      return a.live ? { label: n ? `${n} open` : 'All fixed', tone: n ? 'warn' : 'ok' } : { label: n ? `${n} waiting` : 'Idle', tone: n ? 'warn' : 'idle' };
     }
     if (a.kind === 'outreach' && S.drafts.length) return { label: `${S.drafts.length} to send`, tone: 'ok' };
     if (a.kind === 'applier' && (a.phase === 'off' || (S.mode === 'stopped'))) return { label: 'Empty desk', tone: 'idle' };
@@ -597,6 +604,18 @@ table.src tr.skip td { color: var(--ink-3); }
   // ---------- Rendering helpers ----------
   function setHTML(el, html) { if (el._h !== html) { el.innerHTML = html; el._h = html; } }
   function pill(st) { return `<span class="pill t-${st.tone}">${esc(st.label)}</span>`; }
+  /** The agent the Start button launched under this name (#64): running first, else its last run. */
+  const launchedAs = (worker) => S.fleet.appliers.find((x) => x.worker === worker) || null;
+  /** What a launched agent is doing, step by step, newest first (#64). */
+  function stepsHTML(worker, n = 18) {
+    const run = launchedAs(worker);
+    if (!run) return '';
+    const lines = run.activity.slice(-n).reverse();
+    const head = run.status === 'running' ? `running since ${hhmmss(run.startedAt)}` : `ended ${hhmmss(run.endedAt)}`;
+    return `<div class="sect"><div class="sect-h"><span>What it’s doing</span><span class="num">${head}</span></div><ol class="log">${
+      lines.map((l) => `<li class="t-${l.tone || 'none'}"><time>${hhmmss(l.at)}</time><span>${esc(l.text)}</span></li>`).join('')
+      || '<li><time></time><span>Starting up…</span></li>'}</ol></div>`;
+  }
   function logHTML(a, n = 8) {
     return `<div class="sect"><div class="sect-h"><span>Activity</span></div><ol class="log">${a.log.slice(0, n).map((l) => `<li class="t-${l.tone || 'none'}"><time>${l.t}</time><span>${esc(l.text)}</span></li>`).join('') || '<li><time></time><span>Nothing yet.</span></li>'}</ol></div>`;
   }
@@ -648,6 +667,7 @@ table.src tr.skip td { color: var(--ink-3); }
         <div class="srcbar">${SRC.map((s) => (j.src[s.k] ? `<i style="--w:${(j.src[s.k] / Math.max(tot, 1)) * 100}%;--c:${s.c}"></i>` : '')).join('')}</div>
         <ul class="legend">${SRC.map((s) => `<li style="--c:${s.c}"><span></span>${s.label} <b>${j.src[s.k]}</b></li>`).join('')}</ul></div>`;
     }
+    h += stepsHTML(a.worker || a.id);
     h += logHTML(a);
     if (j) h += `<div class="win-actions"><button type="button" class="btn small" data-act="goJob" data-arg="${esc(j.id)}">Show its tab</button></div>`;
     return h;
@@ -658,7 +678,8 @@ table.src tr.skip td { color: var(--ink-3); }
   }
   function fixerHTML(f) {
     let h = `<div class="now-row">${pill(statusOf(f.id))}<p class="now">${esc(f.now)}</p></div>`;
-    if (!f.live) h += `<div class="callout info"><strong>Runs in Claude Code</strong><p>Start it with /ezaa-fixer. It answers a missing record with an agent answer you approve, and fixes code on its own branch with a failing test first. The fleet’s copy of the extension reloads only after the tests pass; your own copy gets a fix after you approve the commit.</p></div>`;
+    if (!f.live) h += `<div class="callout info"><strong>Starts by itself</strong><p>A little after a ticket opens, the bridge starts the Fixer in its own worktree (EzAutoApply-fix). It answers a missing record with an agent answer you approve, and fixes code on its own branch with a failing test first. It never commits: the fleet’s copy of the extension reloads only after the tests pass; your own copy gets a fix after you approve the commit.</p></div>`;
+    h += stepsHTML('fixer');
     const open = S.tickets.length
       ? `<ul class="rows">${S.tickets.slice(0, 8).map((t) => `<li><span><b>${esc(ticketLabel(t))}</b></span><span class="mono">${t.count}×</span><span class="sub">${meta(t.ats, KIND_WORDS[t.kind] ?? t.kind, t.resolution ? `came back after “${OUTCOME_WORDS[t.resolution.outcome]}”` : '', `last ${hhmmss(t.last)}`)}</span></li>`).join('')}</ul>`
       : '<p class="empty">No open tickets. Fields the extension couldn’t fill show up here, grouped by site and question.</p>';
@@ -673,6 +694,7 @@ table.src tr.skip td { color: var(--ink-3); }
       ? `<ul class="rows">${S.queue.slice(0, 8).map((j) => `<li><span><b>${esc(j.company)}</b> · ${esc(j.role)}</span><span class="mono">${j.fit === '–' ? '' : 'fit ' + j.fit}</span><span class="sub">${meta(j.ats, `Tier ${j.tier}`, j.doc)}</span></li>`).join('')}</ul>`
       : '<p class="empty">The queue is empty. Press Start: the Scout fills it first.</p>';
     return `<div class="now-row">${pill(statusOf(a.id))}<p class="now">${esc(a.now)}</p></div>
+      ${stepsHTML('scout')}
       <div class="callout info"><strong>Start fills the queue</strong><p>When you press Start and the queue is empty, the bridge runs /scout in ai-job-search: it scrapes the job sources you have switched on, ranks what it finds and queues the good ones. The appliers start with the first queued job. You can still run /rank and /queue yourself.</p></div>
       <div class="sect"><div class="sect-h"><span>Queue</span><span class="num">${S.counts.queued ?? 0} jobs</span></div>${rows}</div>`;
   }

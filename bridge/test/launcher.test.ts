@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
-import { APPLIER_TOOLS, applierArgs, findClaude, Launcher, SCOUT_TOOLS, scoutArgs } from '../src/launcher.ts';
+import { ACTIVITY_KEPT, activityOf, APPLIER_TOOLS, applierArgs, findClaude, FIXER_TOOLS, fixerArgs, type Git, Launcher, SCOUT_TOOLS, scoutArgs } from '../src/launcher.ts';
 import { QueueStore } from '../src/queue.ts';
 import { createBridge } from '../src/server.ts';
 
@@ -37,8 +37,52 @@ test('an applier is a headless Claude Code with Claude in Chrome and only the ap
   assert.equal(args[0], '-p');
   assert.match(args[1], /applier w2 .*apply-runner\/SKILL\.md.*--jobs 3.*Never press Submit/);
   assert.deepEqual(args.slice(2, 5), ['--chrome', '--model', 'haiku']);
-  assert.deepEqual(args.slice(6), APPLIER_TOOLS);
+  assert.deepEqual(toolsOf(args), APPLIER_TOOLS);
+  assert.ok(args.join(' ').includes('--output-format stream-json --verbose'), 'every step streamed, for the Office (#64)');
   assert.ok(!APPLIER_TOOLS.some((t) => t === 'Bash' || t.startsWith('Bash(*') || t === 'Write' || t === 'Edit'), 'no open-ended shell or file writes');
+  assert.ok(![...APPLIER_TOOLS, ...SCOUT_TOOLS].some((t) => t.startsWith('Write(')), 'Claude Code ignores Write(path) rules: Edit(path) only (#64)');
+});
+
+const toolsOf = (args: string[]) => args.slice(args.indexOf('--allowedTools') + 1);
+
+test('what each agent is doing: one short line per step, refusals and the end (#64)', () => {
+  assert.deepEqual(activityOf({ type: 'system', subtype: 'init' }), [{ text: 'Started' }]);
+  assert.deepEqual(activityOf({ type: 'system', subtype: 'hook_started' }), []);
+  const said = activityOf({ type: 'assistant', message: { content: [
+    { type: 'thinking', thinking: 'x' },
+    { type: 'text', text: 'Ranking   the\nnew jobs' },
+    { type: 'tool_use', name: 'WebFetch', input: { url: 'https://www.linkedin.com/jobs/view/123?trk=x' } },
+    { type: 'tool_use', name: 'Bash', input: { command: 'python tools/apply_queue.py plan apply_queue/c.json' } },
+    { type: 'tool_use', name: 'Edit', input: { file_path: 'C:\\Users\\x\\ai-job-search\\apply_queue\\plan.json' } },
+    { type: 'tool_use', name: 'ToolSearch', input: {} },
+    { type: 'tool_use', name: 'mcp__claude-in-chrome__navigate', input: { url: 'https://boards.greenhouse.io/acme/jobs/1' } },
+  ] } }).map((a) => a.text);
+  assert.deepEqual(said, ['Ranking the new jobs', 'Fetched linkedin.com/jobs/view/123', 'Ran: python tools/apply_queue.py plan apply_queue/c.json', 'Wrote ai-job-search/apply_queue/plan.json', 'Opened boards.greenhouse.io/acme/jobs/1']);
+  assert.equal(activityOf({ type: 'assistant', parent_tool_use_id: 't1', message: { content: [{ type: 'tool_use', name: 'Read', input: { file_path: 'a/b/c/d.md' } }] } })[0].text, '↳ Read b/c/d.md', 'a helper’s steps are marked');
+  assert.deepEqual(activityOf({ type: 'user', message: { content: [
+    { type: 'tool_result', is_error: false, content: 'ok' },
+    { type: 'tool_result', is_error: true, content: [{ type: 'text', text: 'Permission to use Bash has been denied.' }] },
+  ] } }), [{ text: 'A step failed or was refused: Permission to use Bash has been denied.', tone: 'warn' }]);
+  assert.equal(activityOf({ type: 'result', subtype: 'success', result: 'Queued 4 jobs.' })[0].text, 'Finished: Queued 4 jobs.');
+  assert.equal(activityOf({ type: 'result', subtype: 'error_max_turns', is_error: true })[0].tone, 'warn');
+  assert.equal(activityOf('not an event').length, 0);
+});
+
+test('the launcher keeps each agent’s latest steps from its stream, and keeps them after it ends', async () => {
+  const { spawn, started } = fakeSpawn();
+  const l = new Launcher({ claude: 'claude.exe', cwd: '.', logDir: mkdtempSync(join(tmpdir(), 'ezaa-act-')), spawn });
+  l.launchScout(5);
+  const out = (started[0].child as unknown as { stdout: PassThrough }).stdout;
+  out.write('{"type":"system","subtype":"init"}\nnot json\n');
+  for (let i = 0; i < ACTIVITY_KEPT + 5; i++) out.write(`${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'WebSearch', input: { query: `q${i}` } }] } })}\n`);
+  await tick();
+  const scout = l.list()[0];
+  assert.equal(scout.activity.length, ACTIVITY_KEPT);
+  assert.equal(scout.activity.at(-1)!.text, `Searched the web: q${ACTIVITY_KEPT + 4}`);
+  started[0].child.emit('exit', 0);
+  await tick();
+  assert.equal(l.list()[0].status, 'ended');
+  assert.equal(l.list()[0].activity.length, ACTIVITY_KEPT);
 });
 
 test('the Start count is how many run at once: 1 to 4, filling the free worker names', async () => {
@@ -128,7 +172,8 @@ test('the bridge: Start refuses what it must, Pause stops the claims, Stop all e
 
 test('the Scout: sonnet running /scout, with only the scrape, rank and queue tools (#62)', () => {
   assert.deepEqual(scoutArgs(8).slice(0, 4), ['-p', '/scout --top 8', '--model', 'sonnet']);
-  assert.deepEqual(scoutArgs(8).slice(5), SCOUT_TOOLS);
+  assert.deepEqual(toolsOf(scoutArgs(8)), SCOUT_TOOLS);
+  assert.ok(SCOUT_TOOLS.includes('Edit(company_research/**)'));
   assert.ok(!SCOUT_TOOLS.some((t) => t === 'Bash' || t === 'Write' || t === 'Edit' || /claude-in-chrome/.test(t)), 'no open shell, no free writes, no browser');
   assert.ok(SCOUT_TOOLS.includes('Bash(python tools/apply_queue.py:*)'));
 });
@@ -184,5 +229,109 @@ test('Start on an empty queue: the Scout fills it, the appliers start with the f
     assert.deepEqual([view.scouting, view.waiting, two.started.length], [false, 0, 1]);
   } finally {
     bridge2.server.close();
+  }
+});
+
+test('the Fixer: Opus running /ezaa-fixer in its worktree, editing only extension/, never committing (#69)', () => {
+  const args = fixerArgs('C:/Users/x/Desktop/EzAutoApply-fix','fix/2026-11-18-fleet');
+  assert.equal(args[0], '-p');
+  assert.match(args[1], /^\/ezaa-fixer .*EzAutoApply-fix, branch fix\/2026-11-18-fleet.*Never commit or push/);
+  assert.deepEqual(args.slice(2, 4), ['--model', 'opus']);
+  assert.ok(args.join(' ').includes('--output-format stream-json --verbose'));
+  assert.deepEqual(toolsOf(args), FIXER_TOOLS);
+  assert.ok(!FIXER_TOOLS.some((t) => t === 'Bash' || t === 'Edit' || t === 'Write' || t.startsWith('Write(') || /git (commit|push)|gh pr|curl/.test(t)), 'no open shell, no commits, no pushes, no curl');
+  assert.ok(!args.includes('--chrome'), 'the Fixer works through the bridge, not a browser');
+});
+
+/** Records git calls; `worktree add` makes the folder so the next start reuses it. */
+function fakeGit(fail: RegExp | null = null) {
+  const calls: string[] = [];
+  const git: Git = (args, cwd) => {
+    calls.push(`${args.join(' ')} @ ${cwd}`);
+    if (fail?.test(args.join(' '))) return { ok: false, out: 'fatal: a branch named it already exists' };
+    if (args[0] === 'worktree') mkdirSync(args[4], { recursive: true });
+    return { ok: true, out: args[0] === 'rev-parse' ? 'fix/2026-11-18-fleet' : '' };
+  };
+  return { git, calls };
+}
+
+test('launchFixer makes the worktree from origin/main once, beside the checkout, and runs there', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ezaa-fixer-'));
+  const repo = join(dir, 'EzAutoApply');
+  const { spawn, started } = fakeSpawn();
+  const { git, calls } = fakeGit(/-b fix\/2026-11-18-fleet /);
+  const launcher = new Launcher({ claude: 'claude.exe', cwd: join(dir, 'ai-job-search'), logDir: join(dir, 'fleet'), repo, git, spawn, now: () => Date.parse('2026-11-18T20:05:00Z') });
+  assert.equal(launcher.launchFixer(), true);
+  assert.equal(launcher.launchFixer(), false, 'one at a time');
+  const fixDir = join(dir, 'EzAutoApply-fix');
+  assert.deepEqual(calls, [
+    `fetch origin main @ ${repo}`,
+    `worktree add -b fix/2026-11-18-fleet ${fixDir} origin/main @ ${repo}`,
+    `worktree add -b fix/2026-11-18-fleet-2005 ${fixDir} origin/main @ ${repo}`,
+  ], 'a branch of that name already there: the next one gets the time');
+  assert.equal(started[0].cwd, fixDir);
+  assert.match(started[0].args[1], /branch fix\/2026-11-18-fleet-2005/);
+  assert.equal(launcher.appliers(), 0, 'the Fixer is not an applier');
+  started[0].child.kill();
+  await tick();
+  await tick();
+  calls.length = 0;
+  assert.equal(launcher.launchFixer(), true);
+  assert.deepEqual(calls, [`rev-parse --abbrev-ref HEAD @ ${fixDir}`], 'the worktree is reused');
+});
+
+test('the bridge starts the Fixer a moment after a ticket opens, and only while it may (#69)', async () => {
+  const TOKEN = 'test-token-fixer-0123456789';
+  const dir = mkdtempSync(join(tmpdir(), 'ezaa-fixer-bridge-'));
+  const queue = new QueueStore(join(dir, 'queue.jsonl'));
+  const { spawn, started } = fakeSpawn();
+  const { git } = fakeGit();
+  const launcher = new Launcher({ claude: 'claude.exe', cwd: dir, logDir: join(dir, 'fleet'), repo: join(dir, 'EzAutoApply'), git, spawn });
+  const bridge = createBridge({ token: TOKEN, queue, incidentsDir: join(dir, 'incidents'), port: 0, launcher, fixerDelayMs: 20 });
+  await new Promise<void>((r) => bridge.server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${(bridge.server.address() as AddressInfo).port}`;
+  const call = async (method: string, path: string, body?: unknown) => {
+    const res = await fetch(base + path, { method, headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const text = await res.text();
+    return { status: res.status, json: text ? JSON.parse(text) : null };
+  };
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const incident = (label: string) => call('POST', '/incidents', { at: new Date().toISOString(), ats: 'greenhouse', kind: 'unmatched', jobId: 'j1', field: { label } });
+  const fixers = () => started.filter((s) => s.args[1].startsWith('/ezaa-fixer'));
+  try {
+    await call('PUT', '/settings', { parts: { fixer: false } });
+    await incident('Notice period');
+    await wait(60);
+    assert.equal(fixers().length, 0, 'switched off: no Fixer');
+
+    await call('PUT', '/settings', { parts: { fixer: true } });
+    await incident('Notice period');
+    await incident('Start date');
+    assert.equal(fixers().length, 0, 'not at once: a burst of incidents is one start');
+    await wait(60);
+    assert.equal(fixers().length, 1);
+    assert.equal((await call('GET', '/fleet')).json.fixing, true);
+    assert.equal(bridge.snapshot().events.find((e) => e.who === 'Fleet')?.text, 'A ticket is open: the Fixer started');
+
+    // A ticket that comes in while it works: it starts again once it ends.
+    await wait(5);
+    await incident('Pronouns');
+    await wait(60);
+    assert.equal(fixers().length, 1, 'one at a time');
+    fixers()[0].child.kill();
+    await wait(60);
+    assert.equal(fixers().length, 2);
+
+    // It ended with only the old tickets open: no new start until a new incident.
+    fixers()[1].child.kill();
+    await wait(60);
+    assert.equal(fixers().length, 2);
+
+    await call('POST', '/stop-all');
+    await incident('Salary');
+    await wait(60);
+    assert.equal(fixers().length, 2, 'stopped: no Fixer');
+  } finally {
+    bridge.server.close();
   }
 });

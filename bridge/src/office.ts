@@ -81,10 +81,12 @@ export interface FleetView {
   found: boolean;
   paused: boolean;
   max: number;
-  /** Every agent the bridge started, the Scout (`scout`) included. */
+  /** Every agent the bridge started, the Scout (`scout`) and the Fixer (`fixer`) included. */
   appliers: Applier[];
   /** The Scout is finding jobs (#62). */
   scouting: boolean;
+  /** The Fixer is working tickets (#69). */
+  fixing: boolean;
   /** Appliers that start when the Scout queues the first job. */
   waiting: number;
 }
@@ -280,6 +282,6 @@ export function officeSnapshot(o: {
     tickets: o.tickets ?? [],
     recruiters: o.recruiters ?? [],
     sprint: o.sprint ?? null,
-    fleet: o.fleet ?? { found: false, paused: false, max: 4, appliers: [], scouting: false, waiting: 0 },
+    fleet: o.fleet ?? { found: false, paused: false, max: 4, appliers: [], scouting: false, fixing: false, waiting: 0 },
   };
 }

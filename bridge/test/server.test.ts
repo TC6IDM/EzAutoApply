@@ -67,8 +67,19 @@ test('queue, claim, Run, the extension picks it up, and its report sets the job\
   const status = (await call('GET', '/tabs/j1/status')).json;
   assert.equal(status.run.stop.reason, 'submitReady');
   assert.deepEqual(status.fields, [{ id: 'f1', label: 'Phone', status: 'filled' }]);
+  // w1 holds it, so it isn't ready until w1 has checked every field, and w1 gets nothing else meanwhile (#67).
+  assert.equal(queue.get('j1')?.status, 'running');
+  assert.equal(queue.get('j1')?.statusNote, 'at Submit ("Submit application"): the applier is checking every field');
+  assert.deepEqual((await call('GET', '/ready')).json, []);
+  const busy = await call('GET', '/queue/next?worker=w1');
+  assert.equal(busy.status, 409);
+  assert.equal(busy.json.unfinished.id, 'j1');
+  await call('POST', '/queue/j1/status', { status: 'needsYou', note: 'captcha' });
+  assert.equal(queue.get('j1')?.worker, 'w1', 'a job waiting on the owner stays with w1');
+  assert.equal((await call('GET', '/queue/next?worker=w1')).status, 409);
+  await call('POST', '/queue/j1/status', { status: 'ready', note: 'checked: 12 required fields filled' });
   assert.deepEqual((await call('GET', '/ready')).json.map((j: { id: string }) => j.id), ['j1']);
-  assert.equal(queue.get('j1')?.statusNote, 'submitReady: "Submit application"');
+  assert.equal(queue.get('j1')?.worker, undefined);
   assert.equal((await call('GET', '/tabs/nope/status')).status, 404);
 });
 
@@ -196,7 +207,7 @@ test('the ready list says what agents answered, "go to tab" reaches the extensio
     return { status: res.status, json: text ? JSON.parse(text) : null };
   };
   try {
-    q.add([job('r1'), job('r2'), job('r3')]);
+    q.add([job('r1'), job('r2'), job('r3'), job('r4')]);
     await go('POST', '/answers', { jobId: 'r1', fieldId: 'f7', answer: 'Two weeks' });
     const stopped = { tabId: 1, startUrl: 'x', page: 2, status: 'stopped', history: [], startedAt: 0, updatedAt: 0, stop: { reason: 'submitReady' } };
     await go('POST', '/ext/runs', { jobId: 'r1', run: stopped, fields: [{ id: 'f7', label: 'Notice period' }] });
@@ -204,8 +215,9 @@ test('the ready list says what agents answered, "go to tab" reaches the extensio
     assert.deepEqual(ready.map((j: { id: string; agentAnswered: string[] }) => [j.id, j.agentAnswered]), [['r1', ['Notice period']]]);
 
     assert.equal((await go('GET', '/queue/next?worker=w1')).status, 200, 'one ready job: still under 2');
-    await go('POST', '/ext/runs', { jobId: 'r2', run: stopped });
-    const paused = await go('GET', '/queue/next?worker=w1');
+    // r3 was run by hand (nobody holds it): ready at once.
+    await go('POST', '/ext/runs', { jobId: 'r3', run: stopped });
+    const paused = await go('GET', '/queue/next?worker=w2');
     assert.equal(paused.status, 429);
     assert.deepEqual([paused.json.ready, paused.json.maxReadyOpen], [2, 2]);
 
@@ -215,8 +227,8 @@ test('the ready list says what agents answered, "go to tab" reaches the extensio
     assert.equal((await go('POST', '/ready/nope/focus')).status, 404);
 
     // Marked submitted (by hand, or the extension seeing the confirmation page): claims go on.
-    await go('POST', '/queue/r2/status', { status: 'submitted', note: 'marked by hand' });
-    assert.equal((await go('GET', '/queue/next?worker=w1')).status, 200);
+    await go('POST', '/queue/r3/status', { status: 'submitted', note: 'marked by hand' });
+    assert.equal((await go('GET', '/queue/next?worker=w2')).json?.id, 'r4');
   } finally {
     b.server.close();
   }
@@ -306,7 +318,7 @@ test('the fleet switches (#54): read, change in part, and claims obey them', asy
     q.add([{ ...job('easy'), applyKind: 'linkedin-easy' }, { ...job('ext'), applyKind: 'external', source: 'linkedin' }]);
     // Easy Apply is off by default: the external job goes out, the Easy Apply one stays queued.
     assert.equal((await go('GET', '/queue/next?worker=w1')).json.id, 'ext');
-    assert.equal((await go('GET', '/queue/next?worker=w1')).status, 204);
+    assert.equal((await go('GET', '/queue/next?worker=w2')).status, 204);
     assert.equal(q.get('easy')?.status, 'queued');
 
     assert.equal((await go('PUT', '/settings', { apply: { linkedinEasy: true } })).json.apply.linkedinEasy, true);
@@ -320,7 +332,7 @@ test('the fleet switches (#54): read, change in part, and claims obey them', asy
     q.add([job('later')]);
     assert.equal((await go('GET', '/queue/next?worker=w1')).status, 423, 'appliers off: no claims');
     await go('PUT', '/settings', { parts: { appliers: true } });
-    assert.ok(['easy', 'later'].includes((await go('GET', '/queue/next?worker=w1')).json.id));
+    assert.ok(['easy', 'later'].includes((await go('GET', '/queue/next?worker=w2')).json.id));
   } finally {
     b.server.close();
   }

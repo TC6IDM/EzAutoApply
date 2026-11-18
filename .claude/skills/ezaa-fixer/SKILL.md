@@ -12,6 +12,13 @@ Greenhouse forms is one ticket. This skill works those tickets, one at a time, w
 fleet runs, so the next application on that site already fills the field. Plan:
 `docs/agent-fleet-plan.md` §8.3.
 
+**Started by the bridge (#69).** Nobody has to type `/ezaa-fixer`: a little after an incident
+opens a ticket, the bridge starts one headless Opus with this skill, in the Fixer's worktree
+(`../EzAutoApply-fix`, made from `origin/main` the first time), and starts it again when
+tickets came in while it worked. Started that way, work every open ticket, then stop. It can
+edit only `extension/` there, and can't commit or push. Run by hand, it does the same, or
+keeps polling under `/loop`.
+
 ## Hard rules
 
 - **Never Submit, never advance a real application, never message a person.** The Fixer
@@ -35,7 +42,11 @@ fleet runs, so the next application on that site already fills the field. Plan:
 
 ## The bridge calls
 
-All with `authorization: Bearer <~/.ezautoapply/bridge-token>` on `http://127.0.0.1:8100`.
+Always through the helper, which reads the token itself (never print or read the token) and
+allows only these calls:
+`node .claude/skills/ezaa-fixer/bridge.mjs <METHOD> <path> ['<json>' | --file <path>]`, e.g.
+`node .claude/skills/ezaa-fixer/bridge.mjs GET 'tickets?open=1'`. Write paths without the
+leading slash (Git Bash rewrites `/tickets` into a Windows path; the helper undoes it anyway).
 
 | Call | What |
 |---|---|
@@ -64,10 +75,12 @@ All with `authorization: Bearer <~/.ezautoapply/bridge-token>` on `http://127.0.
    createdBy: 'fixer'}`: it fills there and is saved unapproved, so it fills as `review` until
    the owner approves it in Answers. Resolve `answered` with the source in the note. No open
    tab to answer on → `needsYou` with the proposed answer and its source in the note.
-5. **Code gap**, in a worktree so the owner's checkout is never touched:
+5. **Code gap**, in a worktree so the owner's checkout is never touched. Started by the bridge,
+   you are already in it. Run by hand:
    ```bash
    git worktree add ../EzAutoApply-fix -b fix/<yyyy-mm-dd>-<slug> origin/main   # once; reuse it after
    ```
+   No `extension/node_modules` yet → `cd extension && npm ci` first.
    1. **Fixture** from the redacted `domSnippet`: a DOM fixture in `tests/unit/fixtures.ts`
       (or `tests/e2e/pages/<ats>-<widget>.html` when only a real browser shows it).
    2. **Failing test first**: `tests/unit/rules.test.ts` for a missed key (CLAUDE.md: a new
