@@ -472,7 +472,7 @@ test('an agent queues a job and asks the bridge for a Run; the extension runs it
     await expect.poll(() => fetch(`${bridgeUrl}/health`).then((r) => r.ok).catch(() => false), { timeout: 15_000 }).toBe(true);
     const token = readFileSync(join(home, 'bridge-token'), 'utf8').trim();
     const api = (method: string, path: string, body?: unknown) =>
-      fetch(bridgeUrl + path, { method, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: body && JSON.stringify(body) });
+      fetch(bridgeUrl + path, { method, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
 
     const panel = await context.newPage();
     await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
