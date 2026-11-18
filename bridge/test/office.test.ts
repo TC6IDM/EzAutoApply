@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { RunState } from '../../extension/src/run/types.ts';
-import { jobEvents, officeJob, officeSnapshot } from '../src/office.ts';
+import { jobEvents, officeJob, officeSnapshot, switchEvents } from '../src/office.ts';
+import { DEFAULT_SETTINGS, mergeSettings } from '../src/settings.ts';
 import type { QueueJob } from '../src/queue.ts';
 
 const NOW = Date.parse('2026-11-18T15:00:00Z');
@@ -60,6 +61,14 @@ test('history reads as plain words, each line under the worker that held the job
     ['w2', 'Claimed Northwind: Junior Developer', undefined],
     ['w2', 'Run is on page 1 at Northwind', undefined],
     ['w2', "Stopped at Submit on Northwind. It's in your inbox.", 'ok'],
+  ]);
+});
+
+test('a change of switches reads as one ticker line per switch (#55)', () => {
+  const after = mergeSettings(DEFAULT_SETTINGS, { parts: { outreach: false }, apply: { linkedinEasy: true, external: true } }).settings;
+  assert.deepEqual(switchEvents(DEFAULT_SETTINGS, after, 't').map((e) => [e.text, e.tone]), [
+    ['Switched off: Outreach', 'warn'],
+    ['Switched on: LinkedIn Easy Apply', undefined],
   ]);
 });
 

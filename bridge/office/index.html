@@ -78,6 +78,15 @@ button { font: inherit; color: inherit; }
   border-radius: 10px; box-shadow: var(--shadow); padding: 12px; width: min(320px, calc(100vw - 32px)); display: grid; gap: 10px; z-index: 40; }
 /* `hidden` wins over the display rules above (a .confirm or .btn would otherwise still show). */
 [hidden] { display: none !important; }
+.switches { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.switches li { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: start; }
+.switches small { display: block; color: var(--ink-3); font-size: 12px; }
+.switch { position: relative; width: 38px; height: 22px; border-radius: 11px; border: 1px solid var(--line); background: var(--panel-2); cursor: pointer; padding: 0; margin-top: 1px; }
+.switch i { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--ink-3); transition: transform .15s; }
+.switch[aria-checked="true"] { background: var(--ok); border-color: var(--ok); }
+.switch[aria-checked="true"] i { transform: translateX(16px); background: var(--panel); }
+.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .switch i { transition: none; } }
 .shot { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); }
 .confirm p { margin: 0; }
 .confirm div { display: flex; gap: 8px; justify-content: flex-end; }
@@ -269,6 +278,7 @@ table.src tr.skip td { color: var(--ink-3); }
         </div>
       </div>
       <div class="controls">
+        <button type="button" class="btn" id="switchesBtn">Switches</button>
         <button type="button" class="btn primary" id="launch" hidden>Resume fleet</button>
         <button type="button" class="btn danger" id="stop" disabled>Stop all</button>
       </div>
@@ -373,6 +383,7 @@ table.src tr.skip td { color: var(--ink-3); }
     S.incidents = snap.incidentsToday;
     S.counts = snap.counts;
     S.maxReadyOpen = snap.maxReadyOpen;
+    S.settings = snap.settings;
     S.events = snap.events.map((e) => ({ t: hhmmss(e.at), who: deskName(e.who) || e.who, text: e.text, tone: e.tone }));
 
     APPLIERS.forEach((a, i) => {
@@ -443,14 +454,51 @@ table.src tr.skip td { color: var(--ink-3); }
       });
     };
   }
-  async function post(path, body) {
-    const r = await fetch(path, { method: 'POST', headers: { authorization: 'Bearer ' + TOKEN, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+  async function post(path, body, method = 'POST') {
+    const r = await fetch(path, { method, headers: { authorization: 'Bearer ' + TOKEN, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
     const text = await r.text();
     const json = text ? JSON.parse(text) : null;
     if (!r.ok) throw new Error(json?.error || `The bridge said ${r.status}`);
     return json;
   }
   const tell = (p, ok) => p.then((v) => toast(typeof ok === 'function' ? ok(v) : ok), (e) => toast(e.message));
+
+  // ---------- The fleet switches (#54, #55): what turning each one off does ----------
+  const PART_OF = { applier: 'appliers', scout: 'scout', fixer: 'fixer', outreach: 'outreach' };
+  const SWITCHES = [
+    ['parts', 'Parts of the fleet', [
+      ['scout', 'Scout', 'Off: no new jobs are found or ranked. The queue keeps what it has.'],
+      ['appliers', 'Appliers', 'Off: no applier gets a new job. Jobs stay queued.'],
+      ['answerer', 'Answerer', 'Off: no agent-written answers. Those fields become “needs you”.'],
+      ['fixer', 'Fixer', 'Off: incidents are only recorded, nothing is fixed live.'],
+      ['outreach', 'Outreach', 'Off: no recruiters found and no messages written.'],
+    ]],
+    ['sources', 'Where jobs come from', [
+      ['linkedin', 'LinkedIn search', 'Off: jobs found on LinkedIn stay queued and none are added.'],
+      ['simplify', 'SimplifyJobs New-Grad list', 'Off: jobs from the list stay queued and none are added.'],
+      ['recommendations', 'AI recommendations', 'Off: /scrape and /rank picks stay queued and none are added.'],
+      ['jobbank', 'Job Bank', 'Off: Job Bank jobs stay queued and none are added.'],
+      ['indeed', 'Indeed', 'Off: Indeed jobs stay queued and none are added.'],
+    ]],
+    ['apply', 'Ways of applying', [
+      ['external', 'Company sites', 'Off: no applying on employers’ own application sites.'],
+      ['linkedinEasy', 'LinkedIn Easy Apply', 'Off: Easy Apply jobs stay queued.'],
+      ['indeedApply', 'Indeed Apply', 'Off: jobs that apply through Indeed stay queued.'],
+      ['tailored', 'Tailored CVs', 'Off: every job goes out with your default resume.'],
+    ]],
+    ['site', 'What agents may do on a site', [
+      ['createAccounts', 'Create accounts', 'Off: a site that needs a new account stops and waits for you.'],
+      ['gmailCodes', 'Read codes from Gmail', 'Off: a site that sends a code stops and waits for you.'],
+    ]],
+  ];
+  function switchesHTML() {
+    if (!S.settings) return '<p class="empty">Waiting for the bridge.</p>';
+    return SWITCHES.map(([group, title, items]) => `<div class="sect"><div class="sect-h"><span>${esc(title)}</span></div><ul class="switches">${items.map(([key, name, off]) => {
+      const on = S.settings[group][key];
+      const id = `sw-${group}-${key}`;
+      return `<li><button type="button" role="switch" class="switch" aria-checked="${on}" aria-labelledby="${id}" aria-describedby="${id}-d" data-act="toggle" data-arg="${group}.${key}"><i aria-hidden="true"></i></button><span><b id="${id}">${esc(name)}</b><small id="${id}-d">${esc(off)}</small></span></li>`;
+    }).join('')}</ul></div>`).join('') + '<p class="empty" style="font-size:12px">Switches only take things away: none of them lets an agent press Submit, see your password or send a message. Nothing is deleted when a switch is off.</p>';
+  }
 
   // ---------- Status ----------
   const MODEL = { haiku: { label: 'Haiku 5.5', c: 'var(--haiku)' }, sonnet: { label: 'Sonnet 5.5', c: 'var(--sonnet)' }, opus: { label: 'Opus 5.5', c: 'var(--opus)' }, you: { label: 'You', c: 'var(--you)' } };
@@ -460,6 +508,7 @@ table.src tr.skip td { color: var(--ink-3); }
       return { label: n ? `${n} waiting` : 'All clear', tone: S.needs.length ? 'warn' : n ? 'ok' : 'idle' };
     }
     const a = A[id];
+    if (S.settings && S.settings.parts[PART_OF[a.kind]] === false) return { label: 'Switched off', tone: 'idle' };
     if (a.kind === 'applier' && (a.phase === 'off' || (S.mode === 'stopped'))) return { label: 'Empty desk', tone: 'idle' };
     if (a.kind !== 'applier') return { label: 'Not running', tone: 'idle' };
     if (S.mode === 'stopped') return { label: 'Off', tone: 'idle' };
@@ -580,6 +629,7 @@ table.src tr.skip td { color: var(--ink-3); }
   let zTop = 30;
   function winMeta(id) {
     if (id === 'you') return { title: 'Your inbox', sub: 'Things only you can do', c: 'var(--you)' };
+    if (id === 'switches') return { title: 'Switches', sub: 'Turn any part of the fleet on or off', c: 'var(--accent)' };
     const a = A[id];
     return { title: a.name, sub: `${MODEL[a.model].label} · ${a.role}`, c: MODEL[a.model].c };
   }
@@ -588,7 +638,7 @@ table.src tr.skip td { color: var(--ink-3); }
     if (wins.has(id)) {
       const el = wins.get(id);
       if (tab) { el._tab = tab; renderWin(id); }
-      raise(el); Fleet.emit('focus', id); return;
+      raise(el); if (id !== 'switches') Fleet.emit('focus', id); return;
     }
     const m = winMeta(id);
     const el = document.createElement('section');
@@ -613,7 +663,7 @@ table.src tr.skip td { color: var(--ink-3); }
     raise(el);
     renderWin(id);
     renderRoster();
-    Fleet.emit('focus', id);
+    if (id !== 'switches') Fleet.emit('focus', id);
     el.querySelector('[data-close]').focus({ preventScroll: true });
   }
   function closeWin(id) { const el = wins.get(id); if (!el) return; el.remove(); wins.delete(id); renderRoster(); }
@@ -639,6 +689,7 @@ table.src tr.skip td { color: var(--ink-3); }
     const body = el.querySelector('.win-b');
     let html;
     if (id === 'you') html = youHTML(el);
+    else if (id === 'switches') html = switchesHTML();
     else { const a = A[id]; html = a.kind === 'applier' ? applierHTML(a) : a.kind === 'fixer' ? fixerHTML(a) : a.kind === 'scout' ? scoutHTML(a) : outreachHTML(a); }
     setHTML(body, html);
   }
@@ -650,6 +701,12 @@ table.src tr.skip td { color: var(--ink-3); }
       // The extension brings the job's tab and its window to the front (#29).
       case 'goJob': tell(post(`/ready/${path(arg)}/focus`), 'Asked the extension to bring that tab forward'); break;
       case 'tab': el._tab = arg; break;
+      case 'toggle': {
+        const [group, key] = arg.split('.');
+        const on = !S.settings[group][key];
+        tell(post('/settings', { [group]: { [key]: on } }, 'PUT'), `${on ? 'Switched on' : 'Switched off'}. Agents pick it up at their next step.`);
+        break;
+      }
       case 'submitted': tell(post(`/queue/${path(arg)}/status`, { status: 'submitted', note: 'marked in the Office' }), 'Marked as submitted. /queue sync-tracker adds it to your tracker.'); break;
       case 'requeue': tell(post(`/queue/${path(arg)}/status`, { status: 'queued', note: 'queued again from the Office' }), 'Back in the queue'); break;
       case 'skip': tell(post(`/queue/${path(arg)}/status`, { status: 'skipped', note: 'skipped in the Office' }), 'Skipped'); break;
@@ -702,6 +759,7 @@ table.src tr.skip td { color: var(--ink-3); }
   $('#stats').addEventListener('click', (e) => { const b = e.target.closest('[data-tab]'); if (b) openWin('you', b.dataset.tab); });
   // Stopped by Stop all: appliers get no new jobs until you resume.
   $('#launch').addEventListener('click', () => tell(post('/resume'), 'Fleet resumed: appliers can take jobs again'));
+  $('#switchesBtn').addEventListener('click', () => openWin('switches'));
   $('#stop').addEventListener('click', () => { $('#stopConfirm').hidden = false; $('#stopNo').focus(); });
   $('#stopNo').addEventListener('click', () => { $('#stopConfirm').hidden = true; });
   $('#stopYes').addEventListener('click', () => {

@@ -1,5 +1,6 @@
 import type { RunState } from '../../extension/src/run/types.ts';
 import { JOB_STATUSES, type JobStatus, type QueueJob } from './queue.ts';
+import { DEFAULT_SETTINGS, type FleetSettings } from './settings.ts';
 
 /**
  * What the Fleet Office page shows (#35): the queue, each applier and its job, the owner's
@@ -61,7 +62,40 @@ export interface OfficeSnapshot {
   needs: OfficeJob[];
   stuck: OfficeJob[];
   events: OfficeEvent[];
+  /** The fleet switches (#54), for the Office's Switches panel (#55). */
+  settings: FleetSettings;
 }
+
+/** Ticker lines for a change of switches: "Switched off: LinkedIn Easy Apply". */
+export function switchEvents(before: FleetSettings, after: FleetSettings, at: string): OfficeEvent[] {
+  const out: OfficeEvent[] = [];
+  for (const [group, values] of Object.entries(after) as [keyof FleetSettings, Record<string, boolean>][]) {
+    for (const [key, on] of Object.entries(values)) {
+      if ((before[group] as Record<string, boolean>)[key] === on) continue;
+      out.push({ at, who: 'You', text: `Switched ${on ? 'on' : 'off'}: ${SWITCH_NAMES[`${group}.${key}`] ?? `${group}.${key}`}`, ...(!on && { tone: 'warn' as const }) });
+    }
+  }
+  return out;
+}
+
+export const SWITCH_NAMES: Record<string, string> = {
+  'parts.scout': 'Scout',
+  'parts.appliers': 'Appliers',
+  'parts.answerer': 'Answerer',
+  'parts.fixer': 'Fixer',
+  'parts.outreach': 'Outreach',
+  'sources.linkedin': 'LinkedIn search',
+  'sources.simplify': 'SimplifyJobs New-Grad list',
+  'sources.recommendations': 'AI recommendations',
+  'sources.jobbank': 'Job Bank',
+  'sources.indeed': 'Indeed',
+  'apply.external': 'Company sites',
+  'apply.linkedinEasy': 'LinkedIn Easy Apply',
+  'apply.indeedApply': 'Indeed Apply',
+  'apply.tailored': 'Tailored CVs',
+  'site.createAccounts': 'Creating site accounts',
+  'site.gmailCodes': 'Reading codes from Gmail',
+};
 
 export const DESKS = 4;
 const HELD: JobStatus[] = ['claimed', 'running'];
@@ -164,6 +198,9 @@ export function officeSnapshot(o: {
   incidentsToday: number;
   /** Job id → when its latest screenshot came in. */
   screens?: Map<string, string>;
+  settings?: FleetSettings;
+  /** Lines that come from the bridge rather than a job (switch changes). */
+  extraEvents?: OfficeEvent[];
   now: number;
 }): OfficeSnapshot {
   const today = new Date(o.now).toISOString().slice(0, 10);
@@ -195,6 +232,7 @@ export function officeSnapshot(o: {
     ready: o.jobs.filter((j) => j.status === 'ready').sort(newest).map(view),
     needs: o.jobs.filter((j) => j.status === 'needsYou').sort(newest).map(view),
     stuck: o.jobs.filter((j) => j.status === 'stuck').sort(newest).slice(0, 12).map(view),
-    events: o.jobs.flatMap(jobEvents).sort((a, b) => b.at.localeCompare(a.at)).slice(0, 30),
+    events: [...o.jobs.flatMap(jobEvents), ...(o.extraEvents ?? [])].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 30),
+    settings: o.settings ?? DEFAULT_SETTINGS,
   };
 }

@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { RunState, StopReason } from '../../extension/src/run/types.ts';
-import { officeSnapshot } from './office.ts';
+import { type OfficeEvent, officeSnapshot, switchEvents } from './office.ts';
 import { DEFAULT_SETTINGS, type FleetSettings, loadSettings, mergeSettings, saveSettings, switchedOff } from './settings.ts';
 import { JOB_STATUSES, type JobStatus, type QueueStore } from './queue.ts';
 
@@ -89,6 +89,8 @@ export function createBridge(o: BridgeOptions) {
   let stopped = false;
   /** Worker name → when it first asked for a job: the Office's applier desks. */
   let settings: FleetSettings = o.settingsFile ? loadSettings(o.settingsFile) : structuredClone(DEFAULT_SETTINGS);
+  /** Switch changes since the bridge started, for the Office's ticker. */
+  const switchLog: OfficeEvent[] = [];
   const workersSeen = new Map<string, number>();
   const incidentsByDay = new Map<string, number>();
   /**
@@ -250,6 +252,8 @@ export function createBridge(o: BridgeOptions) {
     if (m === 'PUT' && p === '/settings') {
       const { settings: next, errors } = mergeSettings(settings, await body(req));
       if (errors.length) throw new HttpError(400, errors.join('; '));
+      switchLog.push(...switchEvents(settings, next, new Date(now()).toISOString()));
+      switchLog.splice(0, Math.max(0, switchLog.length - 30));
       settings = next;
       if (o.settingsFile) saveSettings(o.settingsFile, settings);
       return [200, settings];
@@ -316,6 +320,8 @@ export function createBridge(o: BridgeOptions) {
       maxReadyOpen: o.maxReadyOpen ?? MAX_READY_OPEN,
       incidentsToday: incidentsByDay.get(new Date(now()).toISOString().slice(0, 10)) ?? 0,
       screens: new Map([...screens].map(([id, s]) => [id, s.at])),
+      settings,
+      extraEvents: switchLog,
       now: now(),
     });
   /** Send each open page the latest snapshot when it changed, and a ping now and then to keep it open. */

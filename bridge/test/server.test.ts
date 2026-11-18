@@ -233,6 +233,9 @@ test('the fleet switches (#54): read, change in part, and claims obey them', asy
 
     assert.equal((await go('PUT', '/settings', { apply: { linkedinEasy: true } })).json.apply.linkedinEasy, true);
     assert.equal(JSON.parse(readFileSync(settingsFile, 'utf8')).apply.linkedinEasy, true, 'saved');
+    // The Office sees the switches and the change on its ticker (#55).
+    assert.equal(b.snapshot().settings.apply.linkedinEasy, true);
+    assert.equal(b.snapshot().events.find((e) => e.who === 'You')?.text, 'Switched on: LinkedIn Easy Apply');
     assert.equal((await go('PUT', '/settings', { apply: { linkedinEazy: true } })).status, 400);
 
     await go('PUT', '/settings', { parts: { appliers: false } });

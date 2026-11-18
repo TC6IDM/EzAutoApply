@@ -30,6 +30,7 @@ Every call except `GET /health` and the Office page needs `Authorization: Bearer
 - Your inbox: jobs ready to submit (with "Go to its tab" and "I submitted it"), jobs that need you or are stuck (go to the tab, queue it again, or skip it), and the fields agents answered.
 - Today's submissions and incidents.
 - Stop all and Resume.
+- **Switches** (#55): every fleet switch, grouped, each saying what turning it off does. Toggling one saves it through `PUT /settings`. A desk whose part is off shows "Switched off", and the ticker says who switched what.
 
 Scout, Fixer and Outreach show as not running until their agents exist.
 
