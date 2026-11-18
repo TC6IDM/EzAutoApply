@@ -118,6 +118,13 @@ const realGit: Git = (args, cwd) => {
   return { ok: r.status === 0, out: `${r.stdout ?? ''}${r.stderr ?? ''}`.trim() };
 };
 
+/**
+ * A shell call may take 10 minutes (#74). The default is 2, after which headless Claude Code moves
+ * the call to the background and the agent, with nothing left to do, ends: an applier quit on
+ * `hold`. `applier.py`'s long calls return within 9 minutes.
+ */
+export const AGENT_ENV = { BASH_DEFAULT_TIMEOUT_MS: '600000', BASH_MAX_TIMEOUT_MS: '600000' };
+
 /** Every step as one JSON line, so the Office can show what each agent is doing (#64). */
 const STREAM = ['--output-format', 'stream-json', '--verbose'];
 /** Activity lines kept per agent, in memory only (the raw stream is in the log file). */
@@ -374,7 +381,7 @@ export class Launcher {
     const at = new Date(this.now());
     const log = join(this.logDir, `${worker}-${at.toISOString().replace(/[:.]/g, '-')}.log`);
     const out = createWriteStream(log);
-    const child = this.spawn(this.claude!, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const child = this.spawn(this.claude!, args, { cwd, env: { ...process.env, ...AGENT_ENV }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     child.stdout?.pipe(out, { end: false });
     child.stderr?.pipe(out, { end: false });
     const applier: Applier = { worker, model, pid: child.pid ?? null, startedAt: at.toISOString(), status: 'running', activity: [], log };

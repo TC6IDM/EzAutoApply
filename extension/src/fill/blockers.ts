@@ -47,15 +47,28 @@ const CREATE_ACCOUNT = /^(create (an |your |my )?account|sign up|register|create
 const shown = (el: Element) => !isOwnUi(el) && isVisible(el);
 const words = (el: Element) => normalize(textOf(el));
 
+/**
+ * A CAPTCHA box that takes up no room isn't one the owner can see (#75): Lever keeps an
+ * invisible hCaptcha in a full-width `.h-captcha` 0 px tall until Submit. Only on a laid-out page
+ * (unit tests have no layout: every box is 0 × 0 there).
+ */
+function hasRoom(el: Element): boolean {
+  const page = el.ownerDocument.documentElement.getBoundingClientRect();
+  if (page.width === 0 && page.height === 0) return true;
+  const r = el.getBoundingClientRect();
+  return r.width > 1 && r.height > 1;
+}
+const shownCaptcha = (el: Element) => shown(el) && hasRoom(el);
+
 function captcha(root: ParentNode): Blocker | null {
   for (const frame of deepQueryAll<HTMLIFrameElement>(root, 'iframe')) {
     const src = frame.getAttribute('src') ?? '';
-    if (/size=invisible/.test(src) || frame.closest('.grecaptcha-badge') || !shown(frame)) continue;
+    if (/size=invisible/.test(src) || frame.closest('.grecaptcha-badge') || !shownCaptcha(frame)) continue;
     const hit = CAPTCHA_FRAME.find(([re]) => re.test(src));
     if (hit) return { kind: 'captcha', detail: `${hit[1]} on the page`, element: frame };
   }
   for (const el of deepQueryAll<HTMLElement>(root, '.g-recaptcha, .h-captcha, .cf-turnstile, [class*="captcha" i]')) {
-    if (el.closest('.grecaptcha-badge') || el.getAttribute('data-size') === 'invisible' || !shown(el)) continue;
+    if (el.closest('.grecaptcha-badge') || el.getAttribute('data-size') === 'invisible' || !shownCaptcha(el)) continue;
     return { kind: 'captcha', detail: 'a CAPTCHA box on the page', element: el };
   }
   for (const el of deepQueryAll<HTMLElement>(root, 'label, h1, h2, h3, p, span, div[role="heading"]')) {

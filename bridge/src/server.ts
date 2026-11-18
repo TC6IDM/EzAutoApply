@@ -124,6 +124,21 @@ export function createBridge(o: BridgeOptions) {
     dropPending();
     note(`Jobs queued: started ${got.started.join(', ') || 'no more appliers'}`, 'ok');
   };
+  /** The Scout refills the queue when it runs dry while appliers work (#72). */
+  const REFILL_COOLDOWN_MS = 15 * 60_000;
+  let scoutJobsBefore = 0;
+  let scoutFoundNothingAt = 0;
+  const startScout = (top: number): boolean => {
+    scoutJobsBefore = o.queue.all().length;
+    return o.launcher!.launchScout(top);
+  };
+  const refill = () => {
+    if (!o.launcher?.found || stopped || paused || !settings.parts.scout || !settings.parts.appliers) return;
+    if (o.launcher.scoutRunning() || o.launcher.appliers() === 0 || hasQueued()) return;
+    if (now() - scoutFoundNothingAt < REFILL_COOLDOWN_MS) return;
+    if (startScout(10)) note('The queue ran dry: the Scout is finding more jobs', 'ok');
+  };
+
   /** The Fixer (#69): starts by itself a little after a ticket opens, one at a time. */
   let fixerTimer: ReturnType<typeof setTimeout> | undefined;
   let fixerStartedAt = 0;
@@ -156,6 +171,7 @@ export function createBridge(o: BridgeOptions) {
         if (tickets().some((t) => t.open && Date.parse(t.last) > fixerStartedAt)) wantFixer();
         return;
       }
+      if (worker === 'scout' && o.queue.all().length <= scoutJobsBefore) scoutFoundNothingAt = now();
       if (worker !== 'scout' || !pending) return;
       if (hasQueued()) startPending();
       else {
@@ -261,6 +277,7 @@ export function createBridge(o: BridgeOptions) {
       const limit = o.maxReadyOpen ?? MAX_READY_OPEN;
       if (ready >= limit) return [429, { error: `Paused: ${ready} jobs wait for your Submit`, ready, maxReadyOpen: limit }];
       const job = o.queue.claim(worker, (j) => !switchedOff(j, settings));
+      if (!job) refill();
       return job ? [200, job] : [204, null];
     }
     let hit = /^\/queue\/([^/]+)\/status$/.exec(p);
@@ -381,7 +398,7 @@ export function createBridge(o: BridgeOptions) {
       if (!hasQueued()) {
         if (!settings.parts.scout) throw new HttpError(409, 'The queue is empty and the Scout is switched off: turn it on in Switches, or run /rank and /queue in ai-job-search');
         const top = want.jobs ? Math.min(MAX_APPLIERS, want.appliers) * want.jobs : 10;
-        const fresh = o.launcher.launchScout(top);
+        const fresh = startScout(top);
         pending = want;
         pendingTimer ??= setInterval(startPending, 3000);
         pendingTimer.unref?.();
