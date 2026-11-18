@@ -336,7 +336,7 @@ table.src tr.skip td { color: var(--ink-3); }
   const ACCOUNT_ATS = ['Workday', 'iCIMS', 'SmartRecruiters'];
   const ISSUES = {
     onsite: { kind: 'data', label: 'Can you work on-site 4 days a week in Toronto?', fix: 'Saved "Yes" (from your location and on-site preference), flagged for your approval' },
-    start: { kind: 'data', label: 'When could you start?', fix: 'Saved "Immediately" (graduated May 2026), flagged for your approval' },
+    start: { kind: 'data', label: 'When could you start?', fix: 'Saved "Immediately" (from your profile), flagged for your approval' },
     mobile: { kind: 'code', label: 'Mobile #', fix: 'Phone label now matches "Mobile #"', file: 'core/fieldKeys.ts', test: 'rules.test.ts › Phone › "Mobile #"' },
     grad: { kind: 'code', label: 'Graduation date (year only)', fix: 'Year-only date box in a custom wrapper is now scanned', file: 'fill/scan.ts', test: 'workday.test.ts › year-only graduation date' },
     degree: { kind: 'code', label: 'Highest level of education', fix: '"Undergraduate Degree" now matches Bachelor’s', file: 'core/options.ts', test: 'options.test.ts › degree variants' },
@@ -357,15 +357,16 @@ table.src tr.skip td { color: var(--ink-3); }
     { company: 'Ironwood Cloud', person: 'Hana Sato', title: 'Technical Recruiter', found: 'Public job post', why: 'backend', channel: 'LinkedIn' },
     { company: 'Granite Robotics', person: 'Theo Martin', title: 'Talent Partner', found: 'Careers page (email listed)', why: 'backend', channel: 'Email' },
   ];
+  // Sample text only: a made-up graduate, never the owner's own background.
   const NOTE = {
-    geo: (f, c) => `Hi ${f}, I'm a 2026 York software engineering grad. At Natural Resources Canada I built a Python QGIS plugin for geospatial work on HPC. I'd love to connect about developer roles at ${c}.`,
-    backend: (f, c) => `Hi ${f}, I'm a 2026 York software engineering grad. At Natural Resources Canada I improved a hydrology app's processing by about 80%. I'd love to connect about roles at ${c}.`,
-    sports: (f, c) => `Hi ${f}, I'm a 2026 York software engineering grad who spent 8 months at theScore. I'd love to connect about developer roles at ${c}.`,
+    geo: (f, c) => `Hi ${f}, I'm a new software engineering grad who built mapping tools in Python during an internship. I'd love to connect about developer roles at ${c}.`,
+    backend: (f, c) => `Hi ${f}, I'm a new software engineering grad who sped up a data-processing service during an internship. I'd love to connect about roles at ${c}.`,
+    sports: (f, c) => `Hi ${f}, I'm a new software engineering grad who worked on a sports app during an internship. I'd love to connect about developer roles at ${c}.`,
   };
   const FOLLOW = {
-    geo: (f, c) => `Thanks for connecting, ${f}. I graduated from York's software engineering program in May. At Natural Resources Canada I built the Canadian Hydrospatial Network QGIS plugin solo in Python, so a 10 to 14 person team could run their tools on HPC without downloading huge files. ${c}'s mapping work is close to that. If you're hiring junior or new-grad developers, I'd be glad to send my resume or have a quick call.`,
-    backend: (f, c) => `Thanks for connecting, ${f}. I graduated from York's software engineering program in May and I'm looking for a backend or full-stack role. At Natural Resources Canada I wrote flow-path algorithms in Python and redesigned a catchment-union step, which improved processing by about 80% on multi-gigabyte data. If ${c} is hiring new-grad developers, I'd be glad to send my resume.`,
-    sports: (f, c) => `Thanks for connecting, ${f}. I graduated from York's software engineering program in May. I spent 8 months at theScore on its betting and content apps, and I'm building a casino game in TypeScript and Svelte with a Python math backend. If ${c} is hiring junior developers, I'd be glad to send my resume or chat.`,
+    geo: (f, c) => `Thanks for connecting, ${f}. I graduated in software engineering this year. On an internship I built a Python plugin that let a small team run mapping tools on shared servers. ${c}'s mapping work is close to that. If you're hiring junior developers, I'd be glad to send my resume or have a quick call.`,
+    backend: (f, c) => `Thanks for connecting, ${f}. I graduated in software engineering this year and I'm looking for a backend or full-stack role. On an internship I reworked a processing step on large datasets and made it much faster. If ${c} is hiring new-grad developers, I'd be glad to send my resume.`,
+    sports: (f, c) => `Thanks for connecting, ${f}. I graduated in software engineering this year. On an internship I worked on a sports app's content features. If ${c} is hiring junior developers, I'd be glad to send my resume or chat.`,
   };
 
   // ---------- State ----------
