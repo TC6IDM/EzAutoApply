@@ -1,6 +1,7 @@
 import type { RunState } from '../../extension/src/run/types.ts';
 import { JOB_STATUSES, type JobStatus, type QueueJob } from './queue.ts';
 import { DEFAULT_SETTINGS, type FleetSettings } from './settings.ts';
+import type { Prospect } from './outreach.ts';
 import type { Ticket } from './tickets.ts';
 
 /**
@@ -66,6 +67,8 @@ export interface OfficeSnapshot {
   /** The fleet switches (#54), for the Office's Switches panel (#55). */
   settings: FleetSettings;
   tickets: Ticket[];
+  /** Real people's names: served only on the token-gated stream, never written anywhere by the bridge. */
+  recruiters: Prospect[];
 }
 
 /** Ticker lines for a change of switches: "Switched off: LinkedIn Easy Apply". */
@@ -216,6 +219,8 @@ export function officeSnapshot(o: {
   settings?: FleetSettings;
   /** The Fixer's latest tickets (#32), newest first. */
   tickets?: Ticket[];
+  /** The recruiter page (#41): people with messages to send, then those written to (outreach.ts › recruiterView). */
+  recruiters?: Prospect[];
   /** Lines that come from the bridge rather than a job (switch changes). */
   extraEvents?: OfficeEvent[];
   now: number;
@@ -252,5 +257,6 @@ export function officeSnapshot(o: {
     events: [...o.jobs.flatMap(jobEvents), ...(o.tickets ?? []).flatMap(ticketEvents), ...(o.extraEvents ?? [])].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 30),
     settings: o.settings ?? DEFAULT_SETTINGS,
     tickets: o.tickets ?? [],
+    recruiters: o.recruiters ?? [],
   };
 }

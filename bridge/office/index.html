@@ -234,6 +234,7 @@ table.src tr.skip td { color: var(--ink-3); }
 .card-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .card-top strong { font: 700 14px var(--f-display); }
 .card-meta { font-size: 12px; color: var(--ink-3); }
+.card-meta a { color: var(--accent); font-weight: 500; text-underline-offset: 2px; }
 .msg { margin: 0; font-size: 12.5px; background: var(--panel-2); border-radius: 8px; padding: 8px 10px; white-space: pre-wrap; }
 .msg-h { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--ink-3); }
 .msg-h span:last-child { font-family: var(--f-mono); }
@@ -338,7 +339,7 @@ table.src tr.skip td { color: var(--ink-3); }
   }
   const S = (Fleet.S = {
     mode: 'stopped', count: 4, speed: 1, link: 'connecting',
-    queue: [], ready: [], needs: [], answers: [], drafts: [], tickets: [], events: [],
+    queue: [], ready: [], needs: [], answers: [], drafts: [], recruiters: [], tickets: [], events: [],
     submitted: 0, fixes: 0, sent: 0, spend: 0, incidents: 0, stuck: 0, counts: {}, maxReadyOpen: 6,
     agents: {
       scout: agent('scout', 'Scout', 'sonnet', 'Finds and ranks jobs, fills the queue', 'scout', { step: -1, run: {}, today: {}, live: false }),
@@ -398,7 +399,11 @@ table.src tr.skip td { color: var(--ink-3); }
     A.fixer.recent = resolved.slice(0, 6);
     A.fixer.live = resolved.some((t) => Date.parse(snap.at) - Date.parse(t.resolution.at) < 3600e3);
     A.fixer.now = A.fixer.live ? `Last: ${OUTCOME_WORDS[resolved[0].resolution.outcome]}, ${ticketLabel(resolved[0])}` : 'Not running. Start it with /ezaa-fixer in Claude Code.';
-    S.events =snap.events.map((e) => ({ t: hhmmss(e.at), who: deskName(e.who) || e.who, text: e.text, tone: e.tone }));
+    // The recruiter page (#41): people with messages to send (S.drafts), then those written to.
+    S.recruiters = snap.recruiters ?? [];
+    S.drafts = S.recruiters.filter((r) => r.status === 'found');
+    A.outreach.now = S.drafts.length ? `${S.drafts.length} message${S.drafts.length === 1 ? '' : 's'} for you to send` : 'Run /prospects in ai-job-search to find people and draft messages.';
+    S.events = snap.events.map((e) => ({ t: hhmmss(e.at), who: deskName(e.who) || e.who, text: e.text, tone: e.tone }));
 
     APPLIERS.forEach((a, i) => {
       const w = snap.workers[i];
@@ -527,6 +532,7 @@ table.src tr.skip td { color: var(--ink-3); }
       const n = S.tickets.length;
       return a.live ? { label: n ? `${n} open` : 'All fixed', tone: n ? 'run' : 'ok' } : { label: n ? `${n} waiting` : 'Not running', tone: n ? 'warn' : 'idle' };
     }
+    if (a.kind === 'outreach' && S.drafts.length) return { label: `${S.drafts.length} to send`, tone: 'ok' };
     if (a.kind === 'applier' && (a.phase === 'off' || (S.mode === 'stopped'))) return { label: 'Empty desk', tone: 'idle' };
     if (a.kind !== 'applier') return { label: 'Not running', tone: 'idle' };
     if (S.mode === 'stopped') return { label: 'Off', tone: 'idle' };
@@ -624,12 +630,41 @@ table.src tr.skip td { color: var(--ink-3); }
       `<div class="sect"><div class="sect-h"><span>Queue</span><span class="num">${S.counts.queued ?? 0} jobs</span></div>${rows}</div>`);
   }
   function outreachHTML(a) {
-    return notYetHTML(a, 'Outreach will find people at companies that fit and write messages for you to send. It never sends anything itself.');
+    const sent = S.recruiters.filter((r) => r.status !== 'found').length;
+    return `<div class="now-row">${pill(statusOf(a.id))}<p class="now">${esc(a.now)}</p></div>
+      <div class="callout info"><strong>You send every message</strong><p>Outreach runs as /prospects in ai-job-search: it finds a few people a day at companies that fit, through web search only, and drafts a connection note and a follow-up for each. It never sends anything.</p><button type="button" class="link" data-act="openTab" data-arg="recruiters">Open the recruiter page</button></div>
+      <div class="sect"><div class="sect-h"><span>Messages</span><span class="num">${S.drafts.length} to send · ${sent} sent</span></div></div>`;
   }
 
+  /** Only web addresses become links (the prospects file is written outside the bridge). */
+  /** A time today, else the day ("Nov 12"). */
+  const when = (iso) => { const d = new Date(iso); return isNaN(d) ? '' : d.toDateString() === new Date().toDateString() ? hhmmss(iso) : d.toLocaleDateString([], { month: 'short', day: 'numeric' }); };
+  const webLink = (u, label) => (/^https?:\/\//i.test(u || '') ? `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${label}</a>` : '');
+  function recruiterCard(r) {
+    const m = r.messages, waiting = r.status === 'found', btn = (act, arg, label) => `<button type="button" class="btn small" data-act="${act}" data-arg="${esc(arg)}">${label}</button>`;
+    const links = [webLink(r.profile_url, 'Profile'), webLink(r.source_url, 'Where they were found'), webLink(r.role_url, 'The role')].filter(Boolean).join(' · ');
+    const tag = waiting ? (m.email_subject ? 'LinkedIn or email' : 'LinkedIn') : r.status === 'replied' ? 'Replied' : 'Sent';
+    let h = `<article class="card"><div class="card-top"><strong>${esc(r.name)}</strong><span class="tier">${tag}</span></div>
+      <div class="card-meta">${meta(r.title, r.company, r.role)}${links ? '<br>' + links : ''}</div>`;
+    if (!waiting) h += `<p class="card-meta">${r.status === 'replied' ? `Replied, marked ${when(r.replied_at)}` : `Sent ${when(r.sent_at)}${r.channel ? ' by ' + esc(r.channel === 'email' ? 'email' : 'LinkedIn') : ''}`}</p>`;
+    h += `<div class="msg-h"><span>Why them</span><span></span></div><p class="msg">${esc(m.reason)}</p>`;
+    h += `<div class="msg-h"><span>Connection note</span><span>${m.note.length} / 200</span></div><p class="msg">${esc(m.note)}</p>`;
+    h += `<div class="msg-h"><span>Message after they accept</span><span>${m.follow_up.length} chars</span></div><p class="msg">${esc(m.follow_up)}</p>`;
+    if (m.email_subject) h += `<div class="msg-h"><span>Email to ${esc(r.email)}</span><span>listed publicly</span></div><p class="msg"><b>${esc(m.email_subject)}</b>\n\n${esc(m.email_body)}</p>`;
+    const acts = [btn('copy', `${r.id}:note`, 'Copy note'), btn('copy', `${r.id}:follow`, 'Copy message')];
+    if (m.email_subject) acts.push(btn('copy', `${r.id}:subject`, 'Copy subject'), btn('copy', `${r.id}:email`, 'Copy email'));
+    if (waiting) {
+      acts.push(btn('prospect', `${r.id}:sent:linkedin`, 'Sent on LinkedIn'));
+      if (m.email_subject) acts.push(btn('prospect', `${r.id}:sent:email`, 'Sent by email'));
+      acts.push(btn('prospect', `${r.id}:skip`, 'Skip'));
+    } else if (r.status === 'sent') acts.push(btn('prospect', `${r.id}:replied`, 'They replied'));
+    return h + `<div class="card-actions">${acts.join('')}</div></article>`;
+  }
+
+  const YOU_TABS = ['ready', 'needs', 'answers', 'recruiters'];
   function youHTML(win) {
-    const tab = win._tab === 'needs' || win._tab === 'answers' ? win._tab : 'ready';
-    const tabs = [['ready', 'Ready to submit', S.ready.length], ['needs', 'Needs you', S.needs.length], ['answers', 'Agent answers', S.answers.length]];
+    const tab = YOU_TABS.includes(win._tab) ? win._tab : 'ready';
+    const tabs = [['ready', 'Ready to submit', S.ready.length], ['needs', 'Needs you', S.needs.length], ['answers', 'Agent answers', S.answers.length], ['recruiters', 'Recruiters', S.drafts.length]];
     let h = `<div class="tabs" role="tablist">${tabs.map(([k, l, n]) => `<button type="button" role="tab" aria-selected="${k === tab}" data-act="tab" data-arg="${k}">${l}<b>${n}</b></button>`).join('')}</div>`;
     if (tab === 'ready') {
       h += S.ready.length ? S.ready.map((j) => {
@@ -646,6 +681,10 @@ table.src tr.skip td { color: var(--ink-3); }
     if (tab === 'answers') {
       h += S.answers.length ? S.answers.map((x) => `<article class="card"><div class="card-meta">${meta(x.company, 'answered by ' + x.by)}</div><strong>${esc(x.q)}</strong></article>`).join('') : '<p class="empty">No agent answers on the ready jobs.</p>';
       h += `<p class="empty" style="font-size:12px">Saved agent answers wait for your approval in the side panel’s Answers view. Until then they fill as “check this”.</p>`;
+    }
+    if (tab === 'recruiters') {
+      h += S.recruiters.length ? S.recruiters.map(recruiterCard).join('') : '<p class="empty">No messages waiting. Run /prospects in ai-job-search to find people at companies that fit and draft their messages.</p>';
+      h += `<p class="empty" style="font-size:12px">Nothing here sends anything. Send each message yourself: LinkedIn by hand, email from your own mail client. Then mark it, so nobody is written to twice.</p>`;
     }
     return h;
   }
@@ -736,6 +775,20 @@ table.src tr.skip td { color: var(--ink-3); }
       case 'submitted': tell(post(`/queue/${path(arg)}/status`, { status: 'submitted', note: 'marked in the Office' }), 'Marked as submitted. /queue sync-tracker adds it to your tracker.'); break;
       case 'requeue': tell(post(`/queue/${path(arg)}/status`, { status: 'queued', note: 'queued again from the Office' }), 'Back in the queue'); break;
       case 'skip': tell(post(`/queue/${path(arg)}/status`, { status: 'skipped', note: 'skipped in the Office' }), 'Skipped'); break;
+      // The recruiter page (#41): copy a message to send it yourself, then mark what you did.
+      case 'copy': {
+        const [pid, part] = arg.split(':');
+        const m = S.recruiters.find((r) => r.id === pid)?.messages;
+        const text = m && { note: m.note, follow: m.follow_up, subject: m.email_subject, email: m.email_body }[part];
+        if (text) navigator.clipboard.writeText(text).then(() => toast('Copied. Paste it where you send it.'), () => toast('Couldn’t copy: select the text instead.'));
+        break;
+      }
+      case 'prospect': {
+        const [pid, status, channel] = arg.split(':');
+        const said = { sent: 'Marked sent. Nobody gets written to twice.', replied: 'Marked as replied', skip: 'Skipped. They stay off the page.' }[status];
+        tell(post(`/outreach/${path(pid)}/status`, { status, ...(channel && { channel }) }), said);
+        break;
+      }
     }
     render();
   }
@@ -751,7 +804,7 @@ table.src tr.skip td { color: var(--ink-3); }
     const items = [
       ['Queue', S.counts.queued ?? 0], ['Applying', busy],
       ['Needs you', S.needs.length, 'warn', 'needs'], ['Ready to submit', S.ready.length, 'ok', 'ready'],
-      ['Agent answers', S.answers.length, '', 'answers'],
+      ['Agent answers', S.answers.length, '', 'answers'], ['Recruiter messages', S.drafts.length, '', 'recruiters'],
       ['Submitted today', S.submitted], ['Incidents today', S.incidents],
     ];
     setHTML($('#stats'), items.map(([l, v, tone, tab]) => tab
@@ -763,7 +816,7 @@ table.src tr.skip td { color: var(--ink-3); }
       const st = statusOf(id);
       const model = id === 'you' ? 'you' : A[id].model;
       const off = id !== 'you' && (A[id].kind === 'applier' ? A[id].phase === 'off' || S.mode === 'stopped' : true);
-      const line = id === 'you' ? `${S.ready.length} ready · ${S.needs.length} need you` : A[id].kind === 'fixer' ? A[id].now : A[id].kind !== 'applier' ? 'Not built yet' : off ? 'Empty desk' : A[id].now || st.label;
+      const line = id === 'you' ? `${S.ready.length} ready · ${S.needs.length} need you` : A[id].kind === 'fixer' || A[id].kind === 'outreach' ? A[id].now : A[id].kind !== 'applier' ? 'Not built yet' : off ? 'Empty desk' : A[id].now || st.label;
       return `<li><button type="button" class="r-item ${wins.has(id) ? 'open' : ''} ${off ? 'off' : ''}" data-open="${id}" style="--c:${MODEL[model].c}">
         <span class="dot"></span><span><span class="nm">${esc(Fleet.name(id))}</span> <span class="md">${esc(MODEL[model].label)}</span></span>${pill(st)}<span class="ln">${esc(line)}</span></button></li>`;
     }).join(''));

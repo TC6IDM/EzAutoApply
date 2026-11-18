@@ -34,7 +34,9 @@ Every call except `GET /health` and the Office page needs `Authorization: Bearer
 
 - **The Fixer's desk** (#32): its open tickets (incidents grouped by site, kind and question, with how many times each happened) and what it resolved lately. Each resolution also goes on the ticker. The desk counts as at work while the Fixer resolved something in the last hour.
 
-Scout and Outreach show as not running until their agents exist.
+- **The recruiter page** (#41, #58): the inbox's Recruiters tab. It lists the people ai-job-search's `/prospects` found at companies that fit, with why each one and the messages it drafted: a connection note (at most 200 characters), a follow-up, and an email only when the address is publicly listed. Each message has a copy button, and you mark what you did (Sent on LinkedIn, Sent by email, They replied, Skip), so nobody is written to twice. **Nothing here sends anything.** The people come from `~/.ezautoapply/outreach/prospects.jsonl` (`EZAA_OUTREACH_DIR`), which `/prospects` writes. It holds real names, so it stays outside both repos and is never committed.
+
+The Scout shows as not running until its agent exists.
 
 Each applier's window and each ready job also shows the latest screenshot of the job's tab (#37). A screenshot shows your answers. So the bridge keeps it in memory only: the latest per job, for at most 16 jobs. It never writes one to disk or puts one in an incident, and it serves them only with the token.
 
@@ -58,6 +60,7 @@ Without WebGL (or offline, since three.js comes from a CDN) the office falls bac
 | `POST /incidents {…}` | write an incident to `incidents/<date>/<id>.json` |
 | `GET /tickets[?open=1]` · `GET /tickets/:key` | for the Fixer (#32, `.claude/skills/ezaa-fixer`): incidents grouped into tickets by `(ats, kind, normalized label)`, newest first; one ticket with `details`, its incident files |
 | `POST /tickets/:key/resolution {outcome, note?}` | `outcome`: `fixed`, `answered`, `cantFix` or `needsYou`. Kept in `incidents/tickets.json`. An incident filed after it opens the ticket again (the fix didn't hold). |
+| `GET /outreach` · `POST /outreach/:id/status {status, channel?}` | the recruiter page's people (#41) · mark one `sent` (with `channel` `linkedin` or `email`), `replied`, `skip` or back to `found`. The same fields `tools/prospects.py mark` writes. |
 | `POST /fleet/reload` | tell the extension to reload after the Fixer rebuilt the fleet build (`npm run build:fleet`). Only the fleet's copy obeys (`obeysReload`); running Runs resume after it. |
 | `GET /ready` | jobs waiting for your Submit, each with `agentAnswered` (the labels of the fields an agent answered, to check first) |
 | `POST /ready/:id/focus` | bring that job's tab and window to the front ("go to tab") |

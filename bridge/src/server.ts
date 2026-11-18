@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { RunState, StopReason } from '../../extension/src/run/types.ts';
 import { type OfficeEvent, officeSnapshot, switchEvents } from './office.ts';
+import { CHANNELS, markProspect, PROSPECT_STATUSES, type ProspectStatus, readProspects, recruiterView } from './outreach.ts';
 import { groupTickets, OUTCOMES, type Outcome, readIncidentFiles, readResolutions, type Ticket, writeResolutions } from './tickets.ts';
 import { DEFAULT_SETTINGS, type FleetSettings, loadSettings, mergeSettings, saveSettings, switchedOff } from './settings.ts';
 import { JOB_STATUSES, type JobStatus, type QueueStore } from './queue.ts';
@@ -33,6 +34,8 @@ export interface BridgeOptions {
   officeFile?: string;
   /** Where the fleet switches are kept (#54); without it they live in memory only (tests). */
   settingsFile?: string;
+  /** ai-job-search's prospects (#41): ~/.ezautoapply/outreach/prospects.jsonl. Without it the recruiter page is empty. */
+  prospectsFile?: string;
 }
 
 export const OFFICE_FILE = fileURLToPath(new URL('../office/index.html', import.meta.url));
@@ -282,6 +285,20 @@ export function createBridge(o: BridgeOptions) {
     }
     if (m === 'POST' && p === '/fleet/reload') return [202, { commandId: queueCommand({ type: 'reload' }).id }];
 
+    // The owner's recruiter page (#41): what /prospects found and drafted. The owner sends every message.
+    if (m === 'GET' && p === '/outreach') return [200, o.prospectsFile ? readProspects(o.prospectsFile) : []];
+    hit = /^\/outreach\/(p-[0-9a-f]{10})\/status$/.exec(p);
+    if (m === 'POST' && hit) {
+      const b = await body(req);
+      const status = str(b.status, 'status') as ProspectStatus;
+      if (!PROSPECT_STATUSES.includes(status)) throw new HttpError(400, `status must be one of ${PROSPECT_STATUSES.join(', ')}`);
+      const channel = b.channel === undefined ? undefined : str(b.channel, 'channel');
+      if (channel && !(CHANNELS as readonly string[]).includes(channel)) throw new HttpError(400, `channel must be one of ${CHANNELS.join(', ')}`);
+      const done = o.prospectsFile ? markProspect(o.prospectsFile, hit[1], status, channel, new Date(now()).toISOString()) : null;
+      if (!done) throw new HttpError(404, 'No such prospect');
+      return [200, done];
+    }
+
     // The fleet switches (#54): every agent reads them here; PUT takes a partial update.
     if (m === 'GET' && p === '/settings') return [200, settings];
     if (m === 'PUT' && p === '/settings') {
@@ -357,6 +374,7 @@ export function createBridge(o: BridgeOptions) {
       screens: new Map([...screens].map(([id, s]) => [id, s.at])),
       settings,
       tickets: tickets().slice(0, 12),
+      recruiters: o.prospectsFile ? recruiterView(readProspects(o.prospectsFile)) : [],
       extraEvents: switchLog,
       now: now(),
     });

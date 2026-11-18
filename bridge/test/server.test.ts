@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { after, before, test } from 'node:test';
 import { QueueStore } from '../src/queue.ts';
 import { createBridge } from '../src/server.ts';
+import { sampleProspects } from './sample-prospects.ts';
 
 const TOKEN = 'test-token-0123456789';
 const dir = mkdtempSync(join(tmpdir(), 'ezaa-bridge-'));
@@ -109,6 +110,34 @@ test('the Fixer (#32): incidents become tickets, a resolution closes one, and th
 
   assert.equal((await call('POST', '/fleet/reload')).status, 202);
   assert.deepEqual((await call('GET', '/ext/commands')).json.map((c: { type: string }) => c.type), ['reload']);
+});
+
+test('the recruiter page (#41): prospects from ai-job-search, marked by the owner, shown on the Office', async () => {
+  const dir4 = mkdtempSync(join(tmpdir(), 'ezaa-bridge-outreach-'));
+  const prospectsFile = join(dir4, 'outreach', 'prospects.jsonl');
+  mkdirSync(join(dir4, 'outreach'));
+  writeFileSync(prospectsFile, sampleProspects().map((p) => JSON.stringify(p)).join('\n') + '\n');
+  const b = createBridge({ token: TOKEN, queue: new QueueStore(join(dir4, 'queue.jsonl')), incidentsDir: join(dir4, 'incidents'), port: 0, prospectsFile });
+  await new Promise<void>((r) => b.server.listen(0, '127.0.0.1', r));
+  const base4 = `http://127.0.0.1:${(b.server.address() as AddressInfo).port}`;
+  const c = async (method: string, path: string, body?: unknown) => {
+    const res = await fetch(base4 + path, { method, headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+    return { status: res.status, json: await res.json().catch(() => null) };
+  };
+  try {
+    assert.equal((await c('GET', '/outreach')).json.length, 5);
+    assert.equal((await c('POST', '/outreach/p-000000000a/status', { status: 'emailed' })).status, 400);
+    assert.equal((await c('POST', '/outreach/p-000000000a/status', { status: 'sent', channel: 'fax' })).status, 400);
+    assert.equal((await c('POST', '/outreach/p-ffffffffff/status', { status: 'sent' })).status, 404);
+    const sent = await c('POST', '/outreach/p-000000000a/status', { status: 'sent', channel: 'linkedin' });
+    assert.deepEqual([sent.status, sent.json.status, sent.json.channel], [200, 'sent', 'linkedin']);
+    assert.equal(readFileSync(prospectsFile, 'utf8').includes('"sent_at"'), true);
+    assert.deepEqual(b.snapshot().recruiters.map((p) => [p.name, p.status]), [['Sam Example', 'found'], ['Alex Sample', 'sent'], ['Pat Sent', 'sent']]);
+    // Without the file the page is empty, never an error.
+    assert.deepEqual((await call('GET', '/outreach')).json, []);
+  } finally {
+    b.server.close();
+  }
 });
 
 test('Stop all releases every lease, drops waiting commands and refuses new work until resumed', async () => {
