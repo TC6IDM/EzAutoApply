@@ -1,0 +1,67 @@
+# The cheap checks on every pull request into main and every push to main (#44):
+# the extension's type check and unit tests, and the issue/sprint scripts' tests.
+# Never the e2e suite here: it needs a built extension in a real Chromium, and
+# it's run locally (npm run test:e2e).
+#
+# A sprint's PR carries "sprint: running" while it is being worked and pushed to
+# many times; CI skips it then and runs ONCE when the checkpoint takes the label
+# off (.claude/skills/ezaa-sprint/sprint.mjs keeps that contract).
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review, unlabeled]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  extension:
+    name: Extension (compile + unit tests)
+    # Not while the sprint is running, and of the labels coming off only that one.
+    if: >-
+      !contains(github.event.pull_request.labels.*.name, 'sprint: running') &&
+      (github.event.action != 'unlabeled' || github.event.label.name == 'sprint: running')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: extension
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+      # Frozen: CI must never re-resolve the lockfile. postinstall runs `wxt prepare`.
+      - name: Install
+        run: npm ci
+      - name: Types
+        run: npm run compile
+      - name: Unit tests
+        if: success() || failure()
+        run: npm test
+
+  tooling:
+    name: Issue and sprint scripts
+    if: >-
+      !contains(github.event.pull_request.labels.*.name, 'sprint: running') &&
+      (github.event.action != 'unlabeled' || github.event.label.name == 'sprint: running')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # No dependencies: node:test only (the commit guard, the Inbox log, the sprint verdicts).
+      - name: Tests
+        run: node --test ".claude/tests/*.test.mjs"

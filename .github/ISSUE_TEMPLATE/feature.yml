@@ -1,0 +1,41 @@
+name: Feature or change
+description: Something new, or a change to how something works
+labels: ["type:feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Rough is fine. Claude adds the area, priority, size, milestone and a sub-issue per part it touches. Nothing ever presses Submit on an application, whatever the feature.
+  - type: textarea
+    id: what
+    attributes:
+      label: What you want
+      description: What you should see or be able to do. Screenshots or sketches welcome (with your details covered).
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: The problem it solves, or what it makes better.
+  - type: checkboxes
+    id: parts
+    attributes:
+      label: Which parts
+      options:
+        - label: The extension (filling, side panel, profile, documents)
+        - label: The classifier (Laya / Jev)
+        - label: The bridge and the Fleet Office
+        - label: The agents (ai-job-search, appliers, Fixer, outreach)
+        - label: Tooling (scripts, Claude skills, CI)
+        - label: The showcase site
+  - type: dropdown
+    id: priority
+    attributes:
+      label: How soon
+      options:
+        - "P0: fills something wrong / broken now"
+        - "P1: next up"
+        - "P2: soon"
+        - "P3: nice to have"
+        - "Not sure"
