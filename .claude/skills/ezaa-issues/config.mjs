@@ -9,7 +9,7 @@
 export const OWNER = 'TC6IDM';
 export const REPO_NAME = 'EzAutoApply';
 export const REPO = `${OWNER}/${REPO_NAME}`;
-export const PROJECT = '4';
+export const PROJECT = '5';
 export const PROJECT_URL = `https://github.com/users/${OWNER}/projects/${PROJECT}`;
 
 // Milestones, in the order a sprint works them. The key is what an issues file
