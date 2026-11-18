@@ -19,6 +19,8 @@
 //   Add --dry to print what would happen without changing anything.
 import { execFileSync } from 'node:child_process';
 import { REPO } from './config.mjs';
+import { LOGGED, withLog, sortInbox, refuseLog, standInBody, foldPlan } from './inbox-rules.mjs';
+export { LOGGED };
 
 const args = process.argv.slice(2);
 const [action, idArg] = args;
@@ -27,18 +29,12 @@ const opt = name => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[
 const gh = list => execFileSync('gh', list, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
 const ghJson = list => JSON.parse(gh(list));
 
-export const LOGGED = '✅ **Logged:**';
-const STAND_IN = /<!-- inbox-log-for:(\d+) -->/;
-
 function inboxNumber() {
   const n = ghJson(['issue', 'list', '--repo', REPO, '--label', 'inbox', '--state', 'open', '--json', 'number']);
   if (!n.length) throw new Error('no open issue labelled inbox');
   return n[0].number;
 }
 const comments = number => ghJson(['api', '--paginate', '--slurp', `repos/${REPO}/issues/${number}/comments?per_page=100`]).flat();
-const withLog = (body, text) => body.includes(LOGGED)
-  ? `${body.trimEnd()}\n${LOGGED} ${text}`
-  : `${body.trimEnd()}\n\n---\n${LOGGED} ${text}`;
 
 function editComment(id, body) {
   if (dry) { console.log(`[dry] edit ${id}`); return true; }
@@ -46,7 +42,6 @@ function editComment(id, body) {
   catch (error) { console.log(`edit of ${id} refused: ${String(error.stderr || error.message).split('\n')[0]}`); return false; }
 }
 
-const sortInbox = list => ({ standIns: list.filter(c => STAND_IN.test(c.body)), waiting: list.filter(c => !STAND_IN.test(c.body) && !c.body.includes(LOGGED)) });
 
 if (action === 'count') {
   const hook = args.includes('--hook');
@@ -72,24 +67,20 @@ if (action === 'count') {
   if (!/^\d+$/.test(idArg || '') || !text) { console.error('usage: inbox.mjs log <commentId> --text "…" [--add]'); process.exit(1); }
   const c = ghJson(['api', `repos/${REPO}/issues/comments/${idArg}`]);
   // Read just now, so a pass that ran `pending` before another pass logged this comment stops here.
-  const standIn = comments(inboxNumber()).find(x => STAND_IN.test(x.body) && x.body.match(STAND_IN)[1] === String(c.id));
-  if ((c.body.includes(LOGGED) || standIn) && !args.includes('--add')) {
+  if (refuseLog(c, comments(inboxNumber()), args.includes('--add'))) {
     console.log(`already logged (${c.html_url}), by another pass meanwhile? Nothing changed; --add appends anyway.`);
     process.exit(0);
   }
   if (editComment(c.id, withLog(c.body, text))) { console.log(`logged under ${c.html_url}`); process.exit(0); }
-  const body = `<!-- inbox-log-for:${c.id} -->\n↪ For [this comment](${c.html_url}) (to be folded into it on the next Inbox pass):\n${LOGGED} ${text}`;
+  const body = standInBody(c, text);
   if (!dry) gh(['issue', 'comment', String(inboxNumber()), '--repo', REPO, '--body', body]);
   console.log(`${dry ? '[dry] ' : ''}posted a stand-in reply; the next \`inbox.mjs fold\` moves it under the comment`);
 } else if (action === 'fold') {
-  const list = comments(inboxNumber());
-  const byId = new Map(list.map(c => [String(c.id), c]));
   let folded = 0;
-  for (const standIn of list.filter(c => STAND_IN.test(c.body))) {
-    const target = byId.get(standIn.body.match(STAND_IN)[1]);
-    const text = standIn.body.slice(standIn.body.indexOf(LOGGED) + LOGGED.length).trim();
-    if (!target) { console.log(`stand-in ${standIn.id}: its comment is gone; leaving it`); continue; }
-    if (target.body.includes(`${LOGGED} ${text}`)) {
+  for (const { standIn, target, text, action: step } of foldPlan(comments(inboxNumber()))) {
+    if (step === 'gone') { console.log(`stand-in ${standIn.id}: its comment is gone; leaving it`); continue; }
+    // Re-checked against the body as this loop changes it: two stand-ins with the same text fold once.
+    if (step === 'delete' || target.body.includes(`${LOGGED} ${text}`)) {
       // Another pass folded it already: only the stand-in is left to delete.
       if (!dry) gh(['api', '-X', 'DELETE', `repos/${REPO}/issues/comments/${standIn.id}`]);
       console.log(`${dry ? '[dry] ' : ''}${standIn.id} was already under ${target.id}; stand-in deleted`);

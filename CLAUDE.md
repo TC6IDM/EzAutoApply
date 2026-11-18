@@ -36,6 +36,8 @@ npm run smoke:classifier    # live Laya check; needs classifier running
 npm run icons               # regenerate public/icon/*.png (scripts/make-icons.mjs)
 ```
 
+The issue/sprint scripts' tests run from the repo root: `node --test ".claude/tests/*.test.mjs"` (the commit guard, the Inbox log, the sprint verdicts). Their logic lives in pure modules (`hooks/guard-rules.mjs`, `ezaa-issues/inbox-rules.mjs`, `ezaa-sprint/verdict.mjs`) that the scripts import.
+
 Laya server: `classifier\start.ps1` (or `start.sh`). The first run creates `classifier/.venv` (Python 3.12, CPU-only torch, `laya[serve]`) and downloads the model. It serves `http://127.0.0.1:8000` with the `typed-decisions` checkpoint preloaded. There is no linter configured.
 
 ## Architecture
