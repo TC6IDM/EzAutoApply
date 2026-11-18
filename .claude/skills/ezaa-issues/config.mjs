@@ -85,6 +85,27 @@ export const LABELS = {
   'area:showcase': ['ededed', 'The project page, demo and write-ups'],
 };
 
+// How bootstrap.mjs makes and checks the board (#47). The board is a copy of a
+// template board (copyProjectV2 brings the views' grouping and sort, which the
+// API can't set), then its options and filters are tuned to this repo.
+export const BOARD = {
+  title: REPO_NAME,
+  template: { owner: OWNER, number: 2 },           // PTrainr's board
+  status: ['Todo', 'In Progress', 'In Review', 'Done'],
+  options: {
+    Priority: ['P0', 'P1', 'P2', 'P3'],
+    Size: ['S', 'M', 'L'],
+    Who: Object.keys(LABELS).filter(l => l.startsWith('who:')).map(l => l.slice(4)),
+    Platform: [...Object.values(PLATFORM), 'Several', 'None'],
+    Kind: ['Epic', 'Feature', 'Bug', 'Task', 'Research', 'Decision'],
+  },
+  views: {
+    Now: `milestone:"${MILESTONE_ORDER[0]}" -kind:Epic`,
+    'Needs you': 'who:you,together -kind:Epic is:open',
+  },
+  dropViews: ['Pre-business'],                        // PTrainr-only
+};
+
 // Board fields filled from labels by sync-board.mjs.
 export function boardFields(labels) {
   const platforms = labels.filter(l => PLATFORM[l]);

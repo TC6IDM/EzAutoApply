@@ -147,6 +147,12 @@ Views:
 - **By platform:** `-kind:Epic is:open`, grouped by Platform (the part of the repo).
 - **My work:** `assignee:@me is:open -status:Done`, by milestone, hierarchy off.
 
+**Setting up or checking the board:** `node .claude/skills/ezaa-issues/bootstrap.mjs [--dry]`
+makes the labels, milestones, board (a copy of `BOARD.template`, retuned to
+`BOARD` in `config.mjs`), the repo link, `PROJECT` and the pinned Inbox, and
+changes only what differs, so a re-run on a matching board does nothing.
+`--new-board` copies a fresh board even when `PROJECT` names one.
+
 The API sets a view's name, layout, filter and columns, but not its grouping or
 sort; those are set by hand in the view's menu, or come with `copyProjectV2`.
 The "Auto-add to project" workflow is tied to a repo and doesn't copy: it is
