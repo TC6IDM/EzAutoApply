@@ -46,7 +46,7 @@ test('a web page can\'t call it, even with the token', async () => {
 });
 
 test('queue, claim, Run, the extension picks it up, and its report sets the job\'s status', async () => {
-  assert.deepEqual((await call('POST', '/queue', { jobs: [job('j1'), job('j2')] })).json, { added: ['j1', 'j2'] });
+  assert.deepEqual((await call('POST', '/queue', { jobs: [job('j1'), job('j2')] })).json, { added: ['j1', 'j2'], already: [] });
   const claimed = await call('GET', '/queue/next?worker=w1');
   assert.equal(claimed.json.id, 'j1');
   assert.equal(claimed.json.worker, 'w1');

@@ -1,6 +1,7 @@
 import { type Browser, browser } from 'wxt/browser';
 import { defineBackground } from 'wxt/utils/define-background';
 import { type BridgeCommand, BridgeClient, bridgeFields, findJobTab, obeysReload, screenMoment } from '../src/bridge/client';
+import { ownJob } from '../src/bridge/ownJob';
 import { SystemOneClient } from '../src/classifier/systemone';
 import { uploadFileName } from '../src/core/documents';
 import { isAccountSite, isExternalRedirect } from '../src/core/sites';
@@ -30,6 +31,7 @@ import type {
   DocumentResponse,
   PanelToBackground,
   RunCheckResponse,
+  SendToFleetResult,
   TabState,
 } from '../src/messages';
 import { isError } from '../src/messages';
@@ -273,9 +275,42 @@ async function checkSubmitted(tabId: number): Promise<void> {
       const now = await readRun(tabId);
       if (now?.stop?.reason !== 'submitReady') return;
       await saveRun({ ...now, stop: { reason: 'submitted', detail: said.detail }, updatedAt: Date.now() });
+      // The fleet's job is done: its tab closes a few seconds after the confirmation shows (owner, 2026-11-18).
+      setTimeout(async () => {
+        const later = await readRun(tabId).catch(() => null);
+        if (later?.jobId === run.jobId && later?.stop?.reason === 'submitted') browser.tabs.remove(tabId).catch(() => {});
+      }, CLOSE_AFTER_SUBMIT_MS);
       return;
     }
   }
+}
+
+/** How long a submitted fleet job's confirmation page stays before its tab closes. */
+const CLOSE_AFTER_SUBMIT_MS = 5000;
+
+/** The owner sends a posting to the fleet (#79): the panel's button or the right-click item. */
+async function sendToFleet(url: string, title: string): Promise<SendToFleetResult> {
+  const s = await getSettings();
+  if (!s.bridgeEnabled || !s.bridgeToken) throw new Error('Turn on the agent fleet bridge in Settings first.');
+  const job = ownJob(url, title);
+  if (!job) throw new Error('This page isn’t a job posting the fleet can open.');
+  const out = await new BridgeClient(s.bridgeUrl, s.bridgeToken).queueJobs([job]);
+  const had = out.already?.[0];
+  const name = (j: { title?: string; company?: string }) => [j.title, j.company].filter(Boolean).join(' at ');
+  if (had) return { queued: false, id: had.id, status: had.status, name: name(had) || name(job) || job.applyUrl };
+  return { queued: true, id: job.id, name: name(job) || job.applyUrl };
+}
+
+/** Feedback for the right-click item: a mark on the toolbar icon for a few seconds. */
+function badge(tabId: number | undefined, ok: boolean, title: string): void {
+  if (tabId === undefined) return;
+  browser.action.setBadgeBackgroundColor({ tabId, color: ok ? '#2f7d4f' : '#b3261e' }).catch(() => {});
+  browser.action.setBadgeText({ tabId, text: ok ? '✓' : '!' }).catch(() => {});
+  browser.action.setTitle({ tabId, title }).catch(() => {});
+  setTimeout(() => {
+    browser.action.setBadgeText({ tabId, text: '' }).catch(() => {});
+    browser.action.setTitle({ tabId, title: 'EzAutoApply' }).catch(() => {});
+  }, 6000);
 }
 
 async function onBridgeCommand(client: BridgeClient, cmd: BridgeCommand): Promise<void> {
@@ -599,6 +634,10 @@ async function handlePanel(msg: PanelToBackground): Promise<unknown> {
       const s = await getSettings();
       return new BridgeClient(s.bridgeUrl, s.bridgeToken).health();
     }
+    case 'sendToFleet': {
+      const tab = await browser.tabs.get(msg.tabId);
+      return sendToFleet(tab.url ?? '', tab.title ?? '');
+    }
     case 'settingsChanged': {
       await syncBridge();
       const settings = await getSettings();
@@ -622,6 +661,19 @@ export default defineBackground(() => {
       (e: Error) => sendResponse({ error: e.message || String(e) }),
     );
     return true; // keep the channel open for the async response
+  });
+
+  // Right-click a page or a link (LinkedIn's job list) → the fleet's queue (#79).
+  browser.runtime.onInstalled.addListener(() => {
+    browser.contextMenus?.removeAll().then(() => browser.contextMenus.create({ id: 'ezaa-send', title: 'Send to the EzAutoApply fleet', contexts: ['page', 'link'] }));
+  });
+  browser.contextMenus?.onClicked.addListener((info, tab) => {
+    if (info.menuItemId !== 'ezaa-send') return;
+    const url = info.linkUrl ?? info.pageUrl ?? tab?.url ?? '';
+    sendToFleet(url, info.linkUrl ? '' : (tab?.title ?? '')).then(
+      (r) => badge(tab?.id, true, r.queued ? `Queued for the fleet: ${r.name}` : `Already in the queue (${r.status}): ${r.name}`),
+      (e: Error) => badge(tab?.id, false, `Not queued: ${e.message}`),
+    );
   });
 
   browser.commands.onCommand.addListener(async (command) => {
