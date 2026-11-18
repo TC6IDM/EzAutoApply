@@ -19,6 +19,26 @@ describe('blockers Run to Submit stops at (#11)', () => {
     expect(kinds(BLOCKER_PAGES.cloudflare)).toEqual(['captcha']);
   });
 
+  it('not an invisible hCaptcha that takes up no room until Submit (Lever, #75)', () => {
+    // Lever's markup: a full-width .h-captcha laid out 0 px tall, its challenge frame hidden.
+    document.body.innerHTML = `<form><input name="name"><div id="h-captcha" class="h-captcha"><iframe title="Widget containing checkbox for hCaptcha security challenge" src="https://newassets.hcaptcha.com/captcha/v1/x/static/hcaptcha-enclave.html#frame=en"></iframe></div><button>Submit application</button></form>
+      <div><iframe style="visibility:hidden" src="https://newassets.hcaptcha.com/captcha/v1/x/static/hcaptcha-enclave.html#frame=en"></iframe></div>`;
+    const box = (w: number, h: number) => () => ({ x: 0, y: 0, top: 0, left: 0, right: w, bottom: h, width: w, height: h, toJSON: () => ({}) }) as DOMRect;
+    document.documentElement.getBoundingClientRect = box(1536, 2000);
+    const holder = document.querySelector('.h-captcha')!;
+    holder.getBoundingClientRect = box(1461, 0);
+    holder.querySelector('iframe')!.getBoundingClientRect = box(1461, 0);
+    try {
+      expect(findBlockers(document).map((b) => b.kind)).toEqual([]);
+      // The same widget once it shows its checkbox: a CAPTCHA.
+      holder.getBoundingClientRect = box(303, 78);
+      holder.querySelector('iframe')!.getBoundingClientRect = box(303, 78);
+      expect(findBlockers(document).map((b) => b.kind)).toEqual(['captcha']);
+    } finally {
+      delete (document.documentElement as { getBoundingClientRect?: unknown }).getBoundingClientRect;
+    }
+  });
+
   it('not the invisible reCAPTCHA v3 badge on ordinary forms', () => {
     expect(kinds(BLOCKER_PAGES.invisibleRecaptcha)).toEqual([]);
   });
