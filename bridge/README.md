@@ -29,7 +29,7 @@ Every call except `GET /health` needs `Authorization: Bearer <token>`. Calls fro
 | `POST /queue/:id/status {status, note?, page?, tabUrl?}` | `running`/`claimed` renew the lease, anything else ends it |
 | `POST /run {jobId, urlPrefix?}` | ask the extension to Run that job's tab |
 | `GET /tabs/:jobId/status` | the latest `RunState` the extension reported |
-| `POST /answers {jobId, fieldId, frameId?, answer, save?}` | ask the extension to fill a field (and save the answer) |
+| `POST /answers {jobId, fieldId, frameId?, answer, save?}` | ask the extension to fill a field. With `save: {scope, sourceRefs?, createdBy?}` (scope `global` or a hostname) the answer is also saved as an agent's, which fills for review until the owner approves it in Answers (#21). It never replaces an answer the owner wrote. |
 | `POST /incidents {…}` | write an incident to `incidents/<date>/<id>.json` |
 | `GET /ready` | jobs waiting for your Submit |
 | `POST /stop-all` · `POST /resume` | the kill switch: every lease released, waiting commands dropped, the extension told to stop every Run, no new claims or Runs until resumed |

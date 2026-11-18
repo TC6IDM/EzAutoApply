@@ -125,6 +125,8 @@ Each field that needs you shows up on the side panel's **Apply** tab with an inp
 
 On later applications, that question, or a rephrasing of it, fills automatically. All saved answers can be edited on the **Answers** tab.
 
+Answers written by an agent through the bridge, or imported, are kept apart from yours until you approve them. They still fill, but always marked for review. The **Answers** tab says how many wait, shows them, and has **Approve** on each and **Approve all**. Editing one approves it too. They never replace an answer you gave yourself.
+
 Click a question's title in the side panel to scroll the page to it.
 
 If a field on some site isn't filled correctly, **Copy details** on its card copies what EzAutoApply saw: the label, the options, and the HTML around the field, with every value stripped out. Paste that into a bug report and the site can be fixed precisely.

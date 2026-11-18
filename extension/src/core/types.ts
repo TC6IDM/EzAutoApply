@@ -83,7 +83,20 @@ export interface SavedAnswer {
   timesUsed: number;
   lastUsed: number;
   createdAt: number;
+  /** Who wrote it (#21): the owner, an agent through the bridge, or an import. Missing means 'you'. */
+  origin?: AnswerOrigin;
+  /** An agent's or an import's answer fills as `review` until the owner approves it. Missing means approved. */
+  approved?: boolean;
+  /** Where an agent found it: profile sections, documents, earlier applications. */
+  sourceRefs?: string[];
+  /** Which agent wrote it ("answerer", "fixer"…). */
+  createdBy?: string;
 }
+
+export type AnswerOrigin = 'you' | 'agent' | 'import';
+
+export const originOf = (a: Pick<SavedAnswer, 'origin'>): AnswerOrigin => a.origin ?? 'you';
+export const isApproved = (a: Pick<SavedAnswer, 'approved'>): boolean => a.approved !== false;
 
 export interface ClassifierSettings {
   provider: 'laya' | 'jev' | 'none';

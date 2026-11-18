@@ -512,7 +512,7 @@ test('an agent queues a job and asks the bridge for a Run; the extension runs it
     await form.goto(apply);
     await autofill(worker, apply);
     const dir = join(home, 'incidents');
-    const incidents = (): { kind: string; ats: string; url: string; field?: { label: string } }[] => {
+    const incidents = (): { kind: string; ats: string; url: string; field?: { id: string; frameId: number; label: string } }[] => {
       try {
         return readdirSync(dir, { recursive: true })
           .map(String)
@@ -525,6 +525,18 @@ test('an agent queues a job and asks the bridge for a Run; the extension runs it
     await expect.poll(() => incidents().find((i) => i.field?.label.startsWith('Why do you want'))?.kind, { timeout: 30_000 }).toBe('unmatched');
     const written = JSON.stringify(incidents()).toLowerCase();
     for (const value of ['jordan', 'rivera', 'example.com', '123-4567', 'jrivera', 'acme corp']) expect(written, value).not.toContain(value);
+
+    // #21: an agent answers that field and saves it; the owner approves it in Answers.
+    const why = incidents().find((i) => i.field?.label.startsWith('Why do you want'))!.field!;
+    const answer = { jobId: 'job-1', fieldId: why.id, frameId: why.frameId, answer: 'The work on TPS reports.', save: { scope: 'global', createdBy: 'answerer' } };
+    expect((await api('POST', '/answers', answer)).status).toBe(202);
+    await expect(form.locator('#why')).toHaveValue('The work on TPS reports.', { timeout: 30_000 });
+    await panel.bringToFront();
+    await panel.getByRole('tab', { name: 'Answers' }).click();
+    await expect(panel.getByText('1 answer from an agent or an import waits')).toBeVisible();
+    await expect(panel.getByText('From an agent (answerer)')).toBeVisible();
+    await panel.getByRole('button', { name: 'Approve', exact: true }).click();
+    await expect(panel.getByText('1 answer from an agent or an import waits')).toBeHidden();
   } finally {
     proc.kill();
   }

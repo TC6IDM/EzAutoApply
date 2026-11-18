@@ -4,6 +4,7 @@ import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   addDocument,
+  approveAnswers,
   changeDocumentKind,
   db,
   deleteDocument,
@@ -69,6 +70,20 @@ describe('answers', () => {
     expect(all).toHaveLength(2);
     expect(all.find((a) => a.scope === 'global')?.answer).toBe('Yes');
   });
+
+  it('keeps who wrote an answer; an agent waits for approval and never replaces the owner’s (#21)', async () => {
+    const mine = await saveAnswer({ question: 'Notice period?', answer: 'Two weeks', fieldKind: 'text', scope: 'global' });
+    expect(mine).toMatchObject({ origin: 'you', approved: true });
+    expect(await saveAnswer({ question: 'Notice period?', answer: 'A month', fieldKind: 'text', scope: 'global', origin: 'agent' })).toMatchObject({ id: mine.id, answer: 'Two weeks' });
+
+    const agent = await saveAnswer({ question: 'Years with React?', answer: '3', fieldKind: 'text', scope: 'global', origin: 'agent', createdBy: 'answerer', sourceRefs: ['profile.experience[0]'] });
+    expect(agent).toMatchObject({ origin: 'agent', approved: false, createdBy: 'answerer', sourceRefs: ['profile.experience[0]'] });
+    // A later agent answer to the same question replaces an unapproved one; the owner's answer replaces either.
+    expect((await saveAnswer({ question: 'Years with React?', answer: '4', fieldKind: 'text', scope: 'global', origin: 'agent' })).answer).toBe('4');
+    await approveAnswers([agent.id]);
+    expect((await listAnswers()).find((a) => a.id === agent.id)).toMatchObject({ approved: true, origin: 'agent' });
+    expect(await saveAnswer({ question: 'Years with React?', answer: '5', fieldKind: 'text', scope: 'global' })).toMatchObject({ id: agent.id, answer: '5', origin: 'you', approved: true });
+  });
 });
 
 describe('backup', () => {
@@ -86,6 +101,19 @@ describe('backup', () => {
     expect(doc?.fileName).toBe('cl.pdf');
     expect(await doc!.blob.text()).toBe('hello');
     expect((await listAnswers())[0].answer).toBe('A');
+  });
+
+  it('round-trips who wrote each answer, and reads a backup from before #21 as the owner’s own', async () => {
+    await saveAnswer({ question: 'Agent Q?', answer: 'A', fieldKind: 'text', scope: 'global', origin: 'agent', sourceRefs: ['cv'] });
+    const dump = JSON.parse(JSON.stringify(await exportAll()));
+    await importAll(dump);
+    expect((await listAnswers())[0]).toMatchObject({ origin: 'agent', approved: false, sourceRefs: ['cv'] });
+
+    const old = { ...dump, answers: dump.answers.map(({ origin: _o, approved: _a, sourceRefs: _s, ...rest }: Record<string, unknown>) => rest) };
+    await importAll(old);
+    const [a] = await listAnswers();
+    expect(a.origin ?? 'you').toBe('you');
+    expect(a.approved !== false).toBe(true);
   });
 
   it('rejects files that are not backups', async () => {

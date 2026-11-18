@@ -8,7 +8,7 @@ import type { SiteError } from '../src/fill/siteErrors';
 import { fieldIncidents, type Incident, incidentKey, type Redaction, redactionsFor, runIncidents } from '../src/incidents/incident';
 import { newRun, type PageCheck, type RunDeps, runPages } from '../src/run/loop';
 import type { RunState } from '../src/run/types';
-import type { AnswerValue, DocKind, DocSelection } from '../src/core/types';
+import type { AnswerValue, DocKind, DocSelection, SavedAnswer } from '../src/core/types';
 import {
   blobToBase64,
   documentFor,
@@ -251,14 +251,32 @@ async function onBridgeCommand(client: BridgeClient, cmd: BridgeCommand): Promis
     await client.reportRun(cmd.jobId, run, []);
     return;
   }
-  // An answer for a field on the job's tab. It fills the field only: agent answers are saved to
-  // the answer bank once they can be flagged for approval (#21).
+  // An answer for a field on the job's tab. With `save`, it also goes into the answer bank as an
+  // agent's answer, which fills for review until the owner approves it in Answers (#21).
   const all = await browser.storage.session.get(null);
   const run = Object.values(all).find((v) => (v as RunState)?.jobId === cmd.jobId && typeof (v as RunState).tabId === 'number') as RunState | undefined;
   if (!run) return;
   const fields = Object.values((await readTab(run.tabId)).reports).flatMap((r) => r.fields);
-  const frameId = cmd.frameId ?? fields.find((f) => f.id === cmd.fieldId)?.frameId ?? 0;
+  const field = fields.find((f) => f.id === cmd.fieldId && (cmd.frameId === undefined || f.frameId === cmd.frameId));
+  const frameId = cmd.frameId ?? field?.frameId ?? 0;
   await toTab(run.tabId, { type: 'applyAnswer', fieldId: cmd.fieldId, answer: cmd.answer as AnswerValue }, frameId);
+  const save = cmd.save as { scope?: unknown; sourceRefs?: unknown; createdBy?: unknown } | null | undefined;
+  const a = cmd.answer;
+  const storable = typeof a === 'string' || typeof a === 'boolean' || (Array.isArray(a) && a.every((x) => typeof x === 'string'));
+  // Never a password or a file, and never a field nobody could name again.
+  if (save && field && storable && field.kind !== 'password' && field.kind !== 'file' && field.label !== '(unlabeled field)') {
+    await saveAnswer({
+      question: field.label.replace(/\s*\*\s*$/, ''),
+      fieldKind: field.kind,
+      ...(field.options.length && { options: field.options }),
+      ...(field.key && { canonicalKey: field.key }),
+      answer: a as SavedAnswer['answer'],
+      scope: typeof save.scope === 'string' && save.scope ? save.scope : 'global',
+      origin: 'agent',
+      ...(Array.isArray(save.sourceRefs) && { sourceRefs: save.sourceRefs.map(String).slice(0, 10) }),
+      ...(typeof save.createdBy === 'string' && { createdBy: save.createdBy.slice(0, 40) }),
+    });
+  }
 }
 
 /** Autofill every frame and wait until the last one is done (the message only waits for the first). */

@@ -6,6 +6,8 @@ import {
   defaultSettings,
   type DocKind,
   type DocumentMeta,
+  isApproved,
+  originOf,
   type SavedAnswer,
   type Settings,
   type StoredDocument,
@@ -36,6 +38,18 @@ class EzDb extends Dexie {
       answers: 'id, normalized, scope, lastUsed',
       applications: 'id, url, host, date',
     });
+    // #21: every answer saved before provenance was the owner's own, so it is approved.
+    this.version(2)
+      .stores({})
+      .upgrade((tx) =>
+        tx
+          .table('answers')
+          .toCollection()
+          .modify((a: SavedAnswer) => {
+            a.origin ??= 'you';
+            a.approved ??= true;
+          }),
+      );
   }
 }
 
@@ -202,6 +216,9 @@ export async function saveAnswer(input: Omit<SavedAnswer, 'id' | 'normalized' | 
   const normalized = normalize(input.question);
   // One answer per question and scope: answering again replaces the old answer.
   const existing = await db.answers.where('normalized').equals(normalized).filter((a) => a.scope === input.scope).first();
+  const origin = input.origin ?? 'you';
+  // An agent or an import never replaces an answer the owner wrote or approved (#21).
+  if (existing && origin !== 'you' && (originOf(existing) === 'you' || isApproved(existing))) return existing;
   const now = Date.now();
   const row: SavedAnswer = {
     id: existing?.id ?? newId(),
@@ -210,9 +227,17 @@ export async function saveAnswer(input: Omit<SavedAnswer, 'id' | 'normalized' | 
     createdAt: existing?.createdAt ?? now,
     lastUsed: now,
     ...input,
+    origin,
+    // The owner's own answers are approved by being theirs; anyone else's wait for the owner.
+    approved: origin === 'you' ? true : (input.approved ?? false),
   };
   await db.answers.put(row);
   return row;
+}
+
+/** Approve answers an agent or an import wrote, so they fill like the owner's own (#21). */
+export async function approveAnswers(ids: string[]): Promise<void> {
+  await db.answers.bulkUpdate(ids.map((id) => ({ key: id, changes: { approved: true } })));
 }
 
 export async function updateAnswer(id: string, changes: Partial<SavedAnswer>): Promise<void> {
