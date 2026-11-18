@@ -83,7 +83,22 @@ export const LABELS = {
   'area:devx': ['ededed', 'Developer tools, tests, CI, Claude skills'],
   'area:docs': ['ededed', 'CLAUDE.md, README, plans'],
   'area:showcase': ['ededed', 'The project page, demo and write-ups'],
+  'repo:ai-job-search': ['c9e3f6', 'The change lands in TC6IDM/ai-job-search (the sprint builds it in its linked worktree)'],
 };
+
+// Other repos one sprint works with this one (#57). An issue stays on this board;
+// its label says where the code goes. The sprint never touches `path` itself (the
+// owner's own checkout, often mid-edit): it adds a worktree beside it on the
+// sprint's branch, made from `remote`/`base`, and opens that repo's own PR.
+export const LINKED_REPOS = {
+  'ai-job-search': { path: '../ai-job-search', repo: `${OWNER}/ai-job-search`, remote: 'origin', base: 'main', label: 'repo:ai-job-search' },
+};
+
+/** The linked repo an issue's labels send it to, or null for this repo. */
+export function linkedRepoOf(labels) {
+  const names = labels.map(l => (typeof l === 'string' ? l : l.name));
+  return Object.keys(LINKED_REPOS).find(k => names.includes(LINKED_REPOS[k].label)) ?? null;
+}
 
 // How bootstrap.mjs makes and checks the board (#47). The board is a copy of a
 // template board (copyProjectV2 brings the views' grouping and sort, which the

@@ -39,8 +39,11 @@ Don't log: questions answered on the spot, work finished in the same change
 (say `Fixes #N` if it had an issue), or anything the owner says not to track.
 
 **Other repos.** Work in `ai-job-search` that serves the fleet (`/queue`, a
-portal CLI, the tracker) is logged **here** with `platform:agents`, since that
-repo is a fork and its own issues belong to upstream. Work on the portfolio
+portal CLI, the tracker, the `/fleet` and `apply-runner` skills, `/answer`) is
+logged **here** with `platform:agents`, since that repo came from an upstream
+project whose issues belong there. Add **`repo:ai-job-search`** when the code
+lands in that repo: the sprint then builds it in its linked worktree and opens
+that repo's PR (ezaa-sprint SKILL.md, "Linked repos"). Work on the portfolio
 site (`TC6IDM/TC6IDM.github.io`) is logged **here** too, with `platform:site`,
 under the Showcase epic: the site's CLAUDE.md keeps its issues on the source
 repos' boards (Ride The Bus does the same with its epic #39), and a site commit
@@ -68,6 +71,7 @@ names the issue it serves (`… (TC6IDM/EzAutoApply#N)`).
 | Size | `size:S` ≈ one session · `size:M` two or three · `size:L` a week or more |
 | Who | `who:you` (the owner: accounts, decisions, money, a real application) · `who:claude` · `who:together` (a live job site, the owner's accounts) |
 | Status | `status:blocked` · `status:needs-decision` · `status:needs-site` (needs a live application page; save its markup into a fixture first if possible) |
+| Repo | `repo:ai-job-search` when the code lands in TC6IDM/ai-job-search (`LINKED_REPOS` in `config.mjs`); none for this repo |
 
 `inbox` is only for the pinned Inbox issue. The full list with colours and
 descriptions is `LABELS` in `config.mjs`.

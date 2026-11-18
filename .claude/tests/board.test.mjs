@@ -74,3 +74,13 @@ test('withProjectNumber rewrites only the PROJECT line', () => {
   assert.equal(withProjectNumber("export const PROJECT = '';", 7), "export const PROJECT = '7';");
   assert.throws(() => withProjectNumber('no project here', 1));
 });
+
+test('an issue labelled repo:ai-job-search goes to the linked worktree; others stay here (#57)', async () => {
+  const { LINKED_REPOS, LABELS, linkedRepoOf } = await import('../skills/ezaa-issues/config.mjs');
+  assert.equal(linkedRepoOf([{ name: 'platform:agents' }, { name: 'repo:ai-job-search' }]), 'ai-job-search');
+  assert.equal(linkedRepoOf(['platform:agents', 'area:queue']), null, 'platform:agents alone can be either repo');
+  for (const [name, l] of Object.entries(LINKED_REPOS)) {
+    assert.ok(LABELS[l.label], `${name}'s label ${l.label} is in LABELS`);
+    assert.notEqual(l.remote, 'upstream', 'never the project a fork came from');
+  }
+});

@@ -87,8 +87,8 @@ node .claude/skills/ezaa-sprint/sprint.mjs start [--issues 12,34,56 [--only]] [-
      sample profile, never `exportAll` output);
    - a running Laya server, when the change can't be tested with the
      classifier off (the classifier is optional: most can);
-   - **work in another repo** (`TC6IDM/TC6IDM.github.io`, `ai-job-search`):
-     unless the owner asked for exactly that work, then start with
+   - **work in another repo** other than a linked one (below; e.g.
+     `TC6IDM/TC6IDM.github.io`): unless the owner asked for exactly that work, then start with
      `--external <that checkout>` (this repo's branch gets no commits; the work
      follows that repo's own CLAUDE.md; `finish N --note … --pr <url>`). The
      guard still asks on every commit there, so an unattended external sprint
@@ -143,6 +143,32 @@ node .claude/skills/ezaa-sprint/sprint.mjs start [--issues 12,34,56 [--only]] [-
    do it in #M's commit, naming both.
 7. Back to 1. Run `sprint.mjs budget` after each big step of a long issue too;
    obey the hook the moment it speaks.
+
+### Linked repos: ai-job-search (#57)
+
+One sprint also works `TC6IDM/ai-job-search` (`LINKED_REPOS` in
+`../ezaa-issues/config.mjs`). Its issues stay on this board, labelled
+`repo:ai-job-search`.
+- `start` (or `sprint.mjs link` for a sprint already running) adds a **git
+  worktree** at `<Desktop>/ai-job-search-sprint` on a branch named like the
+  sprint's (`sprint/<stamp>`), made from that repo's `origin/main`. The owner's
+  own checkout (`Desktop/ai-job-search`, often mid-edit on a branch of its own)
+  is never switched, committed to, stashed or cleaned.
+- `begin N` on a labelled issue says where to work. Build it in the worktree,
+  under **that repo's CLAUDE.md**. Its resume and profile content is personal,
+  so it never goes into this public repo's issues or PRs, and tests there use
+  made-up data.
+- Commit there with `git -C "<worktree>" commit -m "<title> (TC6IDM/EzAutoApply#N)" …`.
+  The guard allows commits and pushes in that worktree on that branch only.
+  It never allows them in the owner's checkout, on its main or to `upstream`,
+  and never a force-push.
+- `finish N --note …` checks the worktree (clean, last commit names `#N`) and
+  pushes it. It opens or updates ai-job-search's own PR (`Fixes TC6IDM/EzAutoApply#N`
+  lines), lists the issue under "In ai-job-search" on this repo's PR (never as a
+  Fixes line here), and moves the card to In Review.
+- `checkpoint` merges that repo's `origin/main` into the worktree. If the merge
+  needs judgment it aborts and says so; `ask` about it. Then it updates that PR.
+  `end` removes the worktree when it is clean and keeps the branch.
 
 ### Winding down (the person asks to stop)
 

@@ -39,17 +39,72 @@ export function sprintBranch(state, branch, now = Date.now()) {
   return branch === state.branch || branch.startsWith('wip/issue-') ? branch : null;
 }
 
-/** ctx: { branch: the checked-out branch, state: the sprint state (or null), now }. */
-export function decide(cmd, { branch = '', state = null, now = Date.now() } = {}) {
+// ---------- which checkouts a command touches (#57) ----------
+// A sprint also works a linked repo (ai-job-search) in its own worktree, and a
+// command can reach any checkout with `cd <dir> &&` or `git -C <dir>`. The guard
+// judges every checkout the command names, not only the session's own (before
+// #57, `git -C ../other commit` from a sprint branch was let through).
+
+/** Forward slashes, a Git Bash /c/ drive as c:, lower case, no trailing slash: for comparing only. */
+export const normPath = p => String(p || '').replace(/\\/g, '/').replace(/^\/([a-zA-Z])\//, '$1:/').replace(/\/+$/, '').toLowerCase();
+const unquote = v => v.replace(/^"([\s\S]*)"$/, '$1').replace(/^'([\s\S]*)'$/, '$1');
+const ARG = `("[^"]*"|'[^']*'|[^\\s;&|]+)`;
+const absolute = p => /^([a-zA-Z]:|\/|\\)/.test(p);
+const joinDir = (a, b) => (absolute(b) ? b : `${a}/${b}`);
+
+/**
+ * The directories a command's git calls run in: a leading `cd <dir> &&` (or `;`)
+ * moves the base off `cwd`, and each `git -C <dir>` adds one. Always at least the base.
+ */
+export function gitDirs(cmd, cwd) {
+  let base = cwd;
+  const cd = String(cmd).match(new RegExp(`^\\s*cd\\s+${ARG}\\s*(?:&&|;)`));
+  if (cd) base = joinDir(cwd, unquote(cd[1]));
+  const dirs = [base];
+  for (const m of String(cmd).matchAll(new RegExp(`\\bgit\\s+(?:-c\\s+\\S+\\s+)*-C\\s+${ARG}`, 'g'))) dirs.push(joinDir(base, unquote(m[1])));
+  return [...new Set(dirs)];
+}
+
+/** A push to the remote named upstream (the project ai-job-search came from): never the sprint's. */
+export const pushesUpstream = cmd => /\bgit\b[^|;&]*\bpush\b(?:\s+-\S+)*\s+upstream\b/.test(cmd);
+
+/**
+ * The linked checkout's branch a live sprint may commit on there, or null: only
+ * the worktree sprint.mjs made (state.linked[name].worktree), on its own branch.
+ */
+export function linkedBranch(state, place, now = Date.now()) {
+  if (!place?.toplevel || !sprintBranch(state, state?.branch, now)) return null;
+  for (const l of Object.values(state.linked || {})) {
+    if (l?.worktree && normPath(l.worktree) === normPath(place.toplevel)
+      && String(l.branch).startsWith('sprint/') && place.branch === l.branch) return l.branch;
+  }
+  return null;
+}
+
+/** The sprint branch a place ({ toplevel, branch }) is, or null. `home` is this repo's toplevel. */
+export function sprintPlace(state, place, home, now = Date.now()) {
+  const inHome = !home || !place.toplevel || normPath(place.toplevel) === normPath(home);
+  return inHome ? sprintBranch(state, place.branch, now) : linkedBranch(state, place, now);
+}
+
+/**
+ * ctx: { branch: the checked-out branch, state: the sprint state (or null), now,
+ *        places: [{ toplevel, branch }] for every checkout the command touches
+ *        (guard.mjs fills it in; without it, `branch` in this repo), home: this repo's toplevel }.
+ */
+export function decide(cmd, { branch = '', state = null, now = Date.now(), places = null, home = '' } = {}) {
   if (typeof cmd !== 'string' || !cmd.trim()) return null;
   if (isForcePush(cmd)) return { decision: 'deny', reason: 'Force-push is blocked in EzAutoApply. Ask the owner, and do it by hand if they agree.' };
-  if (isPush(cmd) && !hasRefspec(cmd) && branch === 'main') {
+  const where = places?.length ? places : [{ toplevel: home, branch }];
+  if (isPush(cmd) && !hasRefspec(cmd) && where.some(p => p.branch === 'main')) {
     return { decision: 'deny', reason: 'Bare `git push` from main is blocked. Name the branch (`git push origin main:main`), after asking.' };
   }
-  const onSprint = sprintBranch(state, branch, now);
-  if (isMerge(cmd) && onSprint) return { decision: 'deny', reason: 'A sprint never merges (ezaa-sprint SKILL.md). The owner merges the sprint PR.' };
+  // Every checkout the command touches must be the sprint's, or none of it is.
+  const allowed = where.map(p => sprintPlace(state, p, home, now));
+  const onSprint = allowed.every(Boolean) ? [...new Set(allowed)].join(', ') : null;
+  if (isMerge(cmd) && allowed.some(Boolean)) return { decision: 'deny', reason: 'A sprint never merges (ezaa-sprint SKILL.md). The owner merges the sprint PR.' };
   if (isCommit(cmd) || isPush(cmd)) {
-    if (onSprint && !(isPush(cmd) && namesMain(cmd))) {
+    if (onSprint && !(isPush(cmd) && (namesMain(cmd) || pushesUpstream(cmd)))) {
       return { decision: 'allow', reason: `ezaa-sprint is running on ${onSprint}: the sprint exception to the commit rule (its own branches only).` };
     }
     return { decision: 'ask', reason: 'CLAUDE.md ground rule: never commit or push without the owner\'s yes for this specific commit or push.' };

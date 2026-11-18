@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { decide, sprintBranch, STALE_HOURS, KEEP_GOING_STALE_HOURS } from '../hooks/guard-rules.mjs';
+import { decide, gitDirs, normPath, sprintBranch, STALE_HOURS, KEEP_GOING_STALE_HOURS } from '../hooks/guard-rules.mjs';
 import * as verdict from '../skills/ezaa-sprint/verdict.mjs';
 
 const NOW = Date.parse('2026-11-18T12:00:00Z');
@@ -75,6 +75,52 @@ test('gh pr merge is denied during a sprint, left alone otherwise', () => {
 
 test('other commands are left to the normal permission rules', () => {
   for (const cmd of ['git status', 'git log --oneline', 'npm test', '', '   ']) assert.equal(d(cmd), null, JSON.stringify(cmd));
+});
+
+// #57: one sprint works EzAutoApply and the linked ai-job-search worktree.
+const HOME = 'C:/Users/me/Desktop/EzAutoApply';
+const WT = 'C:/Users/me/Desktop/ai-job-search-sprint';
+const linked = (over = {}) => sprint({ linked: { 'ai-job-search': { worktree: 'C:\\Users\\me\\Desktop\\ai-job-search-sprint', branch: sprint().branch } }, ...over });
+const at = (toplevel, branch) => ({ toplevel, branch });
+
+test('gitDirs finds every checkout a command reaches', () => {
+  assert.deepEqual(gitDirs('git commit -m x', HOME), [HOME]);
+  assert.deepEqual(gitDirs('cd ../ai-job-search && git commit -m x', HOME), [`${HOME}/../ai-job-search`]);
+  assert.deepEqual(gitDirs(`git -C "${WT}" commit -m x`, HOME), [HOME, WT]);
+  assert.deepEqual(gitDirs('cd /c/x && git add -A && git -C sub commit', HOME), ['/c/x', '/c/x/sub']);
+  assert.equal(normPath('/c/Users/Me/'), normPath('C:\\Users\\me'));
+});
+
+test('a live sprint may commit and push in its linked worktree, on its branch only', () => {
+  const state = linked();
+  const ok = { state, home: HOME, places: [at(WT, state.branch)] };
+  assert.equal(d('git commit -m "Queue: x (TC6IDM/EzAutoApply#25)"', ok), 'allow');
+  assert.equal(d(`git push -u origin ${state.branch}`, ok), 'allow');
+  // Both checkouts at once: each must be the sprint's.
+  assert.equal(d('git commit -m x', { state, home: HOME, places: [at(HOME, state.branch), at(WT, state.branch)] }), 'allow');
+  assert.equal(d('git commit -m x', { state, home: HOME, places: [at(HOME, 'main'), at(WT, state.branch)] }), 'ask');
+});
+
+test('the linked exception never reaches the owner\'s own checkout, its main, or upstream', () => {
+  const state = linked();
+  const owner = 'C:/Users/me/Desktop/ai-job-search';
+  assert.equal(d('git commit -m x', { state, home: HOME, places: [at(owner, 'resume-update')] }), 'ask', 'the owner\'s checkout');
+  assert.equal(d('git commit -m x', { state, home: HOME, places: [at(owner, state.branch)] }), 'ask', 'same branch name, wrong folder');
+  assert.equal(d('git commit -m x', { state, home: HOME, places: [at(WT, 'main')] }), 'ask');
+  assert.equal(d('git push origin HEAD:main', { state, home: HOME, places: [at(WT, state.branch)] }), 'ask');
+  assert.equal(d(`git push upstream ${state.branch}`, { state, home: HOME, places: [at(WT, state.branch)] }), 'ask');
+  assert.equal(d(`git push -u upstream ${state.branch}`, { state, home: HOME, places: [at(HOME, state.branch)] }), 'ask');
+  assert.equal(d('git push --force origin x', { state, home: HOME, places: [at(WT, state.branch)] }), 'deny');
+  assert.equal(d('git commit -m x', { state: sprint(), home: HOME, places: [at(WT, state.branch)] }), 'ask', 'no link in the state');
+  const stale = linked({ readings: [{ at: hoursAgo(STALE_HOURS + 1) }] });
+  assert.equal(d('git commit -m x', { state: stale, home: HOME, places: [at(WT, state.branch)] }), 'ask', 'a stale sprint links nothing');
+});
+
+test('git -C into another checkout is judged there, not by the session\'s branch', () => {
+  const state = sprint();
+  // Before #57 this was allowed: the session sat on the sprint branch.
+  assert.equal(d('git -C ../elsewhere commit -m x', { state, home: HOME, places: [at(HOME, state.branch), at('C:/Users/me/Desktop/elsewhere', 'feature')] }), 'ask');
+  assert.equal(d('git push', { state, home: HOME, places: [at(HOME, state.branch), at(WT, 'main')] }), 'deny', 'a bare push from any main');
 });
 
 test('guard.mjs speaks the PreToolUse hook protocol', () => {

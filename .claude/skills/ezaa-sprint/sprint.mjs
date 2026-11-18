@@ -54,12 +54,12 @@
 // Claude login. The token is read from ~/.claude/.credentials.json (or the macOS Keychain),
 // sent only to api.anthropic.com, and never printed or stored anywhere else.
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { homedir, tmpdir, platform } from 'node:os';
 import { join, resolve } from 'node:path';
 import https from 'node:https';
 
-import { REPO, REPO_NAME, OWNER, PROJECT, MILESTONE_ORDER as MILESTONES } from '../ezaa-issues/config.mjs';
+import { REPO, REPO_NAME, OWNER, PROJECT, MILESTONE_ORDER as MILESTONES, LINKED_REPOS, linkedRepoOf } from '../ezaa-issues/config.mjs';
 import { STALE_HOURS, KEEP_GOING_STALE_HOURS, DEFAULT_SMALL_AT, DEFAULT_NEW_AT, DEFAULT_STOP_AT, FABLE_LINES, LARGE_SESSION_AT, LARGE_WEEKLY_UNDER, DEFAULT_ISSUE_COST, defaultLines, until, judge, isLarge, largeAllowed, averageCost, finishRefusal, USAGE_FIELD, MEASURED_AFTER, issueUsage, usageNote, sizeAverages, expectedCost, misSized } from './verdict.mjs';
 const DIR = join(tmpdir(), 'ezaa-sprint');
 const STATE = join(DIR, 'state.json');
@@ -221,7 +221,9 @@ const percent = v => (v ?? '?') + '%';
 // cost (maintainer, 2026-11-13: "keep putting the weekly / 5hr usage in the PRs").
 // Claude's own description goes above it with `checkpoint --intro-file`.
 function prBody(s, pr, running) {
-  const done = s.done.filter(d => d.pr === pr);
+  // A linked repo's issues are on that repo's PR (#57), never Fixes lines here:
+  // this PR's merge would close them with their code still unmerged there.
+  const done = s.done.filter(d => d.pr === pr && !d.repo);
   const lines = [];
   if (s.intro?.pr === pr) lines.push(s.intro.text.trim(), '');
   lines.push(...(done.length ? ['## Done',
@@ -242,7 +244,11 @@ function prBody(s, pr, running) {
     for (const n of named ? named[1].match(/\d+/g).map(Number) : []) if (!listed.has(n)) { listed.add(n); earlier.push(`- ${subject.replace(/\s*\((#\d+(?:, #\d+)*)\)\s*$/, '')}: Fixes #${n}`); }
   }
   if (earlier.length) lines.push('', '## Also on this branch (an earlier sprint)', ...earlier);
-  if (s.current) lines.push('', '## In progress', `- #${s.current.n}${running ? ': being built now; it joins this PR as its own commit when its checks pass' : ': not finished, kept off this PR (see its "Next" comment)'}`);
+  for (const [name, l] of Object.entries(s.linked || {})) {
+    const there = s.done.filter(d => d.repo === name);
+    if (there.length) lines.push('', `## In ${name}`, `${l.pr ? `${l.repo}#${l.pr}` : l.repo} holds these; its merge closes them:`, ...there.map(d => `- ${d.title ? `${d.title}: ` : ''}#${d.n}`));
+  }
+  if (s.current) lines.push('', '## In progress', `- #${s.current.n}${s.current.repo ? ` (in ${s.current.repo})` : ''}${running ? `: being built now; it joins ${s.current.repo ? 'that repo\'s sprint PR' : 'this PR'} as its own commit when its checks pass` : ': not finished, kept off this PR (see its "Next" comment)'}`);
   if (s.skipped.length) lines.push('', '## Passed over', ...s.skipped.map(d => `- #${d.n}: ${d.why}`));
   const first = s.readings[0], last = s.readings.at(-1);
   if (first && last) {
@@ -265,7 +271,7 @@ function publish(s, running) {
   // The label goes on before the push, so the push's CI run skips.
   if (pr && running) sprintLabel(pr.number, RUNNING);
   sh('git', ['push', '-u', 'origin', s.branch], true);
-  const loose = s.done.filter(d => d.pr == null);
+  const loose = s.done.filter(d => d.pr == null && !d.repo);
   if (!pr) {
     if (!loose.length) return null;
     writeFileSync(file, prBody(s, null, running));
@@ -286,6 +292,82 @@ function publish(s, running) {
   if (!running && s.title) edit.push('--title', s.title);
   sh('gh', edit);
   if (!running) sprintLabel(pr.number, CHECKPOINT); // RUNNING comes off: CI runs once
+  return pr.number;
+}
+
+// ---------- linked repos (#57) ----------
+// One sprint also works ai-job-search (config.mjs LINKED_REPOS). The owner's own
+// checkout is never switched, committed to or cleaned: often it is mid-edit on
+// a branch of its own. The sprint adds a git worktree beside it instead
+// (<parent>/<name>-sprint) on a branch named like this sprint's, made from that
+// repo's own main. guard.mjs allows commits and pushes there on that branch only.
+const repoRoot = () => sh('git', ['rev-parse', '--show-toplevel']);
+const branchExists = (dir, branch) => { try { sh('git', ['-C', dir, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], true); return true; } catch { return false; } };
+
+/** Adds the worktree for each linked repo (or only `only`) to s.linked. Returns what happened, one line each. */
+function linkRepos(s, only) {
+  s.linked = s.linked || {};
+  const said = [];
+  for (const [name, cfg] of Object.entries(LINKED_REPOS)) {
+    if (only && only !== name) continue;
+    if (s.linked[name]) { said.push(`${name}: linked at ${s.linked[name].worktree} on ${s.linked[name].branch}`); continue; }
+    const checkout = resolve(repoRoot(), cfg.path);
+    try { sh('git', ['-C', checkout, 'rev-parse', '--show-toplevel'], true); }
+    catch { said.push(`${name}: no checkout at ${checkout}; its issues are skipped this sprint`); continue; }
+    const worktree = resolve(checkout, '..', `${name}-sprint`);
+    const branch = s.branch;
+    try {
+      sh('git', ['-C', checkout, 'fetch', cfg.remote, cfg.base], true);
+      const start = ['--no-track', '-b', branch, `${cfg.remote}/${cfg.base}`];
+      if (existsSync(worktree)) {
+        // Left by an earlier sprint (end keeps one that still had work in it).
+        const dirty = sh('git', ['-C', worktree, 'status', '--porcelain']);
+        if (dirty) { said.push(`${name}: ${worktree} still has uncommitted work from before; left alone, not linked (ask the owner)`); continue; }
+        sh('git', ['-C', worktree, 'switch', ...(branchExists(checkout, branch) ? [branch] : ['--no-track', '-c', branch, `${cfg.remote}/${cfg.base}`])], true);
+      } else {
+        sh('git', ['-C', checkout, 'worktree', 'add', worktree, ...(branchExists(checkout, branch) ? [branch] : start)], true);
+      }
+    } catch (e) { said.push(`${name}: could not make the worktree (${String(e.message).split('\n')[0]}); not linked`); continue; }
+    s.linked[name] = { checkout, worktree, branch, repo: cfg.repo, remote: cfg.remote, base: cfg.base, pr: null };
+    said.push(`${name}: worktree ${worktree} on ${branch} from ${cfg.remote}/${cfg.base} (your checkout ${checkout} is untouched)`);
+  }
+  writeState(s);
+  return said;
+}
+
+function linkedPrBody(s, name, running) {
+  const done = s.done.filter(d => d.repo === name);
+  const lines = [];
+  // Titles and numbers only: the EzAutoApply board is public (no profile data in either PR).
+  lines.push(...(done.length ? ['## Done', ...done.map(d => `- ${d.title ? `${d.title}: ` : ''}Fixes ${REPO}#${d.n}${d.cost != null ? ` · ${d.cost}% of the 5-hour window` : ''}`)] : ['Nothing finished yet.']));
+  if (s.current?.repo === name) lines.push('', '## In progress', `- ${REPO}#${s.current.n}`);
+  lines.push('', `The issues live on the ${REPO_NAME} board; this PR's merge closes them. ${s.pr ? `The same sprint's ${REPO_NAME} PR: ${REPO}#${s.pr}.` : ''}`.trim());
+  lines.push('', running ? '_The sprint is still running: each issue arrives as its own commit._' : '_The sprint has checkpointed._', '', ATTRIBUTION);
+  return lines.join('\n');
+}
+
+/** Pushes the linked worktree's branch and opens or updates that repo's PR. Returns the PR's number, or null. */
+function publishLinked(s, name, running) {
+  const l = s.linked?.[name];
+  if (!l) return null;
+  const done = s.done.filter(d => d.repo === name);
+  if (!done.length && !l.pr) return null;
+  sh('git', ['-C', l.worktree, 'push', '-u', l.remote, l.branch], true);
+  const file = join(DIR, `pr-${name}.md`);
+  writeFileSync(file, linkedPrBody(s, name, running));
+  let pr = JSON.parse(sh('gh', ['pr', 'list', '--repo', l.repo, '--head', l.branch, '--state', 'open', '--json', 'number,url', '--limit', '5']))[0] || null;
+  if (!pr) {
+    const title = s.title || done[0]?.title || `Sprint ${l.branch}`;
+    const url = sh('gh', ['pr', 'create', '--repo', l.repo, '--base', l.base, '--head', l.branch, '--title', title, '--body-file', file]);
+    pr = { number: Number(url.match(/\/pull\/(\d+)/)[1]), url };
+  } else {
+    const edit = ['pr', 'edit', String(pr.number), '--repo', l.repo, '--body-file', file];
+    if (!running && s.title) edit.push('--title', s.title);
+    sh('gh', edit);
+  }
+  l.pr = pr.number;
+  for (const d of done) d.pr = pr.number;
+  writeState(s);
   return pr.number;
 }
 
@@ -499,6 +581,10 @@ if (action === 'statusline') {
   if (session !== null) parts.push(`5h ${session}%`);
   if (weekly !== null) parts.push(`week ${weekly}%`);
   if (s) parts.push(`sprint${s.current ? ` #${s.current.n}` : ''} · ${s.done.length} done`);
+  // Both PRs when a linked repo has one (#57): "PR #51 + ai-job-search #3".
+  if (s?.pr || Object.values(s?.linked || {}).some(l => l.pr)) {
+    parts.push([s.pr ? `PR #${s.pr}` : '', ...Object.entries(s.linked || {}).filter(([, l]) => l.pr).map(([name, l]) => `${name} #${l.pr}`)].filter(Boolean).join(' + '));
+  }
   process.stdout.write(parts.join(' · ') || 'EzAutoApply');
   process.exit(0);
 }
@@ -647,6 +733,8 @@ if (action === 'start') {
   const state = { startedAt: new Date().toISOString(), branch, smallAt, newAt, stopAt, keepGoing: flag('keep-going'), mine: flag('mine'), label: opt('label') || null, external, queue, only: flag('only'), avoid, done: [], skipped: [], current: null, readings: [] };
   record(state, u, 'start');
   writeState(state);
+  // The linked repos' worktrees (#57); an --external sprint works one other checkout by hand instead.
+  if (!external) { try { for (const line of linkRepos(state)) console.log(`linked ${line}`); } catch (e) { console.log(`(linking the other repos failed: ${e.message}; sprint.mjs link retries)`); } }
   // Only when asked: --autocompact [tokens] (default 200000). Without it compaction is untouched.
   if (flag('autocompact')) {
     const given = Number(opt('autocompact'));
@@ -730,15 +818,33 @@ if (action === 'next') {
   process.exit(0);
 }
 
+// `link [name]`: give a running sprint the linked repos' worktrees (start does it
+// for a new sprint; a sprint begun before #57 has none).
+if (action === 'link') {
+  if (s.external) { console.log('an --external sprint works its other checkout by hand; nothing to link'); process.exit(1); }
+  for (const line of linkRepos(s, args[1])) console.log(line);
+  process.exit(0);
+}
+
+// The linked repo an issue's code goes to (#57), from its labels.
+const issueRepo = n => linkedRepoOf(JSON.parse(sh('gh', ['issue', 'view', String(n), '--repo', REPO, '--json', 'labels'])).labels);
+
 if (action === 'begin' || action === 'finish' || action === 'skip') {
   const n = Number(args[1]);
   if (!Number.isInteger(n)) { console.log(`usage: sprint.mjs ${action} <issue>`); process.exit(1); }
+  const where = action === 'skip' ? null : s.current?.n === n && 'repo' in s.current ? s.current.repo : issueRepo(n);
+  if (where && !s.external && !s.linked?.[where]) {
+    for (const line of linkRepos(s, where)) console.log(line);
+    if (!s.linked?.[where]) { console.log(`#${n} goes to ${where}, which this sprint could not link: skip it (sprint.mjs skip ${n} --why "…").`); process.exit(7); }
+  }
+  const linked = where && !s.external ? s.linked[where] : null;
   if (action === 'finish') {
     // The issue's own commit must be in place: nothing left over, and the last
     // commit names it ("<title> (#N)"), so the PR gains exactly that one commit.
     // An external sprint asks the same two questions of the OTHER checkout, and
     // needs the PR that commit is on (--pr <url>): this script pushes nothing there.
-    const at = s.external ? ['-C', s.external] : [];
+    // A linked repo's issue asks them of its worktree, and this script pushes it (#57).
+    const at = s.external ? ['-C', s.external] : linked ? ['-C', linked.worktree] : [];
     if (s.external && !opt('pr')) { console.log('an external sprint\'s finish needs --pr <url of the PR in the other repo>'); process.exit(1); }
     const dirty = sh('git', [...at, 'status', '--porcelain']);
     const subject = dirty ? '' : sh('git', [...at, 'log', '-1', '--no-merges', '--format=%s']); // a merge of main may sit on top
@@ -780,7 +886,11 @@ if (action === 'begin' || action === 'finish' || action === 'skip') {
   }
   record(s, u, `${action} #${n}`);
   const used = u.error ? null : u.session;
-  if (action === 'begin') s.current = { n, at: new Date().toISOString(), sessionAtStart: used, weeklyAtStart: u.weekly ?? null };
+  if (action === 'begin') s.current = { n, at: new Date().toISOString(), sessionAtStart: used, weeklyAtStart: u.weekly ?? null, repo: linked ? where : null };
+  if (action === 'begin' && linked) {
+    console.log(`#${n} is ${where} work: build it in ${linked.worktree} (branch ${linked.branch}), under that repo's CLAUDE.md, never in ${linked.checkout}.`);
+    console.log(`Commit there as "<title> (${REPO}#${n})" with git -C "${linked.worktree}"; finish pushes it and opens or updates ${linked.repo}'s PR.`);
+  }
   // Working again after a checkpoint: the PR says so at once, not at the next finish.
   if (action === 'begin' && !s.external) { try { const pr = openPr(s.branch); if (pr) sprintLabel(pr.number, RUNNING); } catch { /* the label is cosmetic; never block the work on it */ } }
   if (action === 'finish') {
@@ -794,12 +904,18 @@ if (action === 'begin' || action === 'finish' || action === 'skip') {
     // e2e fixtures), but nobody has run it on a real application site yet.
     let title = null;
     try { title = sh('gh', ['issue', 'view', String(n), '--repo', REPO, '--json', 'title', '--jq', '.title']); } catch { /* the PR line goes without it */ }
-    s.done.push({ n, title, at: new Date().toISOString(), cost, weeklyCost: took.weekly, ...(flag('needs-live') && { device: true }) });
+    s.done.push({ n, title, at: new Date().toISOString(), cost, weeklyCost: took.weekly, ...(flag('needs-live') && { device: true }), ...(linked && { repo: where }) });
     s.current = null;
     writeState(s);
     console.log(`#${n} done${cost !== null ? `, cost ${cost}% of the 5-hour window` : ''}`);
     const work = join(sh('git', ['rev-parse', '--show-toplevel']), '.claude', 'skills', 'ezaa-issues', 'work.mjs');
-    if (s.external) {
+    if (linked) {
+      // That repo's branch and PR (#57); this repo's PR then lists it under "In <name>".
+      const pr = publishLinked(s, where, true);
+      console.log(`pushed ${linked.branch} in ${where}; ${linked.repo}#${pr} updated`);
+      try { const own = publish(s, true); if (own) console.log(`${REPO_NAME} PR #${own} now lists it`); } catch (e) { console.log(`(could not update this repo's PR: ${String(e.message).split('\n')[0]})`); }
+      console.log(sh(process.execPath, [work, 'review', String(n), '--note', `${opt('note')}; ${linked.repo}#${pr}${usageLine ? `; ${usageLine}` : ''}`]));
+    } else if (s.external) {
       // The commit and its PR are the other repo's (already pushed there, under
       // that repo's own rule); here only the card moves, with the PR's address.
       console.log(sh(process.execPath, [work, 'review', String(n), '--note', `${opt('note')}; ${opt('pr')}${usageLine ? `; ${usageLine}` : ''}`]));
@@ -825,6 +941,7 @@ if (action === 'status') {
   const r = s.readings.at(-1);
   if (r) console.log(`last reading: 5-hour ${r.session}%, weekly ${r.weekly}% (${r.step})`);
   if (s.pr) console.log(`PR #${s.pr}`);
+  for (const [name, l] of Object.entries(s.linked || {})) console.log(`linked ${name}: ${l.worktree} on ${l.branch}${l.pr ? `, PR ${l.repo}#${l.pr}` : ', no PR yet'} · done there: ${s.done.filter(d => d.repo === name).map(d => `#${d.n}`).join(' ') || 'none'}`);
   for (const q of s.questions || []) console.log(`question for the checkpoint${q.issue ? ` (#${q.issue})` : ''}: ${q.text}`);
   if (s.windDown) console.log(`winding down since ${new Date(s.windDown.at).toLocaleTimeString()}: no new issue`);
   if (s.compactions?.length) console.log(`compacted ${s.compactions.length}× this sprint, last ${new Date(s.compactions.at(-1)).toLocaleTimeString()}`);
@@ -859,6 +976,19 @@ if (action === 'checkpoint') {
   writeState(s);
   if (s.external) console.log(`external sprint: nothing to push here; the work and its PR are in ${s.external} (done ${s.done.map(d => `#${d.n}`).join(' ') || 'none'})`);
   else {
+    // Each linked repo first (#57): its own main merged in, then its PR, so this PR's body can name it.
+    for (const [name, l] of Object.entries(s.linked || {})) {
+      if (!l.pr && !s.done.some(d => d.repo === name)) continue;
+      try {
+        sh('git', ['-C', l.worktree, 'fetch', l.remote, l.base], true);
+        sh('git', ['-C', l.worktree, 'merge', '--no-edit', `${l.remote}/${l.base}`], true);
+      } catch {
+        try { sh('git', ['-C', l.worktree, 'merge', '--abort'], true); } catch { /* nothing to abort */ }
+        console.log(`${name}: merging ${l.remote}/${l.base} needs judgment; aborted, ask about it (sprint.mjs ask)`);
+      }
+      try { const p = publishLinked(s, name, false); console.log(p ? `${name}: ${l.repo}#${p} checkpointed` : `${name}: nothing finished there`); }
+      catch (e) { console.log(`${name}: could not update its PR (${String(e.message).split('\n')[0]})`); }
+    }
     const pr = publish(s, false);
     console.log(pr ? `PR #${pr} checkpointed: title, body and usage updated, "${RUNNING}" off and "${CHECKPOINT}" on, so CI runs once` : 'nothing finished: no PR');
   }
@@ -874,11 +1004,16 @@ if (action === 'checkpoint') {
 }
 
 if (action === 'end') {
+  // A linked worktree goes once it is clean (its branch and commits stay); one with work left in it stays.
+  for (const [name, l] of Object.entries(s.linked || {})) {
+    try { sh('git', ['-C', l.checkout, 'worktree', 'remove', l.worktree], true); console.log(`${name}: worktree ${l.worktree} removed (branch ${l.branch} kept)`); }
+    catch { console.log(`${name}: worktree ${l.worktree} kept: it still has uncommitted work`); }
+  }
   rmSync(STATE, { force: true });
   if (restoreCompactWindow()) console.log('auto-compact window put back as it was');
   console.log(`sprint ${s.branch} forgotten (done ${s.done.length}, skipped ${s.skipped.length})`);
   process.exit(0);
 }
 
-console.log('usage: sprint.mjs start|budget [--hook]|next|sizes|begin N|finish N --note "…"|checkpoint|ask "…"|skip N --why "…"|wind-down [--undo]|status|summary|end');
+console.log('usage: sprint.mjs start|budget [--hook]|next|sizes|link [repo]|begin N|finish N --note "…"|checkpoint|ask "…"|skip N --why "…"|wind-down [--undo]|status|summary|end');
 process.exit(1);

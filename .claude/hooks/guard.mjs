@@ -11,9 +11,10 @@
  */
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { execSync } from 'node:child_process';
-import { decide, isCommit, isPush, isMerge } from './guard-rules.mjs';
+import { join, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { decide, gitDirs, isCommit, isPush, isMerge } from './guard-rules.mjs';
 
 const read = async () => {
   const chunks = [];
@@ -28,11 +29,22 @@ if (typeof cmd !== 'string' || !cmd.trim()) process.exit(0);
 // Only git commit/push and gh pr merge need git or the state file read.
 if (!isCommit(cmd) && !isPush(cmd) && !isMerge(cmd)) process.exit(0);
 
-const git = (args) => { try { return execSync(`git ${args}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
+const git = (args, cwd) => { try { return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
 let state = null;
 try { state = JSON.parse(readFileSync(join(tmpdir(), 'ezaa-sprint', 'state.json'), 'utf8')); } catch { /* no sprint */ }
 
-const result = decide(cmd, { branch: git('rev-parse --abbrev-ref HEAD'), state });
+// Every checkout the command reaches (`cd <dir> &&`, `git -C <dir>`), with its branch (#57).
+let cwd = process.cwd();
+try { cwd = JSON.parse(payload)?.cwd || cwd; } catch { /* the process's own */ }
+const toWin = p => p.replace(/^\/([a-zA-Z])\//, '$1:/'); // a Git Bash /c/ path, for Node on Windows
+const home = git(['rev-parse', '--show-toplevel'], fileURLToPath(new URL('.', import.meta.url)));
+const places = gitDirs(cmd, cwd).map(dir => {
+  const at = resolve(process.platform === 'win32' ? toWin(dir) : dir);
+  // A directory that isn't a checkout (yet) has no branch: it never counts as the sprint's.
+  return { toplevel: git(['rev-parse', '--show-toplevel'], at) || at, branch: git(['rev-parse', '--abbrev-ref', 'HEAD'], at) };
+});
+
+const result = decide(cmd, { state, places, home });
 if (result) {
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: result.decision, permissionDecisionReason: result.reason },
