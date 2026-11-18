@@ -45,7 +45,8 @@ export type PanelToBackground =
   | { type: 'setDocSelection'; tabId: number; selection: DocSelection }
   | { type: 'answerField'; tabId: number; frameId: number; fieldId: string; answer: AnswerValue; save: SaveAnswerRequest | null }
   | { type: 'focusField'; tabId: number; frameId: number; fieldId: string }
-  | { type: 'findAdvance'; tabId: number }
+  /** run: Run to Submit's stricter reading, where anything that may send the application is Submit. */
+  | { type: 'findAdvance'; tabId: number; run?: boolean }
   | { type: 'advance'; tabId: number; frameId: number }
   | { type: 'classifierHealth' }
   | { type: 'settingsChanged' };
@@ -56,7 +57,7 @@ export type BackgroundToContent =
   | { type: 'applyAnswer'; fieldId: string; answer: AnswerValue }
   | { type: 'clearReports' }
   | { type: 'focusField'; fieldId: string }
-  | { type: 'findAdvance' }
+  | { type: 'findAdvance'; run?: boolean }
   | { type: 'advance' }
   | { type: 'settingsChanged'; settings: Settings }
   /** All of the tab's frames together, for the top frame's floating button; null when none is filling. */
@@ -68,6 +69,8 @@ export interface AdvanceTarget {
   label: string;
   kind: AdvanceKind;
   score: number;
+  /** Run mode: why it counts as Submit although its wording alone doesn't say so. */
+  why?: string;
 }
 
 /** Broadcast by the background to extension pages (the side panel). */

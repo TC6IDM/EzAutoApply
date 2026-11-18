@@ -66,8 +66,8 @@ export default defineContentScript({
           sendResponse(controller.focusField(msg.fieldId));
           return false;
         case 'findAdvance': {
-          const b = findAdvanceButton(document);
-          sendResponse(b ? { label: b.label, kind: b.kind, score: b.score } : null);
+          const b = findAdvanceButton(document, { run: msg.run });
+          sendResponse(b ? { label: b.label, kind: b.kind, score: b.score, ...(b.why && { why: b.why }) } : null);
           return false;
         }
         case 'advance': {

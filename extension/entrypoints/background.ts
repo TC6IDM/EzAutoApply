@@ -127,11 +127,11 @@ async function frameIds(tabId: number): Promise<number[]> {
 }
 
 /** The page's Next / Submit / Sign In / Apply button, from whichever frame has the strongest one. */
-async function findAdvance(tabId: number): Promise<AdvanceTarget | null> {
+async function findAdvance(tabId: number, run = false): Promise<AdvanceTarget | null> {
   const ids = await frameIds(tabId);
   const found = await Promise.all(
     ids.map((frameId) =>
-      toTab(tabId, { type: 'findAdvance' }, frameId)
+      toTab(tabId, { type: 'findAdvance', run }, frameId)
         .then((r) => (r ? { ...(r as Omit<AdvanceTarget, 'frameId'>), frameId } : null))
         .catch(() => null),
     ),
@@ -262,7 +262,7 @@ async function handlePanel(msg: PanelToBackground): Promise<unknown> {
     case 'focusField':
       return toTab(msg.tabId, { type: 'focusField', fieldId: msg.fieldId }, msg.frameId);
     case 'findAdvance':
-      return findAdvance(msg.tabId);
+      return findAdvance(msg.tabId, msg.run);
     case 'advance':
       return toTab(msg.tabId, { type: 'advance' }, msg.frameId);
     case 'classifierHealth':

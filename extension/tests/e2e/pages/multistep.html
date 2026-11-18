@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Multi-step application (fixture)</title>
+  <style>section[hidden] { display: none; }</style>
+</head>
+<body>
+  <!-- Run to Submit's fixture (#10): three steps in one form, and the last button says "Apply".
+       In run mode it must read as Submit, and nothing here is ever sent. -->
+  <header><nav><a href="/jobs">Jobs</a> <a href="/login">Sign in</a></nav></header>
+  <main>
+    <h1>Junior Developer, Example Co.</h1>
+    <form id="application" action="/never" onsubmit="event.preventDefault(); document.body.dataset.submitted = 'yes';">
+      <section data-step="1">
+        <h2>Contact</h2>
+        <label for="first">First name</label> <input id="first" name="first">
+        <label for="email">Email</label> <input id="email" name="email" type="email">
+        <button type="button" class="next">Next</button>
+      </section>
+      <section data-step="2" hidden>
+        <h2>Experience</h2>
+        <label for="years">Years of experience</label> <input id="years" name="years">
+        <button type="button" class="back">Back</button>
+        <button type="button" class="next">Continue</button>
+      </section>
+      <section data-step="3" hidden>
+        <h2>Anything else?</h2>
+        <label for="note">Note</label> <textarea id="note" name="note"></textarea>
+        <button type="button" class="back">Back</button>
+        <button type="submit" class="btn-primary">Apply</button>
+      </section>
+    </form>
+  </main>
+  <script>
+    let step = 1;
+    const show = (n) => {
+      step = n;
+      document.body.dataset.step = String(n);
+      for (const s of document.querySelectorAll('section')) s.hidden = s.dataset.step !== String(n);
+    };
+    document.addEventListener('click', (e) => {
+      if (e.target.closest('.next')) show(step + 1);
+      if (e.target.closest('.back')) show(step - 1);
+    });
+    show(1);
+  </script>
+</body>
+</html>
