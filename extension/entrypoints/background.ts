@@ -1,12 +1,13 @@
 import { type Browser, browser } from 'wxt/browser';
 import { defineBackground } from 'wxt/utils/define-background';
+import { type BridgeCommand, BridgeClient, bridgeFields, findJobTab } from '../src/bridge/client';
 import { SystemOneClient } from '../src/classifier/systemone';
 import { uploadFileName } from '../src/core/documents';
 import { isAccountSite, isExternalRedirect } from '../src/core/sites';
 import type { SiteError } from '../src/fill/siteErrors';
 import { newRun, type PageCheck, type RunDeps, runPages } from '../src/run/loop';
 import type { RunState } from '../src/run/types';
-import type { DocKind, DocSelection } from '../src/core/types';
+import type { AnswerValue, DocKind, DocSelection } from '../src/core/types';
 import {
   blobToBase64,
   documentFor,
@@ -163,6 +164,75 @@ async function saveRun(run: RunState): Promise<void> {
   await browser.storage.session.set({ [runKey(run.tabId)]: run });
   broadcast({ type: 'runChanged', tabId: run.tabId, run });
   toTab(run.tabId, { type: 'runState', run }, 0).catch(() => {});
+  if (run.jobId && bridge) {
+    const fields = Object.values((await readTab(run.tabId)).reports).flatMap((r) => r.fields);
+    bridge.client.reportRun(run.jobId, run, bridgeFields(fields)).catch(() => {});
+  }
+}
+
+// ---- The local bridge (#17, bridge/README.md) ---------------------------------------------
+// Only while settings.bridgeEnabled is on and a token is set. The background long-polls the
+// bridge for commands; an alarm restarts the loop after the worker was suspended. Unreachable
+// is quiet: it tries again in a few seconds, and nothing else in the extension changes.
+
+let bridge: { client: BridgeClient; stop(): void } | null = null;
+const BRIDGE_ALARM = 'bridge';
+
+async function syncBridge(): Promise<void> {
+  const s = await getSettings();
+  bridge?.stop();
+  bridge = null;
+  if (!s.bridgeEnabled || !s.bridgeToken) {
+    await browser.alarms?.clear(BRIDGE_ALARM).catch(() => {});
+    return;
+  }
+  browser.alarms?.create(BRIDGE_ALARM, { periodInMinutes: 1 });
+  const client = new BridgeClient(s.bridgeUrl, s.bridgeToken);
+  const ctl = new AbortController();
+  let on = true;
+  bridge = {
+    client,
+    stop: () => {
+      on = false;
+      ctl.abort();
+    },
+  };
+  (async () => {
+    while (on) {
+      try {
+        for (const cmd of await client.commands(25, ctl.signal)) await onBridgeCommand(client, cmd).catch(() => {});
+      } catch {
+        if (on) await sleep(5000);
+      }
+    }
+  })();
+}
+
+async function onBridgeCommand(client: BridgeClient, cmd: BridgeCommand): Promise<void> {
+  if (cmd.type === 'stopAll') {
+    for (const tabId of runs.keys()) cancelled.add(tabId);
+    return;
+  }
+  if (cmd.type === 'run') {
+    const tab = findJobTab(await browser.tabs.query({}), cmd.urlPrefix ?? '');
+    if (tab?.id !== undefined) {
+      await startRun(tab.id, cmd.jobId);
+      return;
+    }
+    const run = newRun(-1, cmd.urlPrefix ?? '', Date.now(), cmd.jobId);
+    run.status = 'stopped';
+    run.stop = { reason: 'interrupted', detail: 'No open tab shows this job' };
+    await client.reportRun(cmd.jobId, run, []);
+    return;
+  }
+  // An answer for a field on the job's tab. It fills the field only: agent answers are saved to
+  // the answer bank once they can be flagged for approval (#21).
+  const all = await browser.storage.session.get(null);
+  const run = Object.values(all).find((v) => (v as RunState)?.jobId === cmd.jobId && typeof (v as RunState).tabId === 'number') as RunState | undefined;
+  if (!run) return;
+  const fields = Object.values((await readTab(run.tabId)).reports).flatMap((r) => r.fields);
+  const frameId = cmd.frameId ?? fields.find((f) => f.id === cmd.fieldId)?.frameId ?? 0;
+  await toTab(run.tabId, { type: 'applyAnswer', fieldId: cmd.fieldId, answer: cmd.answer as AnswerValue }, frameId);
 }
 
 /** Autofill every frame and wait until the last one is done (the message only waits for the first). */
@@ -257,11 +327,11 @@ function launchRun(run: RunState): Promise<RunState> {
   return p;
 }
 
-async function startRun(tabId: number): Promise<RunState> {
+async function startRun(tabId: number, jobId?: string): Promise<RunState> {
   const current = await readRun(tabId);
   if (current?.status === 'running' && runs.has(tabId)) return current;
   const tab = await browser.tabs.get(tabId);
-  const run = newRun(tabId, tab.url ?? '', Date.now());
+  const run = newRun(tabId, tab.url ?? '', Date.now(), jobId);
   await saveRun(run);
   launchRun(run).catch(() => {});
   return run;
@@ -422,7 +492,12 @@ async function handlePanel(msg: PanelToBackground): Promise<unknown> {
       return toTab(msg.tabId, { type: 'confirmation' }, 0).catch(() => null);
     case 'classifierHealth':
       return new SystemOneClient((await getSettings()).classifier).health();
+    case 'bridgeHealth': {
+      const s = await getSettings();
+      return new BridgeClient(s.bridgeUrl, s.bridgeToken).health();
+    }
     case 'settingsChanged': {
+      await syncBridge();
       const settings = await getSettings();
       const tabs = await browser.tabs.query({});
       for (const t of tabs) if (t.id !== undefined) toTab(t.id, { type: 'settingsChanged', settings }).catch(() => {});
@@ -464,6 +539,10 @@ export default defineBackground(() => {
     }
   });
   resumeRuns().catch(() => {});
+  syncBridge().catch(() => {});
+  browser.alarms?.onAlarm.addListener((alarm) => {
+    if (alarm.name === BRIDGE_ALARM && !bridge) syncBridge().catch(() => {});
+  });
 
   browser.tabs.onRemoved.addListener((tabId) => {
     cancelled.add(tabId);

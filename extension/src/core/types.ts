@@ -121,6 +121,11 @@ export interface Settings {
   runStopOnReview: boolean;
   /** Run to Submit gives up after this many pages. */
   runMaxPages: number;
+  /** Take Run commands from the local bridge (bridge/, for the agent fleet) and report back to it. */
+  bridgeEnabled: boolean;
+  bridgeUrl: string;
+  /** From ~/.ezautoapply/bridge-token, pasted once. */
+  bridgeToken: string;
 }
 
 export const LAYA_DEFAULT_URL = 'http://127.0.0.1:8000';
@@ -144,6 +149,9 @@ export function defaultSettings(): Settings {
     acknowledgePrivacyNotices: true,
     runStopOnReview: true,
     runMaxPages: 15,
+    bridgeEnabled: false,
+    bridgeUrl: 'http://127.0.0.1:8100',
+    bridgeToken: '',
   };
 }
 

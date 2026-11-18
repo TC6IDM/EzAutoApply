@@ -64,7 +64,8 @@ class HttpError extends Error {
 export function createBridge(o: BridgeOptions) {
   const now = o.now ?? Date.now;
   const commands: (Command & { delivered?: boolean })[] = [];
-  const runs = new Map<string, { run: RunState; at: number }>();
+  /** Each job's latest Run, and its fields as the extension saw them (labels and status, never values). */
+  const runs = new Map<string, { run: RunState; fields: unknown[]; at: number }>();
   const waiters = new Set<() => void>();
   let stopped = false;
 
@@ -152,8 +153,10 @@ export function createBridge(o: BridgeOptions) {
       if (stopped) throw new HttpError(423, 'Stopped: POST /resume first');
       const b = await body(req);
       const jobId = str(b.jobId, 'jobId');
-      if (!o.queue.get(jobId)) throw new HttpError(404, 'No such job');
-      const cmd = queueCommand({ type: 'run', jobId, ...(typeof b.urlPrefix === 'string' && { urlPrefix: b.urlPrefix }) });
+      const job = o.queue.get(jobId);
+      if (!job) throw new HttpError(404, 'No such job');
+      // The extension finds the job's tab by address: the job's own unless the agent says otherwise.
+      const cmd = queueCommand({ type: 'run', jobId, urlPrefix: typeof b.urlPrefix === 'string' && b.urlPrefix ? b.urlPrefix : (job.tabUrl ?? job.applyUrl) });
       return [202, { commandId: cmd.id }];
     }
     hit = /^\/tabs\/([^/]+)\/status$/.exec(p);
@@ -215,7 +218,7 @@ export function createBridge(o: BridgeOptions) {
       const run = b.run as RunState | undefined;
       const jobId = str(b.jobId, 'jobId');
       if (!run || typeof run !== 'object') throw new HttpError(400, 'run is required');
-      runs.set(jobId, { run, at: now() });
+      runs.set(jobId, { run, fields: Array.isArray(b.fields) ? b.fields : [], at: now() });
       if (run.status === 'running') o.queue.setStatus(jobId, 'running', { page: run.page });
       else if (run.stop && AFTER_RUN[run.stop.reason]) {
         const note = run.stop.detail ? `${run.stop.reason}: ${run.stop.detail}` : run.stop.reason;

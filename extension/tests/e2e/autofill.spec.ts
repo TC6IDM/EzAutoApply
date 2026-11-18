@@ -1,8 +1,10 @@
 import { type BrowserContext, test as base, chromium, expect, type Page, type Worker } from '@playwright/test';
 import { strToU8, zipSync } from 'fflate';
-import { readFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { browser as ExtensionApi } from 'wxt/browser';
@@ -454,6 +456,59 @@ test('the panel\'s Run button runs to Submit and says what to do next (#13)', as
   await expect(stop).toContainText('3 pages · pressed “Next”, “Continue”');
   await expect(panel.getByRole('button', { name: 'Run to Submit again' })).toBeEnabled();
   expect(await form.evaluate(() => document.body.dataset.submitted)).toBeUndefined();
+});
+
+test('an agent queues a job and asks the bridge for a Run; the extension runs it and reports back (#17)', async ({ context, extensionId, site }) => {
+  test.setTimeout(120_000);
+  // The real bridge (bridge/src/main.ts) on its own port, with a throwaway home and queue.
+  const home = mkdtempSync(join(tmpdir(), 'ezaa-e2e-bridge-'));
+  const port = 8197;
+  const proc = spawn(process.execPath, [join(here, '..', '..', '..', 'bridge', 'src', 'main.ts')], {
+    env: { ...process.env, EZAA_HOME: home, EZAA_QUEUE_FILE: join(home, 'queue.jsonl'), EZAA_BRIDGE_PORT: String(port) },
+    stdio: 'ignore',
+  });
+  try {
+    const bridgeUrl = `http://127.0.0.1:${port}`;
+    await expect.poll(() => fetch(`${bridgeUrl}/health`).then((r) => r.ok).catch(() => false), { timeout: 15_000 }).toBe(true);
+    const token = readFileSync(join(home, 'bridge-token'), 'utf8').trim();
+    const api = (method: string, path: string, body?: unknown) =>
+      fetch(bridgeUrl + path, { method, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: body && JSON.stringify(body) });
+
+    const panel = await context.newPage();
+    await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+    await importResume(panel);
+    await classifierOff(panel);
+    await panel.getByRole('tab', { name: 'Settings' }).click();
+    await panel.getByText('Agent fleet bridge').click();
+    await panel.getByLabel('Connect to the local bridge').check();
+    await panel.getByLabel('Bridge address').fill(bridgeUrl);
+    await panel.getByLabel('Bridge address').blur();
+    await panel.getByLabel('Bridge token').fill(token);
+    await panel.getByLabel('Bridge token').blur();
+    await expect(panel.getByText('The bridge is running.')).toBeVisible();
+
+    const url = `${site}/multistep.html`;
+    const form = await context.newPage();
+    await form.goto(url);
+    await form.evaluate(() => ((document.getElementById('years') as HTMLInputElement).value = '1'));
+    await form.bringToFront();
+
+    // What an applier agent does: queue the job, claim it, ask for a Run, then watch its status.
+    expect((await api('POST', '/queue', { jobs: [{ id: 'job-1', applyUrl: url, company: 'Example Co.' }] })).status).toBe(201);
+    expect((await (await api('GET', '/queue/next?worker=w1')).json()).id).toBe('job-1');
+    expect((await api('POST', '/run', { jobId: 'job-1' })).status).toBe(202);
+    const status = async () => {
+      const r = await api('GET', '/tabs/job-1/status');
+      return r.ok ? ((await r.json()) as { run: { status: string; stop?: { reason: string } }; fields: { label: string }[] }) : null;
+    };
+    await expect.poll(async () => (await status())?.run.stop?.reason, { timeout: 60_000 }).toBe('submitReady');
+    const queue = (await (await api('GET', '/queue')).json()) as { id: string; status: string }[];
+    expect(queue.find((j) => j.id === 'job-1')?.status).toBe('ready');
+    expect((await status())?.fields.length).toBeGreaterThan(0);
+    expect(await form.evaluate(() => document.body.dataset.submitted)).toBeUndefined();
+  } finally {
+    proc.kill();
+  }
 });
 
 test('with Laya running: rules fill instantly, then leftovers go to the classifier', async ({ context, worker, extensionId, site }) => {

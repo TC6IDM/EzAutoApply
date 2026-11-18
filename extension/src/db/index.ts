@@ -285,7 +285,8 @@ export async function exportAll(): Promise<ExportFile> {
     version: 1,
     exportedAt: new Date().toISOString(),
     profile: await getProfile(),
-    settings: await getSettings(),
+    // The bridge token stays on this machine, like the account password (#17).
+    settings: { ...(await getSettings()), bridgeToken: '' },
     answers: await db.answers.toArray(),
     applications: await db.applications.toArray(),
     documents: await Promise.all(docs.map(async (d) => ({ ...toMeta(d), base64: await blobToBase64(d.blob) }))),
@@ -296,12 +297,13 @@ export async function exportAll(): Promise<ExportFile> {
 export async function importAll(data: ExportFile): Promise<void> {
   if (data?.app !== 'EzAutoApply') throw new Error('Not an EzAutoApply backup file');
   await db.transaction('rw', [db.kv, db.documents, db.answers, db.applications], async () => {
-    // Backups never contain the account password, so keep the one already saved here.
+    // Backups never contain the account password or the bridge token, so keep the ones saved here.
     const password = await db.kv.get('accountPassword');
+    const bridgeToken = ((await db.kv.get('settings'))?.value as { bridgeToken?: string } | undefined)?.bridgeToken ?? '';
     await Promise.all([db.kv.clear(), db.documents.clear(), db.answers.clear(), db.applications.clear()]);
     if (password) await db.kv.put(password);
     await db.kv.put({ key: 'profile', value: normalizeProfile(data.profile) });
-    if (data.settings) await db.kv.put({ key: 'settings', value: data.settings });
+    if (data.settings) await db.kv.put({ key: 'settings', value: { ...data.settings, bridgeToken } });
     await db.answers.bulkPut(data.answers ?? []);
     await db.applications.bulkPut(data.applications ?? []);
     await db.documents.bulkPut(

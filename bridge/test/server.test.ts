@@ -61,10 +61,19 @@ test('queue, claim, Run, the extension picks it up, and its report sets the job\
   await call('POST', '/ext/runs', { jobId: 'j1', run: { ...state, status: 'running', stop: undefined } });
   assert.equal(queue.get('j1')?.status, 'running');
   await call('POST', '/ext/runs', { jobId: 'j1', run: state });
-  assert.equal((await call('GET', '/tabs/j1/status')).json.run.stop.reason, 'submitReady');
+  await call('POST', '/ext/runs', { jobId: 'j1', run: state, fields: [{ id: 'f1', label: 'Phone', status: 'filled' }] });
+  const status = (await call('GET', '/tabs/j1/status')).json;
+  assert.equal(status.run.stop.reason, 'submitReady');
+  assert.deepEqual(status.fields, [{ id: 'f1', label: 'Phone', status: 'filled' }]);
   assert.deepEqual((await call('GET', '/ready')).json.map((j: { id: string }) => j.id), ['j1']);
   assert.equal(queue.get('j1')?.statusNote, 'submitReady: "Submit application"');
   assert.equal((await call('GET', '/tabs/nope/status')).status, 404);
+});
+
+test('a Run with no address goes to the job’s own', async () => {
+  await call('POST', '/run', { jobId: 'j2' });
+  const [cmd] = (await call('GET', '/ext/commands')).json;
+  assert.equal(cmd.urlPrefix, 'https://boards.greenhouse.io/acme/jobs/j2');
 });
 
 test('answers become a command for the extension', async () => {

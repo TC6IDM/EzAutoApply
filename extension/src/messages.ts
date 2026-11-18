@@ -60,6 +60,8 @@ export type PanelToBackground =
   | { type: 'cancelRun'; tabId: number }
   | { type: 'getRun'; tabId: number }
   | { type: 'classifierHealth' }
+  /** Whether the local bridge answers at the saved address. */
+  | { type: 'bridgeHealth' }
   | { type: 'settingsChanged' };
 
 /** Sent by the background to content scripts. */

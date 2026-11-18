@@ -13,7 +13,8 @@ export default defineConfig({
   manifest: {
     name: fleet ? 'EzAutoApply (fleet)' : 'EzAutoApply',
     description: 'Autofill job applications from your profile, documents and saved answers.',
-    permissions: ['storage', 'unlimitedStorage', 'sidePanel', 'tabs', 'scripting', 'activeTab'],
+    // alarms: restarts the local bridge's long-poll after the worker was suspended (#17), only while it is on.
+    permissions: ['storage', 'unlimitedStorage', 'sidePanel', 'tabs', 'scripting', 'activeTab', 'alarms'],
     // <all_urls> lets the content script run on any application site and lets the
     // background reach the local classifier without CORS configuration.
     host_permissions: ['<all_urls>'],
