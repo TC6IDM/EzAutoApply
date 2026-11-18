@@ -12,9 +12,9 @@ import { createBridge } from '../src/server.ts';
 
 /** A stand-in for a Claude Code process: it records how it was started and ends when killed. */
 function fakeSpawn() {
-  const started: { cmd: string; args: string[]; cwd?: string; child: EventEmitter & { kill: () => boolean } }[] = [];
+  const started: { cmd: string; args: string[]; cwd?: string; env?: Record<string, string | undefined>; child: EventEmitter & { kill: () => boolean } }[] = [];
   let pid = 100;
-  const spawn = (cmd: string, args: string[], opts: { cwd?: unknown }) => {
+  const spawn = (cmd: string, args: string[], opts: { cwd?: unknown; env?: unknown }) => {
     const child = Object.assign(new EventEmitter(), {
       pid: pid++,
       stdout: new PassThrough(),
@@ -24,7 +24,7 @@ function fakeSpawn() {
         return true;
       },
     });
-    started.push({ cmd, args, cwd: opts.cwd as string | undefined, child });
+    started.push({ cmd, args, cwd: opts.cwd as string | undefined, env: opts.env as Record<string, string | undefined> | undefined, child });
     return child as never;
   };
   return { spawn, started };
@@ -270,6 +270,8 @@ test('launchFixer makes the worktree from origin/main once, beside the checkout,
     `worktree add -b fix/2026-11-18-fleet-2005 ${fixDir} origin/main @ ${repo}`,
   ], 'a branch of that name already there: the next one gets the time');
   assert.equal(started[0].cwd, fixDir);
+  assert.equal(started[0].env?.BASH_DEFAULT_TIMEOUT_MS, '600000', 'a shell call may take 10 minutes (#74)');
+  assert.equal(started[0].env?.BASH_MAX_TIMEOUT_MS, '600000');
   assert.match(started[0].args[1], /branch fix\/2026-11-18-fleet-2005/);
   assert.equal(launcher.appliers(), 0, 'the Fixer is not an applier');
   started[0].child.kill();
@@ -331,6 +333,58 @@ test('the bridge starts the Fixer a moment after a ticket opens, and only while 
     await incident('Salary');
     await wait(60);
     assert.equal(fixers().length, 2, 'stopped: no Fixer');
+  } finally {
+    bridge.server.close();
+  }
+});
+
+test('the Scout refills the queue when it runs dry while appliers work, not again soon after finding nothing (#72)', async () => {
+  const TOKEN = 'test-token-refill-0123456789';
+  const dir = mkdtempSync(join(tmpdir(), 'ezaa-refill-'));
+  const queue = new QueueStore(join(dir, 'queue.jsonl'));
+  const { spawn, started } = fakeSpawn();
+  let t = Date.parse('2026-11-18T21:00:00Z');
+  const launcher = new Launcher({ claude: 'claude.exe', cwd: dir, logDir: join(dir, 'fleet'), spawn });
+  const bridge = createBridge({ token: TOKEN, queue, incidentsDir: join(dir, 'incidents'), port: 0, launcher, now: () => t });
+  await new Promise<void>((r) => bridge.server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${(bridge.server.address() as AddressInfo).port}`;
+  const call = async (method: string, path: string, body?: unknown) => {
+    const res = await fetch(base + path, { method, headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const text = await res.text();
+    return { status: res.status, json: text ? JSON.parse(text) : null };
+  };
+  const scouts = () => started.filter((s) => s.args[1].startsWith('/scout'));
+  try {
+    await call('POST', '/queue', { jobs: [{ id: 'j1', applyUrl: 'https://boards.greenhouse.io/acme/jobs/1' }] });
+    await call('POST', '/fleet/launch', { appliers: 1 });
+    assert.equal(scouts().length, 0, 'a job was queued: no Scout at Start');
+    assert.equal((await call('GET', '/queue/next?worker=w1')).json.id, 'j1');
+    await call('POST', '/queue/j1/status', { status: 'skipped', note: 'skipped in the Office' });
+
+    assert.equal((await call('GET', '/queue/next?worker=w1')).status, 204);
+    assert.equal(scouts().length, 1, 'the queue ran dry: the Scout refills it');
+    assert.equal((await call('GET', '/queue/next?worker=w1')).status, 204);
+    assert.equal(scouts().length, 1, 'one at a time');
+
+    // It found nothing: no new Scout for 15 minutes, then one more try.
+    scouts()[0].child.kill();
+    await tick();
+    await tick();
+    t += 10 * 60_000;
+    await call('GET', '/queue/next?worker=w1');
+    assert.equal(scouts().length, 1);
+    t += 6 * 60_000;
+    await call('GET', '/queue/next?worker=w1');
+    assert.equal(scouts().length, 2);
+
+    // Switched off: no refill.
+    scouts()[1].child.kill();
+    await tick();
+    await tick();
+    await call('PUT', '/settings', { parts: { scout: false } });
+    t += 60 * 60_000;
+    await call('GET', '/queue/next?worker=w1');
+    assert.equal(scouts().length, 2);
   } finally {
     bridge.server.close();
   }
