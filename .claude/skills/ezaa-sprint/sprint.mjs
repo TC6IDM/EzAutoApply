@@ -356,14 +356,13 @@ function publishLinked(s, name, running) {
   const file = join(DIR, `pr-${name}.md`);
   writeFileSync(file, linkedPrBody(s, name, running));
   let pr = JSON.parse(sh('gh', ['pr', 'list', '--repo', l.repo, '--head', l.branch, '--state', 'open', '--json', 'number,url', '--limit', '5']))[0] || null;
+  // Its own title, from what is on it (the sprint's title describes this repo's PR, not that one).
+  const title = `EzAutoApply sprint ${l.branch.replace(/^sprint\//, '')}: ${done.length === 1 ? done[0].title : `${done.length} fleet issues`}`;
   if (!pr) {
-    const title = s.title || done[0]?.title || `Sprint ${l.branch}`;
     const url = sh('gh', ['pr', 'create', '--repo', l.repo, '--base', l.base, '--head', l.branch, '--title', title, '--body-file', file]);
     pr = { number: Number(url.match(/\/pull\/(\d+)/)[1]), url };
   } else {
-    const edit = ['pr', 'edit', String(pr.number), '--repo', l.repo, '--body-file', file];
-    if (!running && s.title) edit.push('--title', s.title);
-    sh('gh', edit);
+    sh('gh', ['pr', 'edit', String(pr.number), '--repo', l.repo, '--body-file', file, '--title', title]);
   }
   l.pr = pr.number;
   for (const d of done) d.pr = pr.number;
