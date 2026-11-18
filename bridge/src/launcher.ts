@@ -315,6 +315,10 @@ export class Launcher {
     return this.procs.has('scout');
   }
 
+  isRunning(worker: string): boolean {
+    return this.procs.has(worker);
+  }
+
   fixerRunning(): boolean {
     return this.procs.has('fixer');
   }
