@@ -8,6 +8,7 @@
     "dev": "wxt",
     "dev:edge": "wxt -b edge",
     "build": "wxt build",
+    "build:fleet": "node scripts/build-fleet.mjs",
     "zip": "wxt zip",
     "compile": "tsc --noEmit",
     "test": "vitest run",

@@ -27,6 +27,7 @@ All extension commands run from `extension/`:
 ```powershell
 npm run dev                 # browser with the extension loaded + hot reload
 npm run build               # → .output/chrome-mv3 (load unpacked from here)
+npm run build:fleet         # → .output/fleet-chrome-mv3, "EzAutoApply (fleet)": the fleet profile's copy (own id, own DB)
 npm run compile             # tsc --noEmit (TypeScript 7)
 npm test                    # Vitest unit tests (tests/unit, happy-dom)
 npx vitest run tests/unit/rules.test.ts -t "Phone"    # single file / single test
