@@ -39,9 +39,15 @@ Don't log: questions answered on the spot, work finished in the same change
 (say `Fixes #N` if it had an issue), or anything the owner says not to track.
 
 **Other repos.** Work in `ai-job-search` that serves the fleet (`/queue`, a
-portal CLI, the tracker) is logged **here** with `platform:agents`, since that
-repo is a fork and its own issues belong to upstream. Work on the portfolio
-site is logged on `TC6IDM/TC6IDM.github.io` with a link back to the issue here.
+portal CLI, the tracker, the `/fleet` and `apply-runner` skills, `/answer`) is
+logged **here** with `platform:agents`, since that repo came from an upstream
+project whose issues belong there. Add **`repo:ai-job-search`** when the code
+lands in that repo: the sprint then builds it in its linked worktree and opens
+that repo's PR (ezaa-sprint SKILL.md, "Linked repos"). Work on the portfolio
+site (`TC6IDM/TC6IDM.github.io`) is logged **here** too, with `platform:site`,
+under the Showcase epic: the site's CLAUDE.md keeps its issues on the source
+repos' boards (Ride The Bus does the same with its epic #39), and a site commit
+names the issue it serves (`… (TC6IDM/EzAutoApply#N)`).
 
 ## The shape
 
@@ -65,6 +71,7 @@ site is logged on `TC6IDM/TC6IDM.github.io` with a link back to the issue here.
 | Size | `size:S` ≈ one session · `size:M` two or three · `size:L` a week or more |
 | Who | `who:you` (the owner: accounts, decisions, money, a real application) · `who:claude` · `who:together` (a live job site, the owner's accounts) |
 | Status | `status:blocked` · `status:needs-decision` · `status:needs-site` (needs a live application page; save its markup into a fixture first if possible) |
+| Repo | `repo:ai-job-search` when the code lands in TC6IDM/ai-job-search (`LINKED_REPOS` in `config.mjs`); none for this repo |
 
 `inbox` is only for the pinned Inbox issue. The full list with colours and
 descriptions is `LABELS` in `config.mjs`.
@@ -127,8 +134,10 @@ makes parents before children, and is resumable (`<file>.created.json`).
 
 ## The Project board
 
-The "EzAutoApply" Project: https://github.com/users/TC6IDM/projects/4 (`PROJECT`
-in `config.mjs`). Its Priority, Size, Who, Platform and Kind fields mirror the
+The "EzAutoApply" Project: https://github.com/users/TC6IDM/projects/5 (`PROJECT`
+in `config.mjs`). It is a copy of PTrainr's board (`copyProjectV2`), so the views'
+grouping and sort came with it; only the Platform/Who options and the Now and
+Needs you filters were changed. Its Priority, Size, Who, Platform and Kind fields mirror the
 labels but are **not** filled automatically, so after creating issues run
 `sync-board.mjs` (it also adds any open issue the board is missing, and only
 fills empty fields).
@@ -139,11 +148,19 @@ Views:
 - **Now:** a board (Todo / In Progress / In Review / Done) of the current
   milestone without parents.
 - **Needs you:** `who:you,together -kind:Epic is:open`, by milestone.
-- **By part:** `-kind:Epic is:open`, grouped by Platform.
+- **By platform:** `-kind:Epic is:open`, grouped by Platform (the part of the repo).
 - **My work:** `assignee:@me is:open -status:Done`, by milestone, hierarchy off.
 
-The API (`createProjectV2View`) sets a view's name, layout and filter; grouping,
-sort and column widths are set by hand in the view's menu on GitHub.
+**Setting up or checking the board:** `node .claude/skills/ezaa-issues/bootstrap.mjs [--dry]`
+makes the labels, milestones, board (a copy of `BOARD.template`, retuned to
+`BOARD` in `config.mjs`), the repo link, `PROJECT` and the pinned Inbox, and
+changes only what differs, so a re-run on a matching board does nothing.
+`--new-board` copies a fresh board even when `PROJECT` names one.
+
+The API sets a view's name, layout, filter and columns, but not its grouping or
+sort; those are set by hand in the view's menu, or come with `copyProjectV2`.
+The "Auto-add to project" workflow is tied to a repo and doesn't copy: it is
+turned on by hand (Workflows → Auto-add, repo EzAutoApply, `is:issue is:open`).
 
 Status columns: **Todo → In Progress** (`work.mjs start`) **→ In Review**
 (`work.mjs review`: done and pushed, the PR not merged yet) **→ Done** (the

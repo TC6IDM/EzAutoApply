@@ -69,13 +69,21 @@ export function readValue(f: FieldDescriptor): AnswerValue {
 export function debugHtml(f: FieldDescriptor): string {
   const container = f.element.closest('[data-automation-id^="formField"]') ?? f.element.parentElement?.parentElement ?? f.element;
   const clone = container.cloneNode(true) as Element;
+  // Noise that says nothing about the field (and can be large): scripts, styles, icons.
+  for (const n of Array.from(clone.querySelectorAll('script, style, noscript, svg, template'))) n.remove();
   for (const n of [clone, ...Array.from(clone.querySelectorAll('*'))]) {
     n.removeAttribute('value');
     n.removeAttribute('style');
     if (n instanceof HTMLInputElement || n instanceof HTMLTextAreaElement) n.value = '';
+    // A textarea's text is its starting value, and outerHTML writes it out.
+    if (n instanceof HTMLTextAreaElement) n.textContent = '';
   }
-  return clone.outerHTML.replace(/\s+/g, ' ').slice(0, 3000);
+  // Profile values in the text around it are replaced by the background before an incident leaves (#18).
+  return clone.outerHTML.replace(/\s+/g, ' ').slice(0, DEBUG_HTML_MAX);
 }
+
+/** Enough for a Workday form field with its open list; incidents allow up to 30 KB (incidents/incident.ts). */
+export const DEBUG_HTML_MAX = 8000;
 
 /** A resolution that `fillAll` will try to write into the page. */
 function willFill(r: Resolution): boolean {
@@ -93,7 +101,7 @@ const BUSY_TEXT = /\b(parsing|uploading|processing|analy[sz]ing|reading|scanning
  * Wait for the page to finish reacting to an upload (a site reading the resume and filling the
  * form): nothing added, removed or re-worded for `quietMs`, and no "Parsing your resume…" showing.
  */
-async function settle(doc: Document, quietMs = 1500, maxMs = 15_000): Promise<void> {
+export async function settle(doc: Document, quietMs = 1500, maxMs = 15_000): Promise<void> {
   let last = Date.now();
   const obs = new MutationObserver(() => (last = Date.now()));
   obs.observe(doc.body, { childList: true, subtree: true, characterData: true });
@@ -315,6 +323,7 @@ export class AutofillController {
       let status: FillStatus = r.status;
       let note = r.note;
       let text = r.status === 'prefilled' ? shown(readValue(f)) : '';
+      let uncertain = false;
       if (willFill(r)) {
         if (!f.element.isConnected) {
           this.stepProgress(false);
@@ -326,6 +335,7 @@ export class AutofillController {
           text = out.valueText;
           if (r.answerId) used.push(r.answerId);
           if (out.note) note = out.note;
+          uncertain = !!out.uncertain;
           if (out.uncertain && status === 'filled') {
             status = 'review';
             note = note ?? 'The page didn’t clearly confirm this choice; check it';
@@ -335,11 +345,11 @@ export class AutofillController {
           note = out.reason;
         }
       }
-      this.track(f, r, status, text, note);
+      this.track(f, r, status, text, note, uncertain);
     }
   }
 
-  private track(f: FieldDescriptor, r: Resolution, status: FillStatus, valueText: string, note?: string): void {
+  private track(f: FieldDescriptor, r: Resolution, status: FillStatus, valueText: string, note?: string, uncertain = false): void {
     this.fields.set(f.id, f);
     this.reports.set(f.id, {
       id: f.id,
@@ -355,7 +365,8 @@ export class AutofillController {
       valueText,
       note,
       current: readValue(f),
-      debug: status === 'needs' || status === 'review' ? debugHtml(f) : undefined,
+      debug: status === 'needs' || status === 'review' || (status === 'skipped' && r.source !== 'none') ? debugHtml(f) : undefined,
+      ...(uncertain && { uncertain: true }),
     });
     // Passwords typed on the page are never reported or offered for "remember this answer".
     if (status !== 'filled' && status !== 'prefilled' && f.kind !== 'password') this.watch(f);

@@ -87,8 +87,8 @@ node .claude/skills/ezaa-sprint/sprint.mjs start [--issues 12,34,56 [--only]] [-
      sample profile, never `exportAll` output);
    - a running Laya server, when the change can't be tested with the
      classifier off (the classifier is optional: most can);
-   - **work in another repo** (`TC6IDM/TC6IDM.github.io`, `ai-job-search`):
-     unless the owner asked for exactly that work, then start with
+   - **work in another repo** other than a linked one (below; e.g.
+     `TC6IDM/TC6IDM.github.io`): unless the owner asked for exactly that work, then start with
      `--external <that checkout>` (this repo's branch gets no commits; the work
      follows that repo's own CLAUDE.md; `finish N --note … --pr <url>`). The
      guard still asks on every commit there, so an unattended external sprint
@@ -124,7 +124,13 @@ node .claude/skills/ezaa-sprint/sprint.mjs start [--issues 12,34,56 [--only]] [-
    - opens the sprint's PR on the first finished issue, or updates it;
    - rewrites the PR body: Fixes lines, in progress, passed over, and the
      **5-hour and weekly usage**;
-   - runs `work.mjs review N`, so the card moves to **In Review** at once.
+   - runs `work.mjs review N`, so the card moves to **In Review** at once;
+   - writes what the issue used ("about 4% of the 5-hour window, 1% of the
+     week") into that note, and the 5-hour figure into the board's **Usage %**
+     field (made on first use). `next` shows each candidate's expected cost
+     from those figures (a size's own average once 5 of that size are
+     measured, a guess before), and `sprint.mjs sizes` lists the averages and
+     any issue whose size label looks wrong.
 
    Never write or edit the PR body by hand: `sprint.mjs` owns it; Claude's own
    description goes in through `checkpoint --intro-file`. While the sprint works,
@@ -138,12 +144,40 @@ node .claude/skills/ezaa-sprint/sprint.mjs start [--issues 12,34,56 [--only]] [-
 7. Back to 1. Run `sprint.mjs budget` after each big step of a long issue too;
    obey the hook the moment it speaks.
 
+### Linked repos: ai-job-search (#57)
+
+One sprint also works `TC6IDM/ai-job-search` (`LINKED_REPOS` in
+`../ezaa-issues/config.mjs`). Its issues stay on this board, labelled
+`repo:ai-job-search`.
+- `start` (or `sprint.mjs link` for a sprint already running) adds a **git
+  worktree** at `<Desktop>/ai-job-search-sprint` on a branch named like the
+  sprint's (`sprint/<stamp>`), made from that repo's `origin/main`. The owner's
+  own checkout (`Desktop/ai-job-search`, often mid-edit on a branch of its own)
+  is never switched, committed to, stashed or cleaned.
+- `begin N` on a labelled issue says where to work. Build it in the worktree,
+  under **that repo's CLAUDE.md**. Its resume and profile content is personal,
+  so it never goes into this public repo's issues or PRs, and tests there use
+  made-up data.
+- Commit there with `git -C "<worktree>" commit -m "<title> (TC6IDM/EzAutoApply#N)" …`.
+  The guard allows commits and pushes in that worktree on that branch only.
+  It never allows them in the owner's checkout, on its main or to `upstream`,
+  and never a force-push.
+- `finish N --note …` checks the worktree (clean, last commit names `#N`) and
+  pushes it. It opens or updates ai-job-search's own PR (`Fixes TC6IDM/EzAutoApply#N`
+  lines), lists the issue under "In ai-job-search" on this repo's PR (never as a
+  Fixes line here), and moves the card to In Review.
+- `checkpoint` merges that repo's `origin/main` into the worktree. If the merge
+  needs judgment it aborts and says so; `ask` about it. Then it updates that PR.
+  `end` removes the worktree when it is clean and keeps the branch.
+
 ### Winding down (the person asks to stop)
 
 A sprint is never cut off mid-issue; it **winds down**: no new issue, the one in
 progress finished properly, then the Checkpoint. "wind down", "wrap up",
 `/ezaa-sprint wind down`, or `node .claude/skills/ezaa-sprint/sprint.mjs wind-down`
-in any terminal (the hook passes it on); `wind-down --undo` takes it back. An
+in any terminal (the hook passes it on), or the Wind down button in the Fleet Office's
+Sprint window (#50, which runs the same command and otherwise only reads the state file);
+`wind-down --undo` takes it back. An
 issue begun but not yet worked on is put back (`skip`, card to Todo, a comment).
 
 ## 3. Checkpoint (WRAP after the current issue, STOP at once)

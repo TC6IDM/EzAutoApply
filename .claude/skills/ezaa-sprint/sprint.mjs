@@ -33,6 +33,9 @@
 //                         (the merge closes it, maintainer 2026-11-12) and adds that it is not yet seen.
 //   ... checkpoint [--title "…"] [--intro-file f.md]  Rewrite the PR (title, Claude's description
 //                         above the generated part, usage) and take the running label off: CI runs once.
+//   ... sizes             What each size has cost, measured on the board ("Usage %", set by finish
+//                         from the 5-hour reading at begin and finish), and issues whose size label
+//                         looks wrong. `next` shows each candidate's expected cost from the same figures.
 //   ... statusline        The status line command: saves the 5-hour and weekly figures Claude Code
 //                         hands it, so usage() rarely needs the endpoint (and its 429s).
 //   ... skip N --why "…"  Note an issue passed over (needs a phone, a decision, too big…).
@@ -51,12 +54,13 @@
 // Claude login. The token is read from ~/.claude/.credentials.json (or the macOS Keychain),
 // sent only to api.anthropic.com, and never printed or stored anywhere else.
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { homedir, tmpdir, platform } from 'node:os';
 import { join, resolve } from 'node:path';
 import https from 'node:https';
 
-import { REPO, REPO_NAME, OWNER, PROJECT, MILESTONE_ORDER as MILESTONES } from '../ezaa-issues/config.mjs';
+import { REPO, REPO_NAME, OWNER, PROJECT, MILESTONE_ORDER as MILESTONES, LINKED_REPOS, linkedRepoOf } from '../ezaa-issues/config.mjs';
+import { STALE_HOURS, KEEP_GOING_STALE_HOURS, DEFAULT_SMALL_AT, DEFAULT_NEW_AT, DEFAULT_STOP_AT, FABLE_LINES, LARGE_SESSION_AT, LARGE_WEEKLY_UNDER, DEFAULT_ISSUE_COST, defaultLines, until, judge, isLarge, largeAllowed, averageCost, finishRefusal, USAGE_FIELD, MEASURED_AFTER, issueUsage, usageNote, sizeAverages, expectedCost, misSized } from './verdict.mjs';
 const DIR = join(tmpdir(), 'ezaa-sprint');
 const STATE = join(DIR, 'state.json');
 const CACHE = join(DIR, 'usage.json');
@@ -64,22 +68,6 @@ const RESTORE = join(DIR, 'compact-restore.json'); // what settings.local.json h
 const FAILED = join(DIR, 'usage-failed.json');      // the last failed read, for the back-off
 const MODEL = join(DIR, 'statusline-model.json');   // the model id Claude Code last gave the status line
 const STATUS = join(DIR, 'statusline-usage.json');  // the figures Claude Code last gave the status line
-const STALE_HOURS = 14;              // a sprint left behind by a crash stops counting this long after its last step
-const KEEP_GOING_STALE_HOURS = 8 * 24; // a keep-going sprint may wait out a weekly reset (maintainer, 2026-11-13)
-const DEFAULT_SMALL_AT = 80;         // only size:S issues start at or above this % (maintainer, 2026-11-13)
-const DEFAULT_NEW_AT = 94;           // no new issue at or above this % (either limit)
-const DEFAULT_STOP_AT = 96;          // checkpoint now at or above this % (every finished issue is already pushed, so it costs under 1%)
-// On Fable a keep-going sprint's 55-minute wakes alone cost about 2% of the
-// 5-hour window an hour (the owner, 2026-11-16, #82), so the lines sit lower
-// there. Any other model keeps the three above.
-const FABLE_LINES = { smallAt: 70, newAt: 82, stopAt: 88 };
-// A size:L issue rarely fits one 5-hour window, so it starts only in a keep-going
-// sprint (which waits out a reset and carries on) and only with a fresh window:
-// the 5-hour figure at most this (maintainer, 2026-11-13), the weekly under
-// LARGE_WEEKLY_UNDER (maintainer, 2026-11-14: was at most 70%).
-const LARGE_SESSION_AT = 20;
-const LARGE_WEEKLY_UNDER = 92;
-const DEFAULT_ISSUE_COST = 12;       // % of the 5-hour window an issue is guessed to take until one is measured
 
 const args = process.argv.slice(2);
 const action = args[0];
@@ -127,11 +115,6 @@ function sessionModel() {
 }
 
 // The three lines a sprint starts with when none is named, and why.
-function defaultLines(model) {
-  const name = model ? [model.id, model.name].filter(Boolean).join(' / ') : null;
-  if (model && /fable/i.test(`${model.id} ${model.name}`)) return { ...FABLE_LINES, why: `the session's model is ${name}, where the waiting wakes cost more, so the lines sit lower` };
-  return { smallAt: DEFAULT_SMALL_AT, newAt: DEFAULT_NEW_AT, stopAt: DEFAULT_STOP_AT, why: name ? `the session's model is ${name}` : 'the model of the session is not known (the status line has not reported it in the last 30 minutes), so the usual lines' };
-}
 
 async function usage(maxAgeSeconds = 60) {
   const fromStatusLine = statusLineUsage();
@@ -189,25 +172,7 @@ async function readUsage() {
   } catch (e) { return { error: `could not reach the usage endpoint (${e.name})` }; }
 }
 
-const until = iso => {
-  if (!iso) return '?';
-  const m = Math.max(0, Math.round((Date.parse(iso) - Date.now()) / 60000));
-  const at = new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  return `${at}, in ${m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}` : `${m}m`}`;
-};
 
-function judge(u, s) {
-  const newAt = s?.newAt ?? DEFAULT_NEW_AT, stopAt = s?.stopAt ?? DEFAULT_STOP_AT;
-  const smallAt = Math.min(s?.smallAt ?? DEFAULT_SMALL_AT, newAt);
-  if (u.error) return { verdict: 'UNKNOWN', smallAt, newAt, stopAt, used: null, line: `UNKNOWN: ${u.error}. Finish the current issue, then checkpoint.` };
-  const used = Math.max(u.session ?? 0, u.weekly ?? 0);
-  const binding = (u.weekly ?? 0) > (u.session ?? 0) ? 'weekly' : '5-hour';
-  const verdict = used >= stopAt ? 'STOP' : used >= newAt ? 'WRAP' : used >= smallAt ? 'SMALL' : 'GO';
-  const resets = binding === 'weekly' ? u.weeklyResets : u.sessionResets;
-  const line = `${verdict}: 5-hour ${u.session ?? '?'}% (resets ${until(u.sessionResets)}) · weekly ${u.weekly ?? '?'}% (resets ${until(u.weeklyResets)}) · ${smallAt < newAt ? `small issues only from ${smallAt}%, ` : ''}no new issue from ${newAt}%, checkpoint at ${stopAt}%${u.stale ? ` (stale: ${u.stale})` : ''}`;
-  const resumeInSeconds = resets ? Math.max(0, Math.round((Date.parse(resets) - Date.now()) / 1000) + 120) : null;
-  return { verdict, smallAt, newAt, stopAt, used, binding, resumeInSeconds, line };
-}
 
 function record(s, u, step) {
   if (!s || u.error) return;
@@ -217,19 +182,7 @@ function record(s, u, step) {
   s.readings = [...(s.readings || []), { at: new Date().toISOString(), session: u.session, weekly: u.weekly, step }].slice(-300);
 }
 
-const isLarge = labels => labels.some(l => (l.name ?? l) === 'size:L' || (l.name ?? l) === 'size:XL');
-function largeAllowed(u, s, asked = false) {
-  if (!s?.keepGoing) return { ok: false, why: 'size:L only in a keep-going sprint (it waits out a reset and carries on)' };
-  if (u.error || typeof u.session !== 'number' || typeof u.weekly !== 'number') return { ok: false, why: 'size:L needs a usage reading' };
-  if (u.session > LARGE_SESSION_AT && !asked) return { ok: false, why: `size:L starts only in a fresh window (5-hour at most ${LARGE_SESSION_AT}%, now ${u.session}%)` };
-  if (u.weekly >= LARGE_WEEKLY_UNDER) return { ok: false, why: `size:L needs weekly room (under ${LARGE_WEEKLY_UNDER}%, now ${u.weekly}%)` };
-  return { ok: true, why: `size:L may start: a fresh window (5-hour ${u.session}%) in a keep-going sprint` };
-}
 
-function averageCost(s) {
-  const costs = (s?.done || []).map(d => d.cost).filter(c => typeof c === 'number' && c > 0);
-  return costs.length ? Math.round(costs.reduce((a, b) => a + b, 0) / costs.length) : null;
-}
 
 // ---------- the sprint's PR (maintainer, 2026-11-13) ----------
 // The PR is open from the first finished issue on, so anyone can watch a sprint
@@ -268,13 +221,15 @@ const percent = v => (v ?? '?') + '%';
 // cost (maintainer, 2026-11-13: "keep putting the weekly / 5hr usage in the PRs").
 // Claude's own description goes above it with `checkpoint --intro-file`.
 function prBody(s, pr, running) {
-  const done = s.done.filter(d => d.pr === pr);
+  // A linked repo's issues are on that repo's PR (#57), never Fixes lines here:
+  // this PR's merge would close them with their code still unmerged there.
+  const done = s.done.filter(d => d.pr === pr && !d.repo);
   const lines = [];
   if (s.intro?.pr === pr) lines.push(s.intro.text.trim(), '');
   lines.push(...(done.length ? ['## Done',
     // Every finished issue closes on merge (maintainer, 2026-11-12), including one
     // nobody has seen on a phone yet; the line says so instead of keeping it open.
-    ...done.map(d => `- ${d.title ? `${d.title}: ` : ''}Fixes #${d.n}${d.device ? ' (not yet checked on a live job site)' : ''}${d.cost != null ? ` · ${d.cost}% of the 5-hour window` : ''}`)]
+    ...done.map(d => `- ${d.title ? `${d.title}: ` : ''}Fixes #${d.n}${d.device ? ' (not yet checked on a live job site)' : ''}${d.cost != null ? ` · ${d.cost}% of the 5-hour window` : ''}${d.weeklyCost != null ? `, ${d.weeklyCost}% of the week` : ''}`)]
     : ['Nothing finished yet.']));
   // Commits on the branch from an earlier sprint on it (a restart, --here) are
   // not in s.done, and without their Fixes lines the merge left them open (#473,
@@ -289,7 +244,11 @@ function prBody(s, pr, running) {
     for (const n of named ? named[1].match(/\d+/g).map(Number) : []) if (!listed.has(n)) { listed.add(n); earlier.push(`- ${subject.replace(/\s*\((#\d+(?:, #\d+)*)\)\s*$/, '')}: Fixes #${n}`); }
   }
   if (earlier.length) lines.push('', '## Also on this branch (an earlier sprint)', ...earlier);
-  if (s.current) lines.push('', '## In progress', `- #${s.current.n}${running ? ': being built now; it joins this PR as its own commit when its checks pass' : ': not finished, kept off this PR (see its "Next" comment)'}`);
+  for (const [name, l] of Object.entries(s.linked || {})) {
+    const there = s.done.filter(d => d.repo === name);
+    if (there.length) lines.push('', `## In ${name}`, `${l.pr ? `${l.repo}#${l.pr}` : l.repo} holds these; its merge closes them:`, ...there.map(d => `- ${d.title ? `${d.title}: ` : ''}#${d.n}`));
+  }
+  if (s.current) lines.push('', '## In progress', `- #${s.current.n}${s.current.repo ? ` (in ${s.current.repo})` : ''}${running ? `: being built now; it joins ${s.current.repo ? 'that repo\'s sprint PR' : 'this PR'} as its own commit when its checks pass` : ': not finished, kept off this PR (see its "Next" comment)'}`);
   if (s.skipped.length) lines.push('', '## Passed over', ...s.skipped.map(d => `- #${d.n}: ${d.why}`));
   const first = s.readings[0], last = s.readings.at(-1);
   if (first && last) {
@@ -312,7 +271,7 @@ function publish(s, running) {
   // The label goes on before the push, so the push's CI run skips.
   if (pr && running) sprintLabel(pr.number, RUNNING);
   sh('git', ['push', '-u', 'origin', s.branch], true);
-  const loose = s.done.filter(d => d.pr == null);
+  const loose = s.done.filter(d => d.pr == null && !d.repo);
   if (!pr) {
     if (!loose.length) return null;
     writeFileSync(file, prBody(s, null, running));
@@ -336,7 +295,105 @@ function publish(s, running) {
   return pr.number;
 }
 
+// ---------- linked repos (#57) ----------
+// One sprint also works ai-job-search (config.mjs LINKED_REPOS). The owner's own
+// checkout is never switched, committed to or cleaned: often it is mid-edit on
+// a branch of its own. The sprint adds a git worktree beside it instead
+// (<parent>/<name>-sprint) on a branch named like this sprint's, made from that
+// repo's own main. guard.mjs allows commits and pushes there on that branch only.
+const repoRoot = () => sh('git', ['rev-parse', '--show-toplevel']);
+const branchExists = (dir, branch) => { try { sh('git', ['-C', dir, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], true); return true; } catch { return false; } };
+
+/** Adds the worktree for each linked repo (or only `only`) to s.linked. Returns what happened, one line each. */
+function linkRepos(s, only) {
+  s.linked = s.linked || {};
+  const said = [];
+  for (const [name, cfg] of Object.entries(LINKED_REPOS)) {
+    if (only && only !== name) continue;
+    if (s.linked[name]) { said.push(`${name}: linked at ${s.linked[name].worktree} on ${s.linked[name].branch}`); continue; }
+    const checkout = resolve(repoRoot(), cfg.path);
+    try { sh('git', ['-C', checkout, 'rev-parse', '--show-toplevel'], true); }
+    catch { said.push(`${name}: no checkout at ${checkout}; its issues are skipped this sprint`); continue; }
+    const worktree = resolve(checkout, '..', `${name}-sprint`);
+    const branch = s.branch;
+    try {
+      sh('git', ['-C', checkout, 'fetch', cfg.remote, cfg.base], true);
+      const start = ['--no-track', '-b', branch, `${cfg.remote}/${cfg.base}`];
+      if (existsSync(worktree)) {
+        // Left by an earlier sprint (end keeps one that still had work in it).
+        const dirty = sh('git', ['-C', worktree, 'status', '--porcelain']);
+        if (dirty) { said.push(`${name}: ${worktree} still has uncommitted work from before; left alone, not linked (ask the owner)`); continue; }
+        sh('git', ['-C', worktree, 'switch', ...(branchExists(checkout, branch) ? [branch] : ['--no-track', '-c', branch, `${cfg.remote}/${cfg.base}`])], true);
+      } else {
+        sh('git', ['-C', checkout, 'worktree', 'add', worktree, ...(branchExists(checkout, branch) ? [branch] : start)], true);
+      }
+    } catch (e) { said.push(`${name}: could not make the worktree (${String(e.message).split('\n')[0]}); not linked`); continue; }
+    s.linked[name] = { checkout, worktree, branch, repo: cfg.repo, remote: cfg.remote, base: cfg.base, pr: null };
+    said.push(`${name}: worktree ${worktree} on ${branch} from ${cfg.remote}/${cfg.base} (your checkout ${checkout} is untouched)`);
+  }
+  writeState(s);
+  return said;
+}
+
+function linkedPrBody(s, name, running) {
+  const done = s.done.filter(d => d.repo === name);
+  const lines = [];
+  // Titles and numbers only: the EzAutoApply board is public (no profile data in either PR).
+  lines.push(...(done.length ? ['## Done', ...done.map(d => `- ${d.title ? `${d.title}: ` : ''}Fixes ${REPO}#${d.n}${d.cost != null ? ` · ${d.cost}% of the 5-hour window` : ''}`)] : ['Nothing finished yet.']));
+  if (s.current?.repo === name) lines.push('', '## In progress', `- ${REPO}#${s.current.n}`);
+  lines.push('', `The issues live on the ${REPO_NAME} board; this PR's merge closes them. ${s.pr ? `The same sprint's ${REPO_NAME} PR: ${REPO}#${s.pr}.` : ''}`.trim());
+  lines.push('', running ? '_The sprint is still running: each issue arrives as its own commit._' : '_The sprint has checkpointed._', '', ATTRIBUTION);
+  return lines.join('\n');
+}
+
+/** Pushes the linked worktree's branch and opens or updates that repo's PR. Returns the PR's number, or null. */
+function publishLinked(s, name, running) {
+  const l = s.linked?.[name];
+  if (!l) return null;
+  const done = s.done.filter(d => d.repo === name);
+  if (!done.length && !l.pr) return null;
+  sh('git', ['-C', l.worktree, 'push', '-u', l.remote, l.branch], true);
+  const file = join(DIR, `pr-${name}.md`);
+  writeFileSync(file, linkedPrBody(s, name, running));
+  let pr = JSON.parse(sh('gh', ['pr', 'list', '--repo', l.repo, '--head', l.branch, '--state', 'open', '--json', 'number,url', '--limit', '5']))[0] || null;
+  // Its own title, from what is on it (the sprint's title describes this repo's PR, not that one).
+  const title = `EzAutoApply sprint ${l.branch.replace(/^sprint\//, '')}: ${done.length === 1 ? done[0].title : `${done.length} fleet issues`}`;
+  if (!pr) {
+    const url = sh('gh', ['pr', 'create', '--repo', l.repo, '--base', l.base, '--head', l.branch, '--title', title, '--body-file', file]);
+    pr = { number: Number(url.match(/\/pull\/(\d+)/)[1]), url };
+  } else {
+    sh('gh', ['pr', 'edit', String(pr.number), '--repo', l.repo, '--body-file', file, '--title', title]);
+  }
+  l.pr = pr.number;
+  for (const d of done) d.pr = pr.number;
+  writeState(s);
+  return pr.number;
+}
+
 // ---------- issues ----------
+// ---------- usage per issue on the board (#49) ----------
+// Every finished issue's 5-hour usage goes into the board's "Usage %" number
+// field, so the cost of each size is measured across sprints (the state file is
+// deleted by `end`; the board stays). The field is made on first use.
+function boardItems() {
+  return JSON.parse(sh('gh', ['project', 'item-list', PROJECT, '--owner', OWNER, '--limit', '1000', '--format', 'json'])).items;
+}
+// [{ n, size, usage }] for the board's issues (the field keys are the lowercased field names).
+function boardUsage() {
+  const key = USAGE_FIELD.toLowerCase();
+  return boardItems().filter(i => i.content?.number).map(i => ({ n: i.content.number, size: i.size ?? null, usage: typeof i[key] === 'number' ? i[key] : null }));
+}
+function setBoardUsage(n, value) {
+  const fields = JSON.parse(sh('gh', ['project', 'field-list', PROJECT, '--owner', OWNER, '--format', 'json', '--limit', '50'])).fields;
+  let field = fields.find(f => f.name === USAGE_FIELD);
+  if (!field) field = JSON.parse(sh('gh', ['project', 'field-create', PROJECT, '--owner', OWNER, '--name', USAGE_FIELD, '--data-type', 'NUMBER', '--format', 'json']));
+  const item = boardItems().find(i => i.content?.number === n);
+  if (!item) return false;
+  const projectId = sh('gh', ['project', 'view', PROJECT, '--owner', OWNER, '--format', 'json', '--jq', '.id']);
+  sh('gh', ['project', 'item-edit', '--id', item.id, '--project-id', projectId, '--field-id', field.id, '--number', String(value)]);
+  return true;
+}
+
 const has = (issue, name) => issue.labels.some(l => l.name === name);
 const rank = (issue, prefix, order) => { const i = order.findIndex(v => has(issue, `${prefix}${v}`)); return i < 0 ? order.length : i; };
 
@@ -523,6 +580,10 @@ if (action === 'statusline') {
   if (session !== null) parts.push(`5h ${session}%`);
   if (weekly !== null) parts.push(`week ${weekly}%`);
   if (s) parts.push(`sprint${s.current ? ` #${s.current.n}` : ''} · ${s.done.length} done`);
+  // Both PRs when a linked repo has one (#57): "PR #51 + ai-job-search #3".
+  if (s?.pr || Object.values(s?.linked || {}).some(l => l.pr)) {
+    parts.push([s.pr ? `PR #${s.pr}` : '', ...Object.entries(s.linked || {}).filter(([, l]) => l.pr).map(([name, l]) => `${name} #${l.pr}`)].filter(Boolean).join(' + '));
+  }
   process.stdout.write(parts.join(' · ') || 'EzAutoApply');
   process.exit(0);
 }
@@ -601,6 +662,23 @@ if (action === 'aftercompact') {
 }
 
 // `lines [--model <id>]`: the lines `start` would choose now, and why. Changes nothing.
+if (action === 'sizes') {
+  // The measured cost of each size, from the board's "Usage %" (#49), and issues whose label looks wrong.
+  const rows = boardUsage();
+  const averages = sizeAverages(rows);
+  const measured = rows.filter(r => r.usage !== null).length;
+  if (!measured) { console.log(`No issue has a ${USAGE_FIELD} yet: \`finish\` sets it for each issue a sprint finishes.`); process.exit(0); }
+  console.log(`${measured} issue${measured === 1 ? '' : 's'} measured (${USAGE_FIELD}: the 5-hour window an issue used):`);
+  for (const size of ['XS', 'S', 'M', 'L', 'XL']) {
+    const a = averages[size];
+    if (a) console.log(`  size:${size}  ${a.avg}% on average over ${a.n}${a.n >= MEASURED_AFTER ? '' : ` (next uses it from ${MEASURED_AFTER})`}`);
+  }
+  const odd = misSized(rows, averages);
+  for (const o of odd) console.log(`  #${o.n} is size:${o.size} but used ${o.usage}%, nearer size:${o.looks}'s average`);
+  if (!odd.length) console.log('  no size label looks wrong yet (needs two sizes with 3+ measured each)');
+  process.exit(0);
+}
+
 if (action === 'lines') {
   const d = defaultLines(opt('model') ? { id: opt('model'), name: null } : sessionModel());
   console.log(`small issues only from ${d.smallAt}%, no new issue from ${d.newAt}%, checkpoint at ${d.stopAt}%: ${d.why}`);
@@ -654,6 +732,8 @@ if (action === 'start') {
   const state = { startedAt: new Date().toISOString(), branch, smallAt, newAt, stopAt, keepGoing: flag('keep-going'), mine: flag('mine'), label: opt('label') || null, external, queue, only: flag('only'), avoid, done: [], skipped: [], current: null, readings: [] };
   record(state, u, 'start');
   writeState(state);
+  // The linked repos' worktrees (#57); an --external sprint works one other checkout by hand instead.
+  if (!external) { try { for (const line of linkRepos(state)) console.log(`linked ${line}`); } catch (e) { console.log(`(linking the other repos failed: ${e.message}; sprint.mjs link retries)`); } }
   // Only when asked: --autocompact [tokens] (default 200000). Without it compaction is untouched.
   if (flag('autocompact')) {
     const given = Number(opt('autocompact'));
@@ -718,32 +798,57 @@ if (action === 'next') {
   console.log([queue.length ? `named first: ${queue.map(n => `#${n}`).join(' ')}${only ? ' (only these)' : ''}` : '',
     only ? '' : mine ? (mineThenOpen(s) ? 'then issues assigned to you, then unassigned ones (never anyone else\'s)' : 'then only issues assigned to you') : 'then issues assigned to you and unassigned ones (never anyone else\'s)'].filter(Boolean).join('; '));
   if (j.used !== null) console.log(`room before checkpoint: ${j.stopAt - j.used}% · an issue has cost ${cost ? `${cost}% on average this sprint` : `~${DEFAULT_ISSUE_COST}% (a guess until one is measured)`}`);
+  // What each size costs, measured on the board across sprints (#49); a guess until MEASURED_AFTER of a size.
+  let averages = {};
+  try { averages = sizeAverages(boardUsage()); } catch { /* the board is a nicety here; the list still prints */ }
+  const measured = Object.entries(averages).map(([k, v]) => `${k} ${v.avg}% (${v.n})`);
+  if (measured.length) console.log(`measured per size on the board: ${measured.join(' · ')}; a size's own average counts from ${MEASURED_AFTER} issues`);
+  const sizeLabel = i => i.labels.map(l => l.name).find(n => n.startsWith('size:'));
+  const fits = i => { const e = expectedCost(sizeLabel(i), averages, cost); return { ...e, ok: j.used === null || e.cost <= j.stopAt - j.used }; };
   if (j.verdict === 'GO') console.log(large.ok ? `${large.why}; work it in steps, wip/issue-N at each pause.` : `${large.why}: large issues are left out of this list.`);
   if (j.verdict === 'SMALL') console.log(`Past ${j.smallAt}%: size:S issues only.`);
   else if (j.verdict !== 'GO') console.log('Not GO: start no new issue.');
   for (const i of list) {
     const labels = i.labels.map(l => l.name).filter(n => /^(P\d|size:|platform:|type:)/.test(n)).join(' ');
-    console.log(`#${i.number}  ${i.title}${i.named ? '  [named]' : ''}\n        ${labels} · ${i.milestone?.title || 'no milestone'}`);
+    const f = fits(i);
+    console.log(`#${i.number}  ${i.title}${i.named ? '  [named]' : ''}\n        ${labels} · ${i.milestone?.title || 'no milestone'} · ~${f.cost}%${f.measured ? ' (measured)' : ''}${f.ok ? '' : ` · does not fit the ${j.stopAt - j.used}% left`}`);
   }
   if (!list.length) console.log('Nothing left that Claude can take on its own.');
   process.exit(0);
 }
 
+// `link [name]`: give a running sprint the linked repos' worktrees (start does it
+// for a new sprint; a sprint begun before #57 has none).
+if (action === 'link') {
+  if (s.external) { console.log('an --external sprint works its other checkout by hand; nothing to link'); process.exit(1); }
+  for (const line of linkRepos(s, args[1])) console.log(line);
+  process.exit(0);
+}
+
+// The linked repo an issue's code goes to (#57), from its labels.
+const issueRepo = n => linkedRepoOf(JSON.parse(sh('gh', ['issue', 'view', String(n), '--repo', REPO, '--json', 'labels'])).labels);
+
 if (action === 'begin' || action === 'finish' || action === 'skip') {
   const n = Number(args[1]);
   if (!Number.isInteger(n)) { console.log(`usage: sprint.mjs ${action} <issue>`); process.exit(1); }
+  const where = action === 'skip' ? null : s.current?.n === n && 'repo' in s.current ? s.current.repo : issueRepo(n);
+  if (where && !s.external && !s.linked?.[where]) {
+    for (const line of linkRepos(s, where)) console.log(line);
+    if (!s.linked?.[where]) { console.log(`#${n} goes to ${where}, which this sprint could not link: skip it (sprint.mjs skip ${n} --why "…").`); process.exit(7); }
+  }
+  const linked = where && !s.external ? s.linked[where] : null;
   if (action === 'finish') {
     // The issue's own commit must be in place: nothing left over, and the last
     // commit names it ("<title> (#N)"), so the PR gains exactly that one commit.
     // An external sprint asks the same two questions of the OTHER checkout, and
     // needs the PR that commit is on (--pr <url>): this script pushes nothing there.
-    const at = s.external ? ['-C', s.external] : [];
+    // A linked repo's issue asks them of its worktree, and this script pushes it (#57).
+    const at = s.external ? ['-C', s.external] : linked ? ['-C', linked.worktree] : [];
     if (s.external && !opt('pr')) { console.log('an external sprint\'s finish needs --pr <url of the PR in the other repo>'); process.exit(1); }
     const dirty = sh('git', [...at, 'status', '--porcelain']);
-    if (dirty) { console.log(`Commit #${n} first (one commit per issue); the tree still has changes:\n${dirty}`); process.exit(2); }
-    const subject = sh('git', [...at, 'log', '-1', '--no-merges', '--format=%s']); // a merge of main may sit on top
-    if (!new RegExp(`#${n}\\b`).test(subject)) { console.log(`The last commit ("${subject}") does not name #${n}. Commit the issue as "<title> (#${n})" first.`); process.exit(2); }
-    if (!opt('note')) { console.log(`finish needs --note "<what changed, where>" for the issue's In Review comment`); process.exit(1); }
+    const subject = dirty ? '' : sh('git', [...at, 'log', '-1', '--no-merges', '--format=%s']); // a merge of main may sit on top
+    const refused = finishRefusal({ n, dirty, subject, note: opt('note') });
+    if (refused) { console.log(refused.why); process.exit(refused.code); }
   }
   if (action === 'begin' && s.windDown) {
     console.log(`winding down since ${new Date(s.windDown.at).toLocaleTimeString()}: no new issue. Checkpoint instead.`);
@@ -780,30 +885,44 @@ if (action === 'begin' || action === 'finish' || action === 'skip') {
   }
   record(s, u, `${action} #${n}`);
   const used = u.error ? null : u.session;
-  if (action === 'begin') s.current = { n, at: new Date().toISOString(), sessionAtStart: used, weeklyAtStart: u.weekly ?? null };
+  if (action === 'begin') s.current = { n, at: new Date().toISOString(), sessionAtStart: used, weeklyAtStart: u.weekly ?? null, repo: linked ? where : null };
+  if (action === 'begin' && linked) {
+    console.log(`#${n} is ${where} work: build it in ${linked.worktree} (branch ${linked.branch}), under that repo's CLAUDE.md, never in ${linked.checkout}.`);
+    console.log(`Commit there as "<title> (${REPO}#${n})" with git -C "${linked.worktree}"; finish pushes it and opens or updates ${linked.repo}'s PR.`);
+  }
   // Working again after a checkpoint: the PR says so at once, not at the next finish.
   if (action === 'begin' && !s.external) { try { const pr = openPr(s.branch); if (pr) sprintLabel(pr.number, RUNNING); } catch { /* the label is cosmetic; never block the work on it */ } }
   if (action === 'finish') {
     const start = s.current?.n === n ? s.current : null;
-    const cost = start && used !== null && start.sessionAtStart !== null && used >= start.sessionAtStart ? used - start.sessionAtStart : null;
+    const took = issueUsage(start, u);
+    const cost = took.session;
+    // Into the In Review note, and onto the board where `next` and `sizes` read it back (#49).
+    const usageLine = usageNote(took);
+    if (cost !== null) { try { setBoardUsage(n, cost); } catch { console.log(`(could not set ${USAGE_FIELD} on the board for #${n})`); } }
     // --needs-live: built and checked as far as tests and fixtures can (unit,
     // e2e fixtures), but nobody has run it on a real application site yet.
     let title = null;
     try { title = sh('gh', ['issue', 'view', String(n), '--repo', REPO, '--json', 'title', '--jq', '.title']); } catch { /* the PR line goes without it */ }
-    s.done.push({ n, title, at: new Date().toISOString(), cost, ...(flag('needs-live') && { device: true }) });
+    s.done.push({ n, title, at: new Date().toISOString(), cost, weeklyCost: took.weekly, ...(flag('needs-live') && { device: true }), ...(linked && { repo: where }) });
     s.current = null;
     writeState(s);
     console.log(`#${n} done${cost !== null ? `, cost ${cost}% of the 5-hour window` : ''}`);
     const work = join(sh('git', ['rev-parse', '--show-toplevel']), '.claude', 'skills', 'ezaa-issues', 'work.mjs');
-    if (s.external) {
+    if (linked) {
+      // That repo's branch and PR (#57); this repo's PR then lists it under "In <name>".
+      const pr = publishLinked(s, where, true);
+      console.log(`pushed ${linked.branch} in ${where}; ${linked.repo}#${pr} updated`);
+      try { const own = publish(s, true); if (own) console.log(`${REPO_NAME} PR #${own} now lists it`); } catch (e) { console.log(`(could not update this repo's PR: ${String(e.message).split('\n')[0]})`); }
+      console.log(sh(process.execPath, [work, 'review', String(n), '--note', `${opt('note')}; ${linked.repo}#${pr}${usageLine ? `; ${usageLine}` : ''}`]));
+    } else if (s.external) {
       // The commit and its PR are the other repo's (already pushed there, under
       // that repo's own rule); here only the card moves, with the PR's address.
-      console.log(sh(process.execPath, [work, 'review', String(n), '--note', `${opt('note')}; ${opt('pr')}`]));
+      console.log(sh(process.execPath, [work, 'review', String(n), '--note', `${opt('note')}; ${opt('pr')}${usageLine ? `; ${usageLine}` : ''}`]));
     } else {
       // Straight onto the PR and into In Review (maintainer, 2026-11-13), not at the checkpoint.
       const pr = publish(s, true);
       console.log(`pushed; PR #${pr} updated ("${RUNNING}": CI waits for the checkpoint)`);
-      console.log(sh(process.execPath, [work, 'review', String(n), '--note', `${opt('note')}; PR #${pr}`]));
+      console.log(sh(process.execPath, [work, 'review', String(n), '--note', `${opt('note')}; PR #${pr}${usageLine ? `; ${usageLine}` : ''}`]));
     }
   }
   if (action === 'skip') {
@@ -821,6 +940,7 @@ if (action === 'status') {
   const r = s.readings.at(-1);
   if (r) console.log(`last reading: 5-hour ${r.session}%, weekly ${r.weekly}% (${r.step})`);
   if (s.pr) console.log(`PR #${s.pr}`);
+  for (const [name, l] of Object.entries(s.linked || {})) console.log(`linked ${name}: ${l.worktree} on ${l.branch}${l.pr ? `, PR ${l.repo}#${l.pr}` : ', no PR yet'} · done there: ${s.done.filter(d => d.repo === name).map(d => `#${d.n}`).join(' ') || 'none'}`);
   for (const q of s.questions || []) console.log(`question for the checkpoint${q.issue ? ` (#${q.issue})` : ''}: ${q.text}`);
   if (s.windDown) console.log(`winding down since ${new Date(s.windDown.at).toLocaleTimeString()}: no new issue`);
   if (s.compactions?.length) console.log(`compacted ${s.compactions.length}× this sprint, last ${new Date(s.compactions.at(-1)).toLocaleTimeString()}`);
@@ -855,6 +975,19 @@ if (action === 'checkpoint') {
   writeState(s);
   if (s.external) console.log(`external sprint: nothing to push here; the work and its PR are in ${s.external} (done ${s.done.map(d => `#${d.n}`).join(' ') || 'none'})`);
   else {
+    // Each linked repo first (#57): its own main merged in, then its PR, so this PR's body can name it.
+    for (const [name, l] of Object.entries(s.linked || {})) {
+      if (!l.pr && !s.done.some(d => d.repo === name)) continue;
+      try {
+        sh('git', ['-C', l.worktree, 'fetch', l.remote, l.base], true);
+        sh('git', ['-C', l.worktree, 'merge', '--no-edit', `${l.remote}/${l.base}`], true);
+      } catch {
+        try { sh('git', ['-C', l.worktree, 'merge', '--abort'], true); } catch { /* nothing to abort */ }
+        console.log(`${name}: merging ${l.remote}/${l.base} needs judgment; aborted, ask about it (sprint.mjs ask)`);
+      }
+      try { const p = publishLinked(s, name, false); console.log(p ? `${name}: ${l.repo}#${p} checkpointed` : `${name}: nothing finished there`); }
+      catch (e) { console.log(`${name}: could not update its PR (${String(e.message).split('\n')[0]})`); }
+    }
     const pr = publish(s, false);
     console.log(pr ? `PR #${pr} checkpointed: title, body and usage updated, "${RUNNING}" off and "${CHECKPOINT}" on, so CI runs once` : 'nothing finished: no PR');
   }
@@ -870,11 +1003,16 @@ if (action === 'checkpoint') {
 }
 
 if (action === 'end') {
+  // A linked worktree goes once it is clean (its branch and commits stay); one with work left in it stays.
+  for (const [name, l] of Object.entries(s.linked || {})) {
+    try { sh('git', ['-C', l.checkout, 'worktree', 'remove', l.worktree], true); console.log(`${name}: worktree ${l.worktree} removed (branch ${l.branch} kept)`); }
+    catch { console.log(`${name}: worktree ${l.worktree} kept: it still has uncommitted work`); }
+  }
   rmSync(STATE, { force: true });
   if (restoreCompactWindow()) console.log('auto-compact window put back as it was');
   console.log(`sprint ${s.branch} forgotten (done ${s.done.length}, skipped ${s.skipped.length})`);
   process.exit(0);
 }
 
-console.log('usage: sprint.mjs start|budget [--hook]|next|begin N|finish N --note "…"|checkpoint|ask "…"|skip N --why "…"|wind-down [--undo]|status|summary|end');
+console.log('usage: sprint.mjs start|budget [--hook]|next|sizes|link [repo]|begin N|finish N --note "…"|checkpoint|ask "…"|skip N --why "…"|wind-down [--undo]|status|summary|end');
 process.exit(1);

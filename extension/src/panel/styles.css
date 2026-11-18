@@ -420,6 +420,49 @@ textarea {
   text-wrap: balance;
 }
 
+/* Run to Submit (#13): the button, the page it's on, and why it stopped. */
+.run-panel {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.run-step {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.run-stop {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  border-inline-start: 3px solid var(--warn);
+  background: var(--warn-soft);
+  overflow-wrap: anywhere;
+}
+
+.run-stop.ok {
+  border-inline-start-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.run-stop .run-detail,
+.run-stop small {
+  color: var(--muted);
+}
+
+/* In place of the Advance button once the page says the application went through (#14). */
+.hint.sent {
+  color: var(--text);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
@@ -938,6 +981,23 @@ input.doc-name:focus {
 
 .answer-row p {
   margin: 0;
+}
+
+/* Agent and imported answers waiting for the owner (#21). */
+.approve-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius, 8px);
+  background: var(--warn-soft);
+  color: var(--text);
+}
+
+.tag.to-approve {
+  align-self: flex-start;
+  color: var(--warn);
+  border-color: currentColor;
 }
 
 .history li {

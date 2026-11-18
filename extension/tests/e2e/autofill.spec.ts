@@ -1,8 +1,10 @@
 import { type BrowserContext, test as base, chromium, expect, type Page, type Worker } from '@playwright/test';
 import { strToU8, zipSync } from 'fflate';
-import { readFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { browser as ExtensionApi } from 'wxt/browser';
@@ -378,6 +380,182 @@ test('fills Workday’s education prompts, year-only dates and skills, then Adva
   await form.bringToFront();
   await panel.getByRole('button', { name: 'Advance: Save and Continue' }).click();
   await expect.poll(() => form.evaluate(() => document.body.dataset.advanced)).toBe('yes');
+});
+
+test('run mode reads a one-form application’s last "Apply" as Submit, and nothing is sent (#10)', async ({ context, worker, extensionId, site }) => {
+  const panel = await context.newPage();
+  await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+  const form = await context.newPage();
+  const url = `${site}/multistep.html`;
+  await form.goto(url);
+  const tabId = await worker.evaluate(async (u) => (await chrome.tabs.query({ url: u }))[0].id!, url);
+  const find = (run: boolean) => panel.evaluate(([id, r]) => chrome.runtime.sendMessage({ type: 'findAdvance', tabId: id, run: r }), [tabId, run] as const);
+  const press = () => panel.evaluate((id) => chrome.runtime.sendMessage({ type: 'advance', tabId: id, frameId: 0 }), tabId);
+
+  await form.fill('#first', 'Sam');
+  await form.fill('#email', 'sam@example.com');
+  expect(await find(true)).toMatchObject({ label: 'Next', kind: 'next' });
+  await press();
+  await expect.poll(() => form.evaluate(() => document.body.dataset.step)).toBe('2');
+
+  await form.fill('#years', '1');
+  expect(await find(true)).toMatchObject({ label: 'Continue', kind: 'next' });
+  await press();
+  await expect.poll(() => form.evaluate(() => document.body.dataset.step)).toBe('3');
+
+  // The last step: run mode says Submit (with why), the manual Advance button still says Apply.
+  const last = await find(true);
+  expect(last).toMatchObject({ label: 'Apply', kind: 'submit' });
+  expect((last as { why?: string }).why).toMatch(/sends the application|submits this form/);
+  expect(await find(false)).toMatchObject({ label: 'Apply', kind: 'start' });
+  expect(await form.evaluate(() => document.body.dataset.submitted)).toBeUndefined();
+});
+
+test('Run fills every step, presses Next and Continue, and stops at "Apply" without pressing it (#9)', async ({ context, worker, extensionId, site }) => {
+  test.setTimeout(90_000);
+  const panel = await context.newPage();
+  await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+  await importResume(panel);
+  await classifierOff(panel);
+  const form = await context.newPage();
+  const url = `${site}/multistep.html`;
+  await form.goto(url);
+  // Step 2's one question isn't in the profile: answered here, as a saved answer would.
+  await form.evaluate(() => ((document.getElementById('years') as HTMLInputElement).value = '1'));
+  const tabId = await worker.evaluate(async (u) => (await chrome.tabs.query({ url: u }))[0].id!, url);
+  type Run = { status: string; page: number; stop?: { reason: string; detail?: string }; history: { page: number; pressed?: string }[] };
+  const getRun = () => panel.evaluate((id) => chrome.runtime.sendMessage({ type: 'getRun', tabId: id }), tabId) as Promise<Run | null>;
+
+  await form.bringToFront();
+  await panel.evaluate((id) => chrome.runtime.sendMessage({ type: 'startRun', tabId: id }), tabId);
+  await expect.poll(async () => (await getRun())?.status, { timeout: 60_000 }).toBe('stopped');
+  const run = (await getRun())!;
+  expect(run.stop).toMatchObject({ reason: 'submitReady' });
+  expect(run.stop?.detail).toMatch(/^"Apply"/);
+  expect(run.history.map((h) => h.pressed)).toEqual(['Next', 'Continue', undefined]);
+  expect(await form.evaluate(() => document.body.dataset.step)).toBe('3');
+  expect(await form.inputValue('#first')).toBe('Jordan');
+  expect(await form.evaluate(() => document.body.dataset.submitted)).toBeUndefined();
+});
+
+test('the panel\'s Run button runs to Submit and says what to do next (#13)', async ({ context, extensionId, site }) => {
+  test.setTimeout(90_000);
+  const panel = await context.newPage();
+  await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+  await importResume(panel);
+  await classifierOff(panel);
+  const form = await context.newPage();
+  await form.goto(`${site}/multistep.html`);
+  await form.evaluate(() => ((document.getElementById('years') as HTMLInputElement).value = '1'));
+  // The panel follows the active tab.
+  await form.bringToFront();
+  await panel.getByRole('button', { name: 'Run to Submit', exact: true }).click();
+  const stop = panel.locator('.run-stop');
+  await expect(stop).toContainText('Ready to submit', { timeout: 60_000 });
+  await expect(stop).toContainText('press its Submit button yourself');
+  await expect(stop).toContainText('3 pages · pressed “Next”, “Continue”');
+  await expect(panel.getByRole('button', { name: 'Run to Submit again' })).toBeEnabled();
+  expect(await form.evaluate(() => document.body.dataset.submitted)).toBeUndefined();
+});
+
+test('an agent queues a job and asks the bridge for a Run; the extension runs it and reports back (#17)', async ({ context, worker, extensionId, site }) => {
+  test.setTimeout(120_000);
+  // The real bridge (bridge/src/main.ts) on its own port, with a throwaway home and queue.
+  const home = mkdtempSync(join(tmpdir(), 'ezaa-e2e-bridge-'));
+  const port = 8197;
+  const proc = spawn(process.execPath, [join(here, '..', '..', '..', 'bridge', 'src', 'main.ts')], {
+    env: { ...process.env, EZAA_HOME: home, EZAA_QUEUE_FILE: join(home, 'queue.jsonl'), EZAA_BRIDGE_PORT: String(port) },
+    stdio: 'ignore',
+  });
+  try {
+    const bridgeUrl = `http://127.0.0.1:${port}`;
+    await expect.poll(() => fetch(`${bridgeUrl}/health`).then((r) => r.ok).catch(() => false), { timeout: 15_000 }).toBe(true);
+    const token = readFileSync(join(home, 'bridge-token'), 'utf8').trim();
+    const api = (method: string, path: string, body?: unknown) =>
+      fetch(bridgeUrl + path, { method, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+
+    const panel = await context.newPage();
+    await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+    await importResume(panel);
+    await classifierOff(panel);
+    await panel.getByRole('tab', { name: 'Settings' }).click();
+    await panel.getByText('Agent fleet bridge').click();
+    await panel.getByLabel('Connect to the local bridge').check();
+    await panel.getByLabel('Bridge address').fill(bridgeUrl);
+    await panel.getByLabel('Bridge address').blur();
+    await panel.getByLabel('Bridge token').fill(token);
+    await panel.getByLabel('Bridge token').blur();
+    await expect(panel.getByText('The bridge is running.')).toBeVisible();
+
+    const url = `${site}/multistep.html`;
+    const form = await context.newPage();
+    await form.goto(url);
+    await form.evaluate(() => ((document.getElementById('years') as HTMLInputElement).value = '1'));
+    await form.bringToFront();
+
+    // What an applier agent does: queue the job, claim it, ask for a Run, then watch its status.
+    expect((await api('POST', '/queue', { jobs: [{ id: 'job-1', applyUrl: url, company: 'Example Co.' }] })).status).toBe(201);
+    expect((await (await api('GET', '/queue/next?worker=w1')).json()).id).toBe('job-1');
+    expect((await api('POST', '/run', { jobId: 'job-1' })).status).toBe(202);
+    const status = async () => {
+      const r = await api('GET', '/tabs/job-1/status');
+      return r.ok ? ((await r.json()) as { run: { status: string; stop?: { reason: string } }; fields: { label: string }[] }) : null;
+    };
+    await expect.poll(async () => (await status())?.run.stop?.reason, { timeout: 60_000 }).toBe('submitReady');
+    const queue = (await (await api('GET', '/queue')).json()) as { id: string; status: string }[];
+    expect(queue.find((j) => j.id === 'job-1')?.status).toBe('ready');
+    expect((await status())?.fields.length).toBeGreaterThan(0);
+    expect(await form.evaluate(() => document.body.dataset.submitted)).toBeUndefined();
+
+    // #37: the Office gets a picture of the tab at Submit, only with the token.
+    const shot = () => fetch(`${bridgeUrl}/office/screens/job-1?token=${token}`);
+    await expect.poll(async () => (await shot()).headers.get('content-type'), { timeout: 15_000 }).toBe('image/jpeg');
+    expect((await fetch(`${bridgeUrl}/office/screens/job-1`)).status).toBe(401);
+
+    // #29: the owner submits (here: the site shows its thank-you page), and the job is marked submitted.
+    const ready = (await (await api('GET', '/ready')).json()) as { id: string; title?: string; company?: string }[];
+    expect(ready.map((j) => [j.id, j.company])).toEqual([['job-1', 'Example Co.']]);
+    await form.evaluate(() => {
+      document.body.innerHTML = '<h1>Thank you for applying</h1><p>We received your application.</p>';
+      history.pushState({}, '', '/thanks');
+    });
+    await expect
+      .poll(async () => ((await (await api('GET', '/queue')).json()) as { id: string; status: string }[]).find((j) => j.id === 'job-1')?.status, { timeout: 20_000 })
+      .toBe('submitted');
+
+    // #18: a field it couldn't fill becomes an incident in the bridge's folder, with no profile value in it.
+    const apply = `${site}/apply.html`;
+    await form.goto(apply);
+    await autofill(worker, apply);
+    const dir = join(home, 'incidents');
+    const incidents = (): { kind: string; ats: string; url: string; field?: { id: string; frameId: number; label: string } }[] => {
+      try {
+        return readdirSync(dir, { recursive: true })
+          .map(String)
+          .filter((name) => name.endsWith('.json'))
+          .map((name) => JSON.parse(readFileSync(join(dir, name), 'utf8')));
+      } catch {
+        return [];
+      }
+    };
+    await expect.poll(() => incidents().find((i) => i.field?.label.startsWith('Why do you want'))?.kind, { timeout: 30_000 }).toBe('unmatched');
+    const written = JSON.stringify(incidents()).toLowerCase();
+    for (const value of ['jordan', 'rivera', 'example.com', '123-4567', 'jrivera', 'acme corp']) expect(written, value).not.toContain(value);
+
+    // #21: an agent answers that field and saves it; the owner approves it in Answers.
+    const why = incidents().find((i) => i.field?.label.startsWith('Why do you want'))!.field!;
+    const answer = { jobId: 'job-1', fieldId: why.id, frameId: why.frameId, answer: 'The work on TPS reports.', save: { scope: 'global', createdBy: 'answerer' } };
+    expect((await api('POST', '/answers', answer)).status).toBe(202);
+    await expect(form.locator('#why')).toHaveValue('The work on TPS reports.', { timeout: 30_000 });
+    await panel.bringToFront();
+    await panel.getByRole('tab', { name: 'Answers' }).click();
+    await expect(panel.getByText('1 answer from an agent or an import waits')).toBeVisible();
+    await expect(panel.getByText('From an agent (answerer)')).toBeVisible();
+    await panel.getByRole('button', { name: 'Approve', exact: true }).click();
+    await expect(panel.getByText('1 answer from an agent or an import waits')).toBeHidden();
+  } finally {
+    proc.kill();
+  }
 });
 
 test('with Laya running: rules fill instantly, then leftovers go to the classifier', async ({ context, worker, extensionId, site }) => {

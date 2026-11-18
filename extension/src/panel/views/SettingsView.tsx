@@ -1,5 +1,6 @@
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useEffect, useRef, useState } from 'react';
+import { BRIDGE_DEFAULT_URL } from '../../bridge/client';
 import { FILE_NAME_FORMATS, uploadFileName } from '../../core/documents';
 import { type ClassifierSettings, LAYA_DEFAULT_URL, type Settings } from '../../core/types';
 import { db, type ExportFile, exportAll, getProfile, getSettings, importAll, listApplications, updateSettings } from '../../db';
@@ -22,6 +23,25 @@ function Toggle(props: { label: string; hint?: string; checked: boolean; onChang
         {props.hint && <small className="hint">{props.hint}</small>}
       </span>
     </label>
+  );
+}
+
+/** Whether the bridge answers at the saved address (#17). */
+function BridgeStatus() {
+  const [up, setUp] = useState<boolean | null>(null);
+  useEffect(() => {
+    let alive = true;
+    send<boolean>({ type: 'bridgeHealth' })
+      .then((ok) => alive && setUp(!!ok))
+      .catch(() => alive && setUp(false));
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return (
+    <p className="hint" role="status">
+      {up === null ? 'Checking the bridge…' : up ? 'The bridge is running.' : 'The bridge isn’t answering. Start it with npm start in bridge/.'}
+    </p>
   );
 }
 
@@ -242,6 +262,12 @@ export function SettingsView(props: { active: boolean; onSaved(): void; health: 
           onChange={(v) => change((x) => (x.fixSiteValues = v))}
         />
         <Toggle
+          label="Run to Submit stops at answers that need checking"
+          hint="Off: Run only stops at questions nothing could answer, and you check the rest before pressing Submit."
+          checked={s.runStopOnReview}
+          onChange={(v) => change((x) => (x.runStopOnReview = v))}
+        />
+        <Toggle
           label="Overwrite fields that already have a value"
           checked={s.overwriteFilled}
           onChange={(v) => change((x) => (x.overwriteFilled = v))}
@@ -254,6 +280,28 @@ export function SettingsView(props: { active: boolean; onSaved(): void; health: 
           onChange={(label) => change((x) => (x.fileNameFormat = FILE_NAME_FORMATS.find((f) => formatLabel(f.value) === label)!.value))}
           wide
         />
+      </Section>
+
+      <Section title="Agent fleet bridge" defaultOpen={false}>
+        <Toggle
+          label="Connect to the local bridge"
+          hint="For the agent fleet: lets agents on this computer start Run to Submit on a job’s tab and read how it went. Run still never presses Submit. Off: nothing is sent anywhere."
+          checked={s.bridgeEnabled}
+          onChange={(v) => change((x) => (x.bridgeEnabled = v))}
+        />
+        {s.bridgeEnabled && (
+          <div className="grid">
+            <SettingText label="Bridge address" type="url" value={s.bridgeUrl} placeholder={BRIDGE_DEFAULT_URL} onCommit={(v) => change((x) => (x.bridgeUrl = v || BRIDGE_DEFAULT_URL))} />
+            <SettingText
+              label="Bridge token"
+              type="password"
+              value={s.bridgeToken}
+              hint="From the file the bridge prints when it starts (~/.ezautoapply/bridge-token)"
+              onCommit={(v) => change((x) => (x.bridgeToken = v.trim()))}
+            />
+            <BridgeStatus key={`${s.bridgeUrl}|${s.bridgeToken}`} />
+          </div>
+        )}
       </Section>
 
       <Section title="Backup" defaultOpen={false}>

@@ -1,6 +1,6 @@
 # Agent Fleet Plan: EzAutoApply × ai-job-search
 
-Status: **idea / design draft**, written 2026-11-17. Nothing here is built yet.
+Status: **design, decisions taken.** Written 2026-11-17; the owner answered §17 the same day, and this version records those answers (§0.1). Work is tracked as GitHub issues on the EzAutoApply board (§14 lists them). Run to Submit's detection parts (#10, #11, #12, #14) are built; the loop itself (#9) waits on the ground-rule wording (#8).
 Scope: link the two repos, add a "fill and continue to Submit" mode to the extension, run Claude agents that find jobs and apply, learn from fields the extension couldn't fill, and (maybe) reach out to recruiters.
 
 ---
@@ -17,15 +17,52 @@ The big changes I'd make to the notes:
 | 2 | 4 Haiku agents, one per source (LinkedIn / Indeed / Simplify / AI recs) | ⚠️ Change | Split by **stage**, not by site. Searching mostly needs no browser: the CLIs and `/scrape` already do it. Applying is the same job on every site once you land on the form. So: one search step → one **queue** → N identical **applier** agents that pull from it. Start with N = 1, then 2. |
 | 3 | Haiku agents apply | ⚠️ Change | Haiku should **supervise the extension, not fill fields itself.** It opens the job, presses EzAutoApply's Run, and only steps in on what the extension reports as unfilled. That's roughly 20–40× fewer model calls than driving every field by screenshot, it's far more reliable, and every application exercises (and improves) the extension. |
 | 4 | Sonnet fills fields we can't fill | ✅ Works, with a twist | `/answer` already does this. Sonnet's output should become a **saved answer** (data the extension replays), flagged "agent-written, needs your OK", not live generation inside the extension. That keeps the extension non-generative, which matches your existing rule. |
-| 5 | Opus figures out how to solve the field for next time | ✅ Good idea, change the timing | Don't call Opus per field in real time. Capture an **incident** (redacted DOM, field info, what happened), then run a **nightly batch** where Opus clusters incidents, writes a failing test from the captured markup, fixes the rule/filler, and leaves an uncommitted diff for you to review. Most incidents will turn out to be missing *data* (an answer bank entry), not missing *code*. |
+| 5 | Opus figures out how to solve the field for next time | ✅ Decided: live | Capture an **incident** (redacted DOM, field info, what happened) for every field the extension can't fill. **Decided 2026-11-17:** a live **Opus Fixer** handles them as they happen (Sonnet triages; data gaps become flagged saved answers, code gaps become fixture → test → fix → reload), and the applier fills by hand only what the Fixer can't fix. See §8.3. |
 | 6 | Always consult all info about me | ✅ Works | Build one knowledge layer from both repos. Hard rule: "best of its abilities" means **never inventing facts.** Genuine gaps (Kubernetes, Go, people management…) get answered honestly, and legal and attestation questions always stop for you. |
 | 7 | One press: fill → next → fill … stop at Submit, all in the extension | ✅ Best part of the plan | Build this **first**, before any agent. It's useful on its own, needs no AI, and the agents depend on it. Needs a ground-rule update and hardened Submit detection (see §6.4: today an "Apply" button counts as *start*, which on a one-page form is really *submit*). |
 | 8 | Agents do applications as well | ⚠️ Decide | Agents should **also stop at Submit** and hand you a "ready to submit" queue, at least until the fill accuracy numbers are proven. Open question Q1. |
-| 9 | Sonnet agent finds recruiters on LinkedIn and cold-DMs them | ❌ Not as written | Automated LinkedIn messaging breaks LinkedIn's User Agreement. Accounts get restricted fast, and your LinkedIn is the most valuable asset in this whole search. Free accounts also get only a handful of personalized invite notes a month. Instead: the agent **researches and drafts**, targets only companies you've applied to, and **you send**: on LinkedIn by hand, or by email from Gmail drafts. |
-| 10 | Indeed | ⚠️ Lowest priority | Indeed has heavy bot protection, no public search API, and its own apply flow. Do it last or treat it as "you browse, extension runs". Many Indeed listings also link out to a company ATS that EzAutoApply already handles. |
+| 9 | Sonnet agent finds recruiters on LinkedIn and cold-DMs them | ❌ Not as written | Automated LinkedIn messaging breaks LinkedIn's User Agreement. Accounts get restricted fast, and your LinkedIn is the most valuable asset in this whole search. Free accounts also get only a handful of personalized invite notes a month. Instead: the agent **researches and drafts**, and **you send**. **Decided 2026-11-17:** a local recruiter page covering any fitting company that hires developers (§10). |
+| 10 | Indeed | ⏸ Skipped for now (2026-11-17) | Indeed has heavy bot protection, no public search API, and its own apply flow. Do it last or treat it as "you browse, extension runs". Many Indeed listings also link out to a company ATS that EzAutoApply already handles. |
 | 11 | Simplify | ✅, but use the right part | The **SimplifyJobs New-Grad-Positions GitHub list** is a free, structured, frequently updated list of new-grad roles (US and Canada) that link straight to Greenhouse/Lever/Workday, which is exactly EzAutoApply's home turf. Add it as a portal CLI in ai-job-search. Don't run Simplify's own Copilot autofill extension alongside EzAutoApply; the two will fight over the same fields. |
 
-Recommended build order: **Run-to-Submit in the extension → incident capture + bridge → knowledge sync → one applier agent → learning loop → more appliers and sources → recruiter drafts.** Details in §14.
+Recommended build order: **Run-to-Submit in the extension → incident capture + bridge → knowledge sync → one applier agent with the live Fixer → more appliers and sources → the Fleet Office → recruiter page.** Details in §14.
+
+### 0.1 Decisions (owner, 2026-11-17)
+
+These answer §17 and override anything older in this document.
+
+| Question | Decision | Where it lands |
+|---|---|---|
+| Q1 Submit | **Agents always stop at Submit** and queue the job for the owner. Nothing presses Submit. | §6, §7.5, §12 |
+| Q2 Generative text | Agent-written (Sonnet) answers **go into the answer bank, flagged for approval**. The extension itself never generates text at runtime. | §8.1, §11.2 |
+| Q3 Billing | Agents run through **Claude Code + Claude in Chrome on the subscription**, not an API key. Costs are plan usage, shared with sprints. | §13 |
+| Q4 Volume / tiers | **No caps**; runs until you stop it. The **tier rule** (§5.2): default resume when it fits well, tailored CV via `/apply` otherwise, **3 tailored a day**; past that, everything is Tier B. | §5.2 |
+| Q5 Repos | Separate repos, linked by the bridge and the queue. | §4 |
+| Q6 LinkedIn | **Company job sites only for the first month**; Easy Apply switched off (#53), revisit after. Search via the guest CLI. | §5 |
+| Q7 Recruiters | A **local page of recruiters** at any company that fits and hires developers, with messages the owner sends. | §10 |
+| Q8 Codes | Agents **may read verification codes from Gmail.** | §6.5, §12 |
+| Q9 Accounts | **Run creates accounts and signs in itself** with the saved password, and ticks the terms (decision #8). | §6.5, §12 |
+| Q10 Browser | A **dedicated Chrome profile** for the fleet. | §7.3 |
+| Q11 Indeed | **Skipped for now.** | §5 |
+| Q12 Bridge | `bridge/` in **this repo**. | §4.3 |
+| (new) Learning | The nightly learner becomes the **live Opus Fixer**. | §8.3 |
+| (new) UI | A **Fleet Office** page shows every agent at work. | §18 |
+
+### 0.2 Models per part
+
+| Part | Model | Why |
+|---|---|---|
+| Fleet launcher (`/fleet` session that spawns and watches agents) | **Haiku 5.5** | It mostly waits and relays status; a bigger model would spend plan usage on waiting. |
+| Scout: collecting postings | **Haiku 5.5** | Search, scrape, de-duplicate: mechanical. |
+| Scout: ranking fit, default resume vs tailored CV | **Sonnet 5.5** | The one judgment that decides where all the applier time goes. |
+| Appliers | **Haiku 5.5** | They supervise the extension: read a status JSON, pick the next action. A step a Haiku applier can't work out escalates to Sonnet once. |
+| Answerer (unknown questions) | **Sonnet 5.5** | Needs the whole profile and honest judgment; answers are flagged for approval anyway. |
+| Fixer: triage | **Sonnet 5.5** | Most incidents are data gaps; Sonnet sorts data gap vs code gap and writes the flagged saved answer. |
+| Fixer: code fixes | **Opus 5.5** | Only code gaps reach it: fixture, failing test, fix, replay. |
+| Outreach research + drafts | **Sonnet 5.5** | ~5 a day; the quality of the message matters more than cost. |
+| Sprints (issues on the board) | **Opus 5.5** | The sprint lines are tuned for it. |
+
+All of these share one subscription with the sprints, so the fleet and an overnight sprint compete for the same weekly limit: run them on different nights at first.
 
 ---
 
@@ -89,13 +126,13 @@ Most of the "AI" half exists already. The plan mostly connects pieces.
    └───────────────┬─────────────────────────┘   └─────────┬───────────┘
                    │ needs                                 │ incidents
                    ▼                                       ▼
-   ┌──── Answerer (Sonnet 5.5, /answer) ─────┐   ┌──── Learner (Opus 5.5, nightly) ─────────┐
-   │ answer from all records, never invent   │   │ cluster incidents → data or code fix     │
-   │ → saved answer (agent-written, review)  │   │ → fixture + failing test → fix → diff    │
-   └─────────────────────────────────────────┘   │ → you review; nothing auto-merged        │
+   ┌──── Answerer (Sonnet 5.5, /answer) ─────┐   ┌──── Fixer (live: Sonnet triage, Opus) ───┐
+   │ answer from all records, never invent   │   │ data gap → flagged saved answer          │
+   │ → saved answer (agent-written, review)  │   │ code gap → fixture + test → fix → replay │
+   └─────────────────────────────────────────┘   │ → reload fleet build; nothing committed  │
                                                  └──────────────────────────────────────────┘
                               YOU: review "ready to submit" tabs → press Submit
-                                   approve agent-written answers → approve learner diffs
+                                   approve agent-written answers → approve Fixer diffs
    (* = new)
 ```
 
@@ -155,7 +192,7 @@ The extension background **polls or keeps a WebSocket** to the bridge only when 
 | **SimplifyJobs New-Grad list** (GitHub) | New portal CLI `simplify-newgrad-search`: fetch the README, parse the table (company, role, location, link, age), filter Canada/remote. | Links go straight to Greenhouse/Lever/Workday/Ashby. | Very low. Public repo. | **High.** Best fit for a May 2026 grad. |
 | **simplify.jobs site** | Needs login; mostly duplicates the GitHub list. | Their Copilot autofill: **don't run it with EzAutoApply.** | Low | Skip |
 | **AI recommendations** (`/scrape` + `/rank`) | Already exists | `/queue` writes ranked jobs into the queue | None | **High** |
-| **Indeed** | No public API; heavy bot protection. WebSearch `site:indeed.com` fallback (already in `/scrape`). | Many listings link to a company ATS: resolve and apply there. Indeed Apply (smartapply.indeed.com): manual-assisted only. | High for automation | Low |
+| **Indeed** | No public API; heavy bot protection. WebSearch `site:indeed.com` fallback (already in `/scrape`). | Many listings link to a company ATS: resolve and apply there. Indeed Apply (smartapply.indeed.com): manual-assisted only. | High for automation | **Skipped for now** (2026-11-17) |
 | **Job Bank Canada** (`jobbank-search` exists) | Already a CLI | Mostly external | Low | Medium (federal/public sector is a differentiator) |
 
 ### 5.1 `/queue` (new command in ai-job-search)
@@ -168,11 +205,13 @@ The extension background **polls or keeps a WebSocket** to the bridge only when 
 ### 5.2 Tiers: quality vs volume
 ai-job-search is built around *tailored* CVs per job; mass applying is the opposite. Make it explicit:
 
-- **Tier A (hand-crafted):** high fit, target company. `/apply` makes a tailored CV + cover letter first; the applier uploads *those* documents (per-tab `DocSelection`). You review everything.
-- **Tier B (standard):** good fit. Default resume, saved answers, agent-applied, stops at Submit.
+- **Tier A (tailored):** `/apply` makes a tailored CV + cover letter first; the applier uploads *those* documents (per-tab `DocSelection`). You review everything.
+- **Tier B (standard):** default resume, saved answers, agent-applied, stops at Submit.
 - **Tier C (skip):** low fit, deal-breakers (QA-only, senior titles, French required). Never queued.
 
-Daily caps: start at **≤ 15 applications/day**. The real bottleneck will be your review of "ready to submit" tabs, not agent speed.
+**The tier rule (decided 2026-11-17, built in `/queue`, #25):** the Scout's ranker (Sonnet) asks whether the **default resume fits this posting well**. If it does, the job is Tier B. If not, it is Tier A and gets a tailored CV via `/apply`, **up to 3 tailored CVs a day** (owner, 2026-11-17). Once those are used, every remaining job that day is Tier B. The budget is a setting in ai-job-search, so tailoring can't quietly eat the plan's weekly limit.
+
+**No application caps** (owner, 2026-11-17): the fleet runs until you press Pause or Stop all. The real bottleneck will be your review of "ready to submit" tabs, not agent speed.
 
 ---
 
@@ -211,7 +250,8 @@ type StopReason =
   | 'review'           // uncertain values and stopOnReview is on
   | 'validationErrors' // pressed Next, page complained (messages mapped to fields)
   | 'noProgress'       // pressed Next, nothing changed
-  | 'signIn' | 'createAccount' | 'verificationCode'
+  | 'submitted'        // the thank-you page (you pressed Submit)
+  | 'verificationCode' // (sign-in and account creation are steps, not stops: #8)
   | 'captcha' | 'assessment' | 'externalRedirect'
   | 'noButton' | 'maxPages' | 'interrupted' | 'cancelled';
 
@@ -239,18 +279,22 @@ Today `advance.ts` treats `Apply / Apply now / Apply for this job` as **start**.
 
 ### 6.5 Blocker detection (stop, never solve)
 - **CAPTCHA:** `iframe[src*="recaptcha"|"hcaptcha"|"challenges.cloudflare"]`, `[class*=captcha]` → `captcha`. Never attempt.
-- **Verification code:** inputs labelled "verification code / one-time / OTP", "check your email" text → `verificationCode`. (Optional later: the agent reads the code from Gmail with your OK. See Q8.)
+- **Verification code:** inputs labelled "verification code / one-time / OTP", "check your email" text → `verificationCode`. Run stops; **an applier agent may then read the code from Gmail** (decided 2026-11-17, #27): it searches for the newest message from the site's sender since the run began, types the code, and presses Run again. A code it can't find within a few minutes leaves the job "needs you".
 - **Assessments:** links/iframes to HackerRank, Codility, CodeSignal, TestGorilla → `assessment`.
-- **Login walls:** `signIn` kind with no saved account for this host, or `createAccount`. Sign-in with the saved password is allowed only if a setting says so (`runMayUseSavedPassword`); account creation is **always** a stop (it accepts terms on your behalf).
+- **Login walls:** `signIn` and `createAccount` are **steps, not stops** (decision #8, 2026-11-17): Run fills the email and the saved password (`getSecret`), ticks "I accept the terms" on an account-creation form, and presses Sign in / Create account itself. A sign-in that fails shows up as the site's error (`validationErrors`). The agent never sees the password.
+
+Built in #11 (`fill/blockers.ts › findBlockers`, `core/sites.ts › isExternalRedirect`).
 - **External redirect:** top-frame navigated to a different registrable domain that isn't an ATS → `externalRedirect`.
 
 ### 6.6 Validation errors after Next
 After pressing, if the page didn't change, read `[aria-invalid="true"]`, `[role="alert"]`, `.error`-ish elements near fields, and the form's error summary. Map messages to field ids (closest field container), mark those fields `needs` with the site's message as the note, then stop. This doubles as **incident data** (§8).
 
 ### 6.7 Ground-rule change (CLAUDE.md)
-Current rule: Advance presses the page's button only when the user presses Advance. Proposed wording:
+Adopted 2026-11-17 (decision #8), now in CLAUDE.md:
 
-> The extension never presses Submit. With **Run** (one user press, or a bridge command after the user turned the bridge on), it may press the page's own **Next/Continue/Review** buttons repeatedly, and **Sign in** only when `runMayUseSavedPassword` is on. It stops at Submit, at anything it can't fill, and at every blocker in §6.5. Account creation, terms acceptance and Submit are always the user's press.
+> The extension never presses Submit. With **Run** (one press by the owner, or a bridge command after the owner turned the bridge on), it may press the page's own Next/Continue/Review buttons repeatedly, press Sign in and Create account using the saved password, and tick "I accept the terms" on an account-creation form. It stops at Submit, at anything it can't fill, and at every blocker. Submit is always the owner's press.
+
+Built in #9 (`src/run/loop.ts`).
 
 ### 6.8 Settings added
 `runStopOnReview` (default **on**), `runMayUseSavedPassword` (default off), `runMaxPages` (15), `bridgeEnabled` (off), `bridgeToken`.
@@ -308,7 +352,7 @@ Stopping at Submit means the filled form must **stay open** until you press Subm
 
 ---
 
-## 8. Unknown fields: answer now (Sonnet), learn for later (Opus)
+## 8. Unknown fields: answer now (Sonnet), fix the extension live (Opus)
 
 ### 8.1 First responder: Sonnet 5.5 via `/answer`
 Input bundle per field:
@@ -354,19 +398,43 @@ Whenever a field ends `needs`, the site rejects a value, a filler returns `uncer
 
 **Redaction:** the extension knows your profile values, so before writing it replaces each one in `domSnippet` and values with placeholders (`{{email}}`, `{{phone}}`, `{{name.first}}`…), and strips `value=` attributes of inputs not in the incident. Incidents go to `~/.ezautoapply/incidents/YYYY-MM-DD/` via the bridge, **never into git**.
 
-### 8.3 Learner: Opus 5.5, nightly batch (`/learn` in EzAutoApply)
-1. **Cluster** the day's incidents by `(ats, kind, normalized label)`. Twenty incidents are often one root cause.
+### 8.3 The live Fixer (decided 2026-11-17; #31, #32, #33)
+
+The first draft had a nightly Opus batch. The owner chose a **live** one instead: the extension gets better *during* the run, so the second application on the same ATS already benefits.
+
+```
+applier: Run stops with a field the extension couldn't fill
+   └─▶ incident (§8.2) to the bridge, applier waits on that field (other pages/jobs carry on)
+Fixer triage (Sonnet 5.5): data gap or code gap?
+   ├─ data gap  → flagged saved answer (origin: agent, approved: false) → applier presses Run again
+   └─ code gap  → Fixer (Opus 5.5):
+                   fixture from the redacted domSnippet → failing test → fix
+                   → npm run compile + npm test → replay corpus
+                   → fleet build (#33) → reload the extension in the fleet profile
+                   → applier presses Run again
+Only when the Fixer can't fix it (two honest tries, or tests won't pass):
+   the Haiku applier fills that one field by hand (form_input), and the incident stays open.
+```
+
+- **The fleet build (#33)** is a separate `wxt build` output the fleet profile loads, so the Fixer can rebuild and reload it without touching the owner's own installed copy.
+- **Nothing is committed.** The Fixer works on a `fix/<date>` branch in a worktree; its diffs wait for the owner's review like every other commit. The fleet runs on the uncommitted build until then.
+- **One fix at a time.** Incidents queue; a cluster with the same `(ats, kind, normalized label)` is one fix.
+- The checks below (classification, replay, budget) apply to every live fix.
+
+**Classifying an incident** (same as the first draft):
+
+1. **Cluster** incidents by `(ats, kind, normalized label)`. Twenty incidents are often one root cause.
 2. **Classify each cluster:**
    - **Data gap**: the question is understood, there's just no answer ("Are you willing to work weekends?"). → Propose an answer-bank entry (global scope) for your approval. **No code.** Expect most clusters to be this.
    - **Missed match**: a known key wasn't recognized ("Mobile #" not matched to `phone`). → Add a label regex / `variants` entry in `core/fieldKeys.ts` + a case in `tests/unit/rules.test.ts`.
    - **Option mismatch**: the value is right but no option matched ("Bachelor's" vs "Undergraduate Degree"). → `core/options.ts` variant + test.
    - **Widget failure**: a custom dropdown/date/upload didn't take. → Build a fixture from the redacted `domSnippet` (`tests/unit/fixtures.ts` or `tests/e2e/pages/<ats>-<widget>.html`), write the **failing test first**, then fix `fill/fillers.ts` / `scan.ts`.
    - **Navigation**: Next not found or the wrong button. → `fill/advance.ts` + a test.
-3. **Guardrails:** work in a git worktree on branch `learn/YYYY-MM-DD`. Must pass `npm run compile`, `npm test`, and a new **replay check** (below). Nothing is committed (your approval rule). The output is a short report: clusters → fix type → diff → tests added → replay result.
-4. **Replay corpus** (`npm run replay`): every incident's `FieldInfo` + the outcome you approved is kept as a regression case. `resolveFields` is pure over `FieldInfo`, so this is cheap. Every learner change is checked against the whole corpus, so a regex that fixes one site can't silently break ten others.
-5. **Budget:** cap at ~10 clusters per night, highest count first.
+3. **Guardrails:** work in a git worktree on branch `fix/YYYY-MM-DD`. Must pass `npm run compile`, `npm test`, and the **replay check** (below) before the fleet build is reloaded. Nothing is committed (your approval rule). Each fix leaves a short report: cluster → fix type → diff → tests added → replay result.
+4. **Replay corpus** (`npm run replay`, #19): every incident's `FieldInfo` + the outcome you approved is kept as a regression case. `resolveFields` is pure over `FieldInfo`, so this is cheap. Every Fixer change is checked against the whole corpus, so a regex that fixes one site can't silently break ten others.
+5. **Budget:** the Fixer shares the plan's limits with the appliers; it takes code gaps by count, highest first, and leaves the rest as incidents when the 5-hour window runs low.
 
-The real-time loop (Sonnet) keeps applications moving today. The nightly loop (Opus) makes sure the same question costs nothing tomorrow.
+The Answerer (Sonnet) keeps applications moving; the Fixer (Opus) makes sure the same field costs nothing on the next application.
 
 ---
 
@@ -400,12 +468,13 @@ Two structured truths will drift. Proposal: ai-job-search's profile is the **nar
 - Free accounts get only a few personalized connection notes a month, and weekly invite caps.
 - Mass cold DMs read as spam; reply rates on generic notes are poor.
 
-### 10.2 What I'd build instead: "Outreach drafts"
-1. **Targets:** only companies where you have a `ready` or `submitted` application (warm context), ranked by tier.
-2. **Research (read-only, low volume):** find the recruiter/hiring manager via WebSearch (company team pages, LinkedIn search results surfaced by the search engine, public posts). No automated browsing of LinkedIn profiles at volume.
-3. **Draft (Sonnet):** ≤ 300 characters for a LinkedIn note, or a short email. Mentions the specific role and req id, plus one true, specific reason (from the knowledge layer). Same voice rules as `/answer`.
-4. **You send:** LinkedIn notes by hand (copy button), or email via **Gmail drafts** (the Gmail connector can create drafts; you press Send). Log each in the tracker so nobody is contacted twice.
-5. Cap: ~5 per day.
+### 10.2 What gets built: a local recruiter page (decided 2026-11-17; #38–#41)
+1. **Targets (#39):** **any** company that fits the profile and is hiring software developers, not only ones already applied to. The Scout's ranking decides the fit.
+2. **Research (read-only, low volume, #39):** find the recruiter or hiring manager via WebSearch (company team pages, LinkedIn results surfaced by the search engine, public posts). No automated browsing of LinkedIn profiles at volume.
+3. **Messages (Sonnet, #40):** for each person, a **LinkedIn connection note** (≤ 300 characters) and a **follow-up** for after they accept, both naming a specific role and one true, specific reason from the knowledge layer. An **email** only when the address is **publicly listed**; addresses are never guessed. Same voice rules as `/answer`.
+4. **The page (#41):** the bridge serves a **local** page listing each company, person, role and link, with copy buttons for each message. You send everything yourself: LinkedIn by hand, email from your own mail client. Mark each as sent so nobody is contacted twice.
+5. **Private:** the page and its data hold real people's names, so they live outside both repos, are **never published or committed**, and never appear in an issue or PR.
+6. Cap: ~5 new people per day.
 
 ---
 
@@ -445,15 +514,16 @@ Match whatever columns `/scrape`, `/rank` and `/outcome` expect. Add `applied_vi
 
 ## 12. Safety rules (proposed, for both CLAUDE.md files)
 
-1. Nothing presses **Submit**, **Create account**, or **Accept terms**. Ever, in any mode.
-2. Run may press Next/Continue/Review; Sign in only with `runMayUseSavedPassword`.
-3. Agents never read, type or log the account password; the extension fills it.
+1. Nothing presses **Submit**. Ever, in any mode. Every application ends queued for the owner (decided 2026-11-17).
+2. Run may press Next/Continue/Review, and **Run itself** signs in and creates accounts with the saved password, ticking the terms on account creation (decision #8, 2026-11-17).
+3. Agents never read, type or log the account password; the extension fills it via `getSecret`.
+3a. Agents may read a site's **verification code from Gmail** (decided 2026-11-17): only the newest message from that site's sender since the run began, nothing else in the mailbox, and nothing is sent, labelled or deleted.
 4. Agents never solve CAPTCHAs or bypass bot checks. They stop and mark the job "needs you".
 5. No automated messages to people. Outreach is drafts only.
 6. Answers trace to records. Attestations and unknowns stop for you. Genuine gaps are answered honestly.
-7. Incidents, screenshots and DOM snapshots are redacted, stored outside git, and deletable (`/learn --purge-older-than 30d`).
-8. Learner changes are never committed or pushed without your approval (existing rule).
-9. Rate limits: ≤ 15 applications/day to start; ≤ 3 per company per week; LinkedIn Easy Apply ≤ 5/day.
+7. Incidents, screenshots and DOM snapshots are redacted, stored outside git, and deletable (a purge for anything older than 30 days).
+8. Fixer changes are never committed or pushed without your approval (existing rule); the fleet runs on the uncommitted fleet build until you review them.
+9. No application caps (owner, 2026-11-17): the fleet runs until the owner stops it. Only the number of filled-but-unsubmitted windows kept open is limited, for memory.
 10. Kill switch: one bridge endpoint / panel button stops all runs and releases all leases.
 
 ---
@@ -468,7 +538,7 @@ Match whatever columns `/scrape`, `/rank` and `/outcome` expect. Add `applied_vi
 | Sonnet 5.5 (`claude-sonnet-5-5`) | $2.00 | $10.00 | Cache reads $0.10 |
 | Opus 5.5 (`claude-opus-5-5`) | $4.00 | $20.00 | Cache reads $0.20 |
 
-If the agents run **through Claude Code on your subscription** (which is how Claude in Chrome is normally driven), you pay in plan usage and rate limits, not per token. Four parallel agents will use up limits quickly; that's another reason to start with one or two.
+**Decided 2026-11-17:** the agents run **through Claude Code on the subscription** (which is how Claude in Chrome is normally driven), so you pay in plan usage and rate limits, not per token; the prices above only help compare models. The fleet and the sprints share the same 5-hour and weekly limits. Four parallel agents will use up limits quickly; that's another reason to start with one or two.
 
 ### 13.2 Rough per-unit estimates (to be replaced by measurements in Phase 4)
 
@@ -477,7 +547,7 @@ If the agents run **through Claude Code on your subscription** (which is how Cla
 | One application, Haiku **supervising** the extension | ~25 turns × ~25K tokens context, ~10K output | **≈ $0.07** |
 | One application, Haiku **driving every field** by screenshot | ~100+ turns, context past 100K (higher price band) | **≈ $1–3** |
 | One Sonnet answer | ~40K context (profile + posting), 1K output; profile prefix cached | ≈ $0.02–0.09 |
-| One Opus learner cluster | ~150K in, ~30K out | ≈ $1.20 |
+| One Opus Fixer code fix | ~150K in, ~30K out | ≈ $1.20 |
 | A day at 15 apps (B tier), ~3 unknown questions each, 5 clusters | | **≈ $2–9/day** on the API |
 
 Supervisor mode is the difference between cheap and expensive, and it also makes the extension better every day.
@@ -495,10 +565,23 @@ A Workday application is ~5–7 pages, about 5–10 min with settles. Greenhouse
 
 ## 14. Roadmap
 
-Each phase is usable on its own. Sizes are rough.
+Each phase is usable on its own. Sizes are rough. Every phase is a parent issue on the EzAutoApply board with one sub-issue per part:
+
+| Phase | Parent | Sub-issues | State (2026-11-17) |
+|---|---|---|---|
+| 0 Decisions and spikes | #3 | #4 two windows, #5 floating button and panel, #6 baseline | Decisions taken (§0.1); spikes not run |
+| 1 Run to Submit | #7 | #8 ground-rule wording (decision), #9 `runTab` loop, #10 Submit detection, #11 blockers, #12 validation errors, #13 Run button and stepper, #14 confirmation page | #10 #11 #12 #14 built; #9 #13 wait on #8 |
+| 2 Bridge + incidents | #15 | #16 bridge server, #17 extension ↔ bridge, #18 redacted incidents, #19 `npm run replay` | |
+| 3 Knowledge sync | #20 | #21 answer provenance and approval, #22 logistics profile fields, #23 ai-job-search answers in and out | |
+| 4 One applier | #24 | #25 `/queue` with the tier rule, #26 `apply-runner` skill, #27 accounts and Gmail codes, #28 Sonnet answerer, #29 ready-to-submit list, #30 two appliers with caps | |
+| 5 Live Fixer | #31 | #32 the incident loop (triage, fix, reload), #33 the fleet build | |
+| 6 Fleet Office (UI) | #34 | #35 serve the Office with live state, #36 Launch / Pause / Stop all for real, #37 agent pop-outs and the inbox, #50 a running sprint in the Office | Prototype done (`docs/fleet-office-prototype.html`) |
+| 7 Recruiter page | #38 | #39 find companies and recruiters, #40 draft the messages, #41 the local page | |
+
+Tooling (#44–#49, #52) and the TC6IDM.github.io showcase (#42, #43) sit beside these phases.
 
 ### Phase 0: Decisions and spikes (½–1 day)
-- Answer the open questions (§17).
+- ~~Answer the open questions (§17).~~ Done 2026-11-17 (§0.1).
 - **Spike A:** one Claude Code session drives **two** Chrome windows via Claude in Chrome at the same time. Do screenshots and clicks work in both? Does the fleet profile keep LinkedIn logged in?
 - **Spike B:** can Claude in Chrome click EzAutoApply's floating button (trusted click) and read its state? Can it open `chrome-extension://…/sidepanel.html`?
 - **Spike C:** hand-run the current extension (Autofill + Advance) on 10 real postings across Greenhouse, Lever, Ashby, Workday and LinkedIn Easy Apply. Record fill rate, the fields left, and pages. This is the **baseline**.
@@ -530,16 +613,18 @@ Each phase is usable on its own. Sizes are rough.
 - Run 1 agent on ~10 B-tier jobs while you watch.
 - Done when: ≥ 80% of B-tier jobs reach `ready` without you touching the form, and zero submissions happened by mistake. Measure real cost per application.
 
-### Phase 5: Learning loop (2–3 days)
-- `/learn` command (Opus), clustering, worktree branch, fixture-first fixes, replay gate, nightly report.
-- Done when: one week of incidents yields reviewed fixes, and the repeat-incident rate drops week over week.
+### Phase 5: Live Fixer (2–3 days)
+- The live incident loop (§8.3): Sonnet triage, flagged saved answers for data gaps, Opus fixture-first code fixes in a worktree, replay gate, fleet build reload (#32, #33).
+- Scaling to 2 appliers, then maybe 4, with leases, `maxReadyOpen` and per-company caps, is #30 in Phase 4.
+- Done when: a field one applier couldn't fill is filled by the extension on the next application, and the repeat-incident rate drops week over week.
 
-### Phase 6: Scale (1–2 days + tuning)
-- 2 appliers, then maybe 4. Leases, `maxReadyOpen`, per-company caps, LinkedIn Easy Apply support.
-- Indeed only as "resolve to ATS" or manual-assisted.
+### Phase 6: Fleet Office (2–3 days)
+- The Office page (§18) served by the bridge with live state; the controls work for real; pop-outs and the owner's inbox; a running sprint shown beside the agents (#35, #36, #37, #50).
+- Done when: the owner runs the fleet from this page for a day without the terminal.
 
-### Phase 7: Outreach drafts (1 day)
-- Targets from tracker, research, drafts, Gmail drafts, logging.
+### Phase 7: Recruiter page (1–2 days)
+- Find fitting companies and their recruiters, draft the messages, serve the local page (§10.2; #39, #40, #41).
+- Indeed stays skipped.
 
 ---
 
@@ -563,7 +648,7 @@ Each phase is usable on its own. Sizes are rough.
 | LinkedIn restricts your account | Medium if Easy Apply/DMs automated | **High** | Search via guest CLI; prefer external apply; Easy Apply capped; no automated DMs |
 | Wrong answer to a screening question auto-disqualifies you | Medium | Medium | Agent answers stay `review` until approved; attestations stop; wrong-value metric |
 | Agent invents experience | Low–Medium | **High** (integrity, interviews) | Records-only rule, genuine-gaps list, sources required in Answerer output |
-| Learner fix breaks other sites | Medium | Medium | Replay corpus gate, full tests, human review, no auto-merge |
+| A Fixer fix breaks other sites | Medium | Medium | Replay corpus gate, full tests, human review, no auto-merge |
 | PII leaks via incidents/screenshots | Low | High | Redaction by known profile values, outside git, purge command |
 | Claude in Chrome can't run agents in parallel | Medium | Medium | Agent SDK + Playwright fallback (§7.3) |
 | Hidden-tab throttling stalls fills | High if tabs | Medium | One window per agent |
@@ -573,17 +658,54 @@ Each phase is usable on its own. Sizes are rough.
 
 ---
 
-## 17. Open questions for you
+## 17. Open questions (answered 2026-11-17)
+
+Kept for the record; the answers are in §0.1.
 
 1. **Submit:** should agents *ever* press Submit (e.g. for B-tier jobs once accuracy is proven), or always stop and queue for you? (Recommended: always stop, revisit after a month of metrics.)
+   **Answer:** Always stop at Submit and queue the job for the owner.
 2. **Generative text:** the project's rule so far is "no generative text in the product". Is it OK for Sonnet-written answers to be **saved into the answer bank** (flagged, needing approval), as long as the extension itself never generates text at runtime?
+   **Answer:** Yes: saved into the answer bank, flagged for approval. The extension never generates text.
 3. **Billing:** run agents on your Claude subscription through Claude Code + Claude in Chrome, or on an API key (Agent SDK)? That changes the cost model and the parallelism limits.
+   **Answer:** Claude Code + Claude in Chrome on the subscription.
 4. **Volume target:** roughly how many applications per day or week do you want? And what share should be Tier A (tailored CV/cover letter via `/apply`) vs Tier B (default resume)?
+   **Answer:** No caps. The tier rule (§5.2): default resume when it fits well, tailored CV otherwise, 3 a day, Tier B past it.
 5. **Repos:** OK to keep them separate and link via the bridge + queue, rather than merge?
+   **Answer:** Yes, separate repos.
 6. **LinkedIn risk appetite:** is automated Easy Apply on your main account acceptable at low volume, or external-apply only?
+   **Answer:** Company job sites only for the first month; Easy Apply off (a switch, #53), revisit after.
 7. **Recruiters:** happy with "agent drafts, you send", via LinkedIn by hand or Gmail drafts?
+   **Answer:** A local recruiter page for any fitting company hiring developers; the owner sends (§10.2).
 8. **Verification codes:** may an agent read a Workday/iCIMS email verification code from Gmail to continue an application (per-application OK, or never)?
+   **Answer:** Yes: agents may read codes from Gmail.
 9. **Accounts:** many Workday tenants need a new account per company. Do you want Run to stop at account creation every time (recommended), or a "create account with saved password" option you enable per site?
+   **Answer:** Create the account with the saved password, always. Run does it itself and may tick the terms (decision #8).
 10. **Fleet browser:** OK with a dedicated Chrome profile for agents (logged into LinkedIn), separate from your daily one?
+   **Answer:** Yes, a dedicated Chrome profile.
 11. **Indeed:** worth any automation at all, or just "you browse, Run fills"?
+   **Answer:** Skipped for now.
 12. **Where does the bridge live:** a `bridge/` folder in EzAutoApply (recommended, shares types) or in ai-job-search?
+   **Answer:** `bridge/` in this repo.
+
+---
+
+## 18. The Fleet Office (decided 2026-11-17; #34–#37, #50)
+
+The owner wants to start, watch and stop the fleet from one page rather than a terminal. The prototype, with sample data, is `docs/fleet-office-prototype.html`.
+
+**What it shows**
+- A small 3D office with a desk per agent: the Scout, each applier, the Fixer and Outreach. Each agent is coloured by its model (Haiku / Sonnet / Opus, §0.2) and shows what it is doing now.
+- **Controls:** Launch / Pause fleet, Stop all (with a confirm), and the applier count (1–4).
+- **Totals:** applied today, ready to submit, needs you, answers to approve, recruiter messages. Each total opens the matching inbox tab.
+- **A pop-out window per agent:** what it is doing, its recent steps, and buttons to go to its Chrome window, pause it, or take over. "Watch the Fixer" follows a live fix (incident → test → fix → reload).
+- **The owner's inbox**, in tabs:
+  - **Ready to submit:** go to its window, then "I submitted it".
+  - **Needs you:** CAPTCHAs, assessments and anything else Run stops on.
+  - **Answers to approve:** agent-written answers, with Approve and Edit.
+  - **Recruiters:** copy the note or the message, then mark it sent (§10.2).
+- An **activity ticker** of the latest steps across agents, and (#50) a running sprint shown beside the agents with its issue and usage.
+
+**How it's served**
+- The bridge (§4.3) serves the page on `127.0.0.1` with live state (#35); the controls call the bridge's run and kill-switch endpoints (#36); the pop-outs and inbox read the same state (#37).
+- **Local only.** Recruiter names, job data and the owner's answers never leave the machine. The page is never published and its data never goes into git.
+- Stop all is the §12 kill switch: it stops every run and releases every lease.

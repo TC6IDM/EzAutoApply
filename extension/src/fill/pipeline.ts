@@ -3,7 +3,7 @@ import { type Category, FIELD_KEY_MAP, isUncertain } from '../core/fieldKeys';
 import { cleanText, normalize, truncate } from '../core/normalize';
 import { boolOf, fallbackOption, matchBoolOption, matchOption, scoreOption } from '../core/options';
 import type { Profile } from '../core/profile';
-import { CHOICE_KINDS, type FieldValue, isFileRef, isSecretRef, type SavedAnswer, type Settings } from '../core/types';
+import { CHOICE_KINDS, type FieldValue, isApproved, isFileRef, isSecretRef, originOf, type SavedAnswer, type Settings } from '../core/types';
 import { type BankHit, findAnswers } from './match/answerBank';
 import {
   type Classifier,
@@ -203,14 +203,20 @@ export async function resolveFields(fields: FieldInfo[], deps: PipelineDeps): Pr
     return plan(f, value, { ...meta, key, forceReview: meta.forceReview || uncertain, variants });
   };
 
-  const fromAnswer = (f: FieldInfo, hit: BankHit, confidence: number, forceReview = false) =>
-    plan(f, hit.answer.answer, {
+  const fromAnswer = async (f: FieldInfo, hit: BankHit, confidence: number, forceReview = false) => {
+    // An answer an agent or an import wrote fills for the owner to check until they approve it (#21).
+    const approved = isApproved(hit.answer);
+    const r = await plan(f, hit.answer.answer, {
       key: hit.answer.canonicalKey,
       source: 'answerBank',
       confidence,
-      forceReview,
+      forceReview: forceReview || !approved,
       answerId: hit.answer.id,
     });
+    if (approved || r.status === 'needs') return r;
+    const who = originOf(hit.answer) === 'import' ? 'An imported answer' : 'An agent’s answer';
+    return { ...r, note: [r.note, `${who}, not approved yet: check it, or approve it in Answers`].filter(Boolean).join('. ') };
+  };
 
   /** Tier 3: saved answers. Close-but-not-exact matches are confirmed by the classifier when it's available. */
   const fromBank = async (f: FieldInfo): Promise<Resolution | null> => {

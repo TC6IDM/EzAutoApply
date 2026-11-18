@@ -1,0 +1,30 @@
+name: Task, decision or research
+description: Setup, a check, a decision to make, or something to find out
+labels: ["type:task"]
+body:
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options:
+        - Task (setup, checks, docs)
+        - Decision (the owner has to choose)
+        - Research (find out and recommend)
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What needs doing
+      description: For a decision, the options you see. Use "- [ ]" lines for steps.
+    validations:
+      required: true
+  - type: dropdown
+    id: who
+    attributes:
+      label: Who it waits on
+      options:
+        - The owner
+        - Claude
+        - Both together (a live job site, your accounts)
+        - Not sure

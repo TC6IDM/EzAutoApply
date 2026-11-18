@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Quick idea from your phone
+    url: https://github.com/TC6IDM/EzAutoApply/issues/1
+    about: Comment on the pinned Inbox issue instead; Claude turns comments into proper issues.

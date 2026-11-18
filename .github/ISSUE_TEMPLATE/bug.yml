@@ -1,0 +1,47 @@
+name: Bug
+description: A field filled wrong, something broke, or something looks wrong
+labels: ["type:bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Rough is fine. Claude adds the area, priority, size and milestone.
+        **This repo is public.** Describe the field, not your answer: no password, email, phone, address, real application answers, recruiter names, or page markup copied from a real application.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What it filled (or didn't), and what you expected. A screenshot with your details covered helps.
+    validations:
+      required: true
+  - type: dropdown
+    id: ats
+    attributes:
+      label: Job site
+      options:
+        - Workday
+        - Greenhouse
+        - Lever
+        - Ashby
+        - LinkedIn Easy Apply
+        - SmartRecruiters / iCIMS / Taleo / SuccessFactors
+        - Another site
+        - Not a job site (side panel, profile, import)
+  - type: dropdown
+    id: widget
+    attributes:
+      label: Kind of field
+      options:
+        - Text box
+        - Dropdown / "Select One"
+        - Search prompt (school, skills, "how did you hear")
+        - Radio / checkbox / Yes-No buttons
+        - Date
+        - File upload
+        - Next / Submit button
+        - Not sure
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to see it again (optional)
+      description: The kind of posting and the page it was on (e.g. "Workday, My Experience page"). No real job link is needed.

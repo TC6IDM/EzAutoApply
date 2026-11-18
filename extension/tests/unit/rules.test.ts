@@ -44,6 +44,8 @@ describe('matchRules: labels', () => {
     ['What are your salary expectations?', 'desiredSalary'],
     ['How did you hear about us?', 'howHeard'],
     ['When can you start?', 'startDate'],
+    ['What is your notice period?', 'noticePeriod'],
+    ['How much notice do you need to give your current employer?', 'noticePeriod'],
     ['Pronouns', 'pronouns'],
   ])('%s → %s', (label, key) => {
     expect(keyOf({ label })).toBe(key);

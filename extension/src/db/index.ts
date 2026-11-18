@@ -6,6 +6,8 @@ import {
   defaultSettings,
   type DocKind,
   type DocumentMeta,
+  isApproved,
+  originOf,
   type SavedAnswer,
   type Settings,
   type StoredDocument,
@@ -36,6 +38,18 @@ class EzDb extends Dexie {
       answers: 'id, normalized, scope, lastUsed',
       applications: 'id, url, host, date',
     });
+    // #21: every answer saved before provenance was the owner's own, so it is approved.
+    this.version(2)
+      .stores({})
+      .upgrade((tx) =>
+        tx
+          .table('answers')
+          .toCollection()
+          .modify((a: SavedAnswer) => {
+            a.origin ??= 'you';
+            a.approved ??= true;
+          }),
+      );
   }
 }
 
@@ -202,6 +216,9 @@ export async function saveAnswer(input: Omit<SavedAnswer, 'id' | 'normalized' | 
   const normalized = normalize(input.question);
   // One answer per question and scope: answering again replaces the old answer.
   const existing = await db.answers.where('normalized').equals(normalized).filter((a) => a.scope === input.scope).first();
+  const origin = input.origin ?? 'you';
+  // An agent or an import never replaces an answer the owner wrote or approved (#21).
+  if (existing && origin !== 'you' && (originOf(existing) === 'you' || isApproved(existing))) return existing;
   const now = Date.now();
   const row: SavedAnswer = {
     id: existing?.id ?? newId(),
@@ -210,9 +227,17 @@ export async function saveAnswer(input: Omit<SavedAnswer, 'id' | 'normalized' | 
     createdAt: existing?.createdAt ?? now,
     lastUsed: now,
     ...input,
+    origin,
+    // The owner's own answers are approved by being theirs; anyone else's wait for the owner.
+    approved: origin === 'you' ? true : (input.approved ?? false),
   };
   await db.answers.put(row);
   return row;
+}
+
+/** Approve answers an agent or an import wrote, so they fill like the owner's own (#21). */
+export async function approveAnswers(ids: string[]): Promise<void> {
+  await db.answers.bulkUpdate(ids.map((id) => ({ key: id, changes: { approved: true } })));
 }
 
 export async function updateAnswer(id: string, changes: Partial<SavedAnswer>): Promise<void> {
@@ -285,7 +310,8 @@ export async function exportAll(): Promise<ExportFile> {
     version: 1,
     exportedAt: new Date().toISOString(),
     profile: await getProfile(),
-    settings: await getSettings(),
+    // The bridge token stays on this machine, like the account password (#17).
+    settings: { ...(await getSettings()), bridgeToken: '' },
     answers: await db.answers.toArray(),
     applications: await db.applications.toArray(),
     documents: await Promise.all(docs.map(async (d) => ({ ...toMeta(d), base64: await blobToBase64(d.blob) }))),
@@ -296,12 +322,13 @@ export async function exportAll(): Promise<ExportFile> {
 export async function importAll(data: ExportFile): Promise<void> {
   if (data?.app !== 'EzAutoApply') throw new Error('Not an EzAutoApply backup file');
   await db.transaction('rw', [db.kv, db.documents, db.answers, db.applications], async () => {
-    // Backups never contain the account password, so keep the one already saved here.
+    // Backups never contain the account password or the bridge token, so keep the ones saved here.
     const password = await db.kv.get('accountPassword');
+    const bridgeToken = ((await db.kv.get('settings'))?.value as { bridgeToken?: string } | undefined)?.bridgeToken ?? '';
     await Promise.all([db.kv.clear(), db.documents.clear(), db.answers.clear(), db.applications.clear()]);
     if (password) await db.kv.put(password);
     await db.kv.put({ key: 'profile', value: normalizeProfile(data.profile) });
-    if (data.settings) await db.kv.put({ key: 'settings', value: data.settings });
+    if (data.settings) await db.kv.put({ key: 'settings', value: { ...data.settings, bridgeToken } });
     await db.answers.bulkPut(data.answers ?? []);
     await db.applications.bulkPut(data.applications ?? []);
     await db.documents.bulkPut(

@@ -44,7 +44,7 @@ export function useActiveTab(): ActiveTab | null {
   return tab;
 }
 
-const EMPTY: TabState = { reports: [], selection: {}, progress: null };
+const EMPTY: TabState = { reports: [], selection: {}, progress: null, run: null };
 
 /**
  * Fill reports and document choices for a tab, kept live via background broadcasts. `busy` holds
@@ -76,6 +76,7 @@ export function useTabState(tabId: number | undefined): {
       if (msg.tabId !== tabId) return;
       if (msg.type === 'autofillStarted') setBusy(true);
       if (msg.type === 'fillProgress') setProgress(msg.progress);
+      if (msg.type === 'runChanged') setState((s) => ({ ...s, run: msg.run }));
       if (msg.type === 'tabStateChanged') {
         setBusy(false);
         load();

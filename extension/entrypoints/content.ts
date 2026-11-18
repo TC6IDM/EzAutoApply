@@ -1,10 +1,14 @@
 import { browser } from 'wxt/browser';
 import { defineContentScript } from 'wxt/utils/define-content-script';
-import { AutofillController } from '../src/content/controller';
+import { AutofillController, settle } from '../src/content/controller';
 import { FloatingUi } from '../src/content/floatingUi';
 import { findAdvanceButton, pressAdvance } from '../src/fill/advance';
+import { findBlockers } from '../src/fill/blockers';
+import { confirmationOf } from '../src/fill/confirmation';
+import { readSiteErrors } from '../src/fill/siteErrors';
 import type { Settings } from '../src/core/types';
-import { type BackgroundToContent, call, type ContentToBackground } from '../src/messages';
+import { type BackgroundToContent, call, type ContentToBackground, type RunCheckResponse } from '../src/messages';
+import { acceptAccountTerms, pageFingerprint } from '../src/run/page';
 
 /** Applicant-tracking systems whose pages always get the Autofill button. */
 const ATS =
@@ -33,9 +37,10 @@ export default defineContentScript({
 
     const showButton = () => {
       if (!isTop || ui?.attached || !settings?.showFloatingButton || !looksLikeApplication()) return;
-      ui = new FloatingUi(() => {
-        send({ type: 'autofillAll' }).catch((e: Error) => ui?.toast(e.message));
-      });
+      ui = new FloatingUi(
+        () => send({ type: 'autofillAll' }).catch((e: Error) => ui?.toast(e.message)),
+        (stop) => send({ type: stop ? 'stopRun' : 'runAll' }).catch((e: Error) => ui?.toast(e.message)),
+      );
     };
 
     const applySettings = (s: Settings) => {
@@ -66,23 +71,54 @@ export default defineContentScript({
           sendResponse(controller.focusField(msg.fieldId));
           return false;
         case 'findAdvance': {
-          const b = findAdvanceButton(document);
-          sendResponse(b ? { label: b.label, kind: b.kind, score: b.score } : null);
+          const b = findAdvanceButton(document, { run: msg.run });
+          sendResponse(b ? { label: b.label, kind: b.kind, score: b.score, ...(b.why && { why: b.why }) } : null);
           return false;
         }
+        case 'confirmation':
+          sendResponse(confirmationOf(document, location.href));
+          return false;
         case 'advance': {
           // Looked up again: the page may have changed since the panel last asked.
-          const b = findAdvanceButton(document);
+          const b = findAdvanceButton(document, { run: msg.run });
+          // Run never presses Submit, even if the page changed between finding and pressing.
+          if (msg.run && b?.kind === 'submit') {
+            sendResponse({ ok: false, reason: 'That button is Submit' });
+            return false;
+          }
           if (b) pressAdvance(b);
           sendResponse(b ? { ok: true, label: b.label } : { ok: false, reason: 'That button is no longer on the page' });
           return false;
         }
+        case 'runCheck': {
+          const res: RunCheckResponse = {
+            url: location.href,
+            fingerprint: pageFingerprint(document, location.href),
+            blockers: findBlockers(document).map((b) => ({ kind: b.kind, detail: b.detail })),
+            confirmation: isTop ? (confirmationOf(document, location.href)?.detail ?? null) : null,
+          };
+          sendResponse(res);
+          return false;
+        }
+        case 'settle':
+          settle(document, 1000, 10_000).then(() => sendResponse(null), () => sendResponse(null));
+          return true;
+        case 'acceptTerms':
+          sendResponse(acceptAccountTerms(document));
+          return false;
+        case 'siteErrors':
+          sendResponse(readSiteErrors(document));
+          return false;
         case 'settingsChanged':
           applySettings(msg.settings);
           sendResponse(null);
           return false;
         case 'fillProgress':
           ui?.setProgress(msg.progress);
+          sendResponse(null);
+          return false;
+        case 'runState':
+          ui?.setRun(msg.run);
           sendResponse(null);
           return false;
       }

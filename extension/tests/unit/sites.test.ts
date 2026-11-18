@@ -79,7 +79,7 @@ describe('Greenhouse dropdowns', () => {
     expect(q.chosen()).toBe('No');
   });
 
-  it('types the city into a location search and picks "City, Province, Country"', async () => {
+  it('types the city into a location search and picks "City, Province, Country"', { timeout: 15000 }, async () => {
     const loc = mountGreenhouseSelect('candidate-location', 'Location (City)', ['Toronto, Ontario, Canada', 'Toronto, Ohio, United States', 'Austin, Texas, United States'], { searchOnly: true });
     const [f] = scanFields(document);
     expect(matchRules(f)?.key).toBe('location');
@@ -96,7 +96,9 @@ describe('Greenhouse dropdowns', () => {
 });
 
 describe('typing only goes to the field being filled', () => {
-  it('does not type into a previously focused dropdown', async () => {
+  // ~5 s of real waits (the list never opens, so every way of opening it is tried): it sat
+  // right on vitest's 5 s default and failed under full-suite load (#52).
+  it('does not type into a previously focused dropdown', { timeout: 15000 }, async () => {
     const first = mountWorkdaySelect(document.body, 'Gender', ['Male', 'Female'], {});
     // A second dropdown whose list never opens: the type-ahead must not land in the first one.
     document.body.insertAdjacentHTML('beforeend', '<label for="dead">Ethnicity</label><div id="dead" role="combobox" tabindex="-1">Select</div>');

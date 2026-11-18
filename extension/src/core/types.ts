@@ -83,7 +83,20 @@ export interface SavedAnswer {
   timesUsed: number;
   lastUsed: number;
   createdAt: number;
+  /** Who wrote it (#21): the owner, an agent through the bridge, or an import. Missing means 'you'. */
+  origin?: AnswerOrigin;
+  /** An agent's or an import's answer fills as `review` until the owner approves it. Missing means approved. */
+  approved?: boolean;
+  /** Where an agent found it: profile sections, documents, earlier applications. */
+  sourceRefs?: string[];
+  /** Which agent wrote it ("answerer", "fixer"…). */
+  createdBy?: string;
 }
+
+export type AnswerOrigin = 'you' | 'agent' | 'import';
+
+export const originOf = (a: Pick<SavedAnswer, 'origin'>): AnswerOrigin => a.origin ?? 'you';
+export const isApproved = (a: Pick<SavedAnswer, 'approved'>): boolean => a.approved !== false;
 
 export interface ClassifierSettings {
   provider: 'laya' | 'jev' | 'none';
@@ -117,6 +130,15 @@ export interface Settings {
   passwordOnAnySite: boolean;
   /** Open "read and acknowledge the privacy notice" links and press Acknowledge. */
   acknowledgePrivacyNotices: boolean;
+  /** Run to Submit stops when any answer is only a guess (status review), not just at unanswered ones. */
+  runStopOnReview: boolean;
+  /** Run to Submit gives up after this many pages. */
+  runMaxPages: number;
+  /** Take Run commands from the local bridge (bridge/, for the agent fleet) and report back to it. */
+  bridgeEnabled: boolean;
+  bridgeUrl: string;
+  /** From ~/.ezautoapply/bridge-token, pasted once. */
+  bridgeToken: string;
 }
 
 export const LAYA_DEFAULT_URL = 'http://127.0.0.1:8000';
@@ -138,6 +160,11 @@ export function defaultSettings(): Settings {
     fileNameFormat: 'underscore',
     passwordOnAnySite: false,
     acknowledgePrivacyNotices: true,
+    runStopOnReview: true,
+    runMaxPages: 15,
+    bridgeEnabled: false,
+    bridgeUrl: 'http://127.0.0.1:8100',
+    bridgeToken: '',
   };
 }
 

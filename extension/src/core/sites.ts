@@ -37,6 +37,41 @@ export function isApplicationSite(url: string): boolean {
   return matches(hostOf(url), APPLICATION_SITES);
 }
 
+/** Which applicant-tracking system a page is on ("workday", "greenhouse", …), or "other". For incidents (#18). */
+export function atsOf(url: string): string {
+  const host = hostOf(url);
+  if (/linkedin\.com$/.test(host)) return 'linkedin';
+  if (/indeed\.com$/.test(host)) return 'indeed';
+  const domain = APPLICATION_SITES.find((d) => host === d || host.endsWith(`.${d}`));
+  if (!domain) return 'other';
+  return /workday/.test(domain) ? 'workday' : domain.split('.')[0];
+}
+
 export function isAccountSite(url: string): boolean {
   return matches(hostOf(url), ACCOUNT_SITES);
+}
+
+/** Second-level suffixes where the registrable domain is three labels ("example.co.uk"). */
+const TWO_PART_SUFFIXES = new Set(['co.uk', 'org.uk', 'ac.uk', 'gov.uk', 'com.au', 'net.au', 'org.au', 'co.nz', 'co.in', 'co.jp', 'com.br', 'com.mx', 'co.za', 'com.sg', 'com.hk']);
+
+/** "careers.example.co.uk" → "example.co.uk"; an IP or a one-label host is returned as is. */
+export function registrableDomain(host: string): string {
+  const h = host.toLowerCase().replace(/\.$/, '');
+  if (/^[\d.]+$/.test(h) || !h.includes('.')) return h;
+  const labels = h.split('.');
+  const lastTwo = labels.slice(-2).join('.');
+  return TWO_PART_SUFFIXES.has(lastTwo) ? labels.slice(-3).join('.') : lastTwo;
+}
+
+/**
+ * Run to Submit's "externalRedirect" stop (#11): the top frame moved to another site that
+ * isn't a job-application site. Moving onto an ATS (a LinkedIn or company listing handing
+ * over to Greenhouse or Workday) is the expected way in, so it isn't one.
+ */
+export function isExternalRedirect(fromUrl: string, toUrl: string): boolean {
+  const from = hostOf(fromUrl);
+  const to = hostOf(toUrl);
+  if (!from || !to) return false;
+  if (registrableDomain(from) === registrableDomain(to)) return false;
+  return !isApplicationSite(toUrl);
 }
