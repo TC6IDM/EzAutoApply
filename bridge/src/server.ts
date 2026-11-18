@@ -34,6 +34,8 @@ export interface BridgeOptions {
 export const OFFICE_FILE = fileURLToPath(new URL('../office/index.html', import.meta.url));
 /** How often the Office stream looks for changes made outside the bridge (`/queue` appending jobs). */
 const OFFICE_POLL_MS = 2000;
+/** Screenshots kept: the latest of this many jobs. */
+const MAX_SCREENS = 16;
 
 export const MAX_READY_OPEN = 6;
 
@@ -85,6 +87,12 @@ export function createBridge(o: BridgeOptions) {
   /** Worker name → when it first asked for a job: the Office's applier desks. */
   const workersSeen = new Map<string, number>();
   const incidentsByDay = new Map<string, number>();
+  /**
+   * Each job's latest screenshot of its tab (#37), for the Office. It shows the owner's answers,
+   * so it is held in memory only (never written to disk, gone when the bridge stops) and served
+   * only with the token.
+   */
+  const screens = new Map<string, { image: Buffer; type: string; at: string }>();
 
   const queueCommand = (c: NewCommand): Command => {
     const cmd = { ...c, id: randomUUID(), at: now() } as Command;
@@ -268,6 +276,16 @@ export function createBridge(o: BridgeOptions) {
       }
       return [200, { ok: true }];
     }
+    if (m === 'POST' && p === '/ext/screens') {
+      const b = await body(req);
+      const jobId = str(b.jobId, 'jobId');
+      const shot = /^data:(image\/(?:jpeg|png));base64,([A-Za-z0-9+/=]+)$/.exec(typeof b.image === 'string' ? b.image : '');
+      if (!shot) throw new HttpError(400, 'image must be a JPEG or PNG data URL');
+      screens.delete(jobId); // re-added last: the map stays in age order
+      screens.set(jobId, { image: Buffer.from(shot[2], 'base64'), type: shot[1], at: new Date(now()).toISOString() });
+      while (screens.size > MAX_SCREENS) screens.delete(screens.keys().next().value!);
+      return [201, { ok: true }];
+    }
     throw new HttpError(404, 'Not found');
   }
 
@@ -283,6 +301,7 @@ export function createBridge(o: BridgeOptions) {
       stopped,
       maxReadyOpen: o.maxReadyOpen ?? MAX_READY_OPEN,
       incidentsToday: incidentsByDay.get(new Date(now()).toISOString().slice(0, 10)) ?? 0,
+      screens: new Map([...screens].map(([id, s]) => [id, s.at])),
       now: now(),
     });
   /** Send each open page the latest snapshot when it changed, and a ping now and then to keep it open. */
@@ -361,6 +380,16 @@ export function createBridge(o: BridgeOptions) {
     if (req.method === 'GET' && url.pathname === '/office/events') {
       if (!tokenOk(req, url)) return send(401, { error: 'Missing or wrong token' });
       return openOffice(req, res);
+    }
+    const shot = /^\/office\/screens\/([^/]+)$/.exec(url.pathname);
+    if (req.method === 'GET' && shot) {
+      // An <img> can't send headers either.
+      if (!tokenOk(req, url)) return send(401, { error: 'Missing or wrong token' });
+      const s = screens.get(decodeURIComponent(shot[1]));
+      if (!s) return send(404, { error: 'No screenshot for that job' });
+      res.writeHead(200, { 'content-type': s.type, 'cache-control': 'no-store', 'content-length': s.image.length });
+      res.end(s.image);
+      return;
     }
     route(req, url).then(
       ([status, value]) => {

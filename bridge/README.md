@@ -33,6 +33,8 @@ Every call except `GET /health` and the Office page needs `Authorization: Bearer
 
 Scout, Fixer and Outreach show as not running until their agents exist.
 
+Each applier's window and each ready job also shows the latest screenshot of the job's tab (#37). A screenshot shows your answers. So the bridge keeps it in memory only: the latest per job, for at most 16 jobs. It never writes one to disk or puts one in an incident, and it serves them only with the token.
+
 The token rides in the link's `#fragment`, which the browser never sends. The page keeps it in session storage and drops it from the address bar. The page itself carries no data. Its stream, `GET /office/events?token=…` (server-sent events: a `snapshot` whenever something changes, built by `src/office.ts`), takes the token in the query because EventSource can't send headers. The page's buttons call the API with the token as usual.
 
 Without WebGL (or offline, since three.js comes from a CDN) the office falls back to the agent list and windows. With reduced motion, nothing animates.
@@ -43,6 +45,7 @@ Without WebGL (or offline, since three.js comes from a CDN) the office falls bac
 |---|---|
 | `GET /health` | `{ ok, stopped }` |
 | `GET /office` · `GET /office/events?token=` | the Fleet Office page · its live stream (above) |
+| `GET /office/screens/:jobId?token=` | the latest screenshot of that job's tab (#37) |
 | `GET /queue` · `POST /queue {jobs}` | every job · add jobs (by `id`, once each) |
 | `GET /queue/next?worker=w1` | claim the next job (Tier A first, then oldest), leased 20 min; 204 when none, 423 after Stop all, 429 `{ready, maxReadyOpen}` while that many jobs wait for your Submit (an applier waits and asks again; it leaves each ready job's tab open) |
 | `POST /queue/:id/status {status, note?, page?, tabUrl?}` | `running`/`claimed` renew the lease, anything else ends it |
@@ -56,5 +59,6 @@ Without WebGL (or offline, since three.js comes from a CDN) the office falls bac
 | `POST /stop-all` · `POST /resume` | the kill switch: every lease released, waiting commands dropped, the extension told to stop every Run, no new claims or Runs until resumed |
 | `GET /ext/commands?wait=25` | for the extension: long-poll for commands (each handed out once) |
 | `POST /ext/runs {jobId, run}` | for the extension: a Run's state; a stopped Run sets the job's status (`submitReady` → `ready`, a blocker → `needsYou`, `noProgress`… → `stuck`) |
+| `POST /ext/screens {jobId, image}` | for the extension: a JPEG of the job's tab (a data URL), once per page and once when the Run stops, taken only while the tab is showing in its window |
 
 The account password never crosses the bridge.

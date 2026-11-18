@@ -1,6 +1,6 @@
 import { type Browser, browser } from 'wxt/browser';
 import { defineBackground } from 'wxt/utils/define-background';
-import { type BridgeCommand, BridgeClient, bridgeFields, findJobTab } from '../src/bridge/client';
+import { type BridgeCommand, BridgeClient, bridgeFields, findJobTab, screenMoment } from '../src/bridge/client';
 import { SystemOneClient } from '../src/classifier/systemone';
 import { uploadFileName } from '../src/core/documents';
 import { isAccountSite, isExternalRedirect } from '../src/core/sites';
@@ -168,6 +168,7 @@ async function saveRun(run: RunState): Promise<void> {
   if (run.jobId && bridge) {
     const fields = Object.values((await readTab(run.tabId)).reports).flatMap((r) => r.fields);
     bridge.client.reportRun(run.jobId, run, bridgeFields(fields)).catch(() => {});
+    sendScreen(run).catch(() => {});
   }
   if (bridge && run.status === 'stopped') {
     const tab = await readTab(run.tabId);
@@ -176,6 +177,24 @@ async function saveRun(run: RunState): Promise<void> {
     fileIncidents((r) => runIncidents(run, fields, { url, now: Date.now() }, r)).catch(() => {});
   }
 }
+
+/**
+ * The Office's "last screenshot" (#37): a small JPEG of the job's tab, once per page and once
+ * when the Run stops. captureVisibleTab only sees a window's showing tab, so a tab in the
+ * background is skipped. The picture shows the owner's answers: it goes to the bridge's memory
+ * only, never into incidents.
+ */
+const lastScreen = new Map<number, string>();
+async function sendScreen(run: RunState): Promise<void> {
+  const moment = screenMoment(run);
+  if (!run.jobId || !bridge || lastScreen.get(run.tabId) === moment) return;
+  const tab = await browser.tabs.get(run.tabId);
+  if (!tab.active || tab.windowId === undefined) return;
+  lastScreen.set(run.tabId, moment);
+  const image = await browser.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 45 });
+  await bridge.client.postScreen(run.jobId, image);
+}
+browser.tabs.onRemoved.addListener((tabId) => lastScreen.delete(tabId));
 
 // ---- Incidents (#18, plan §8.2) ------------------------------------------------------------
 // Every field it couldn't fill, and every Run that couldn't move on, goes to the bridge with

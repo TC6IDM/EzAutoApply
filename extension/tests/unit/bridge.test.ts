@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BridgeClient, bridgeFields, findJobTab } from '../../src/bridge/client';
+import { BridgeClient, bridgeFields, findJobTab, screenMoment } from '../../src/bridge/client';
 import type { FieldReport } from '../../src/fill/types';
 import { newRun } from '../../src/run/loop';
 
@@ -29,6 +29,17 @@ describe('the local bridge client (#17)', () => {
     expect(sent.fields).toEqual([{ id: 'f1', frameId: 0, label: 'Phone', kind: 'text', status: 'filled', required: true, options: [], key: 'phone', source: 'rule' }]);
     expect(bridgeFields([{ ...field, status: 'needs', source: 'none' }])[0]).not.toHaveProperty('source');
     expect(JSON.stringify(sent)).not.toContain('555 0100');
+  });
+
+  it('sends one screenshot per page and one when the Run stops (#37)', () => {
+    const run = newRun(3, 'https://x.test/apply', 0, 'j1');
+    const moments = new Set([
+      screenMoment(run),
+      screenMoment({ ...run }), // the same page reported again
+      screenMoment({ ...run, page: 2 }),
+      screenMoment({ ...run, page: 2, status: 'stopped', stop: { reason: 'submitReady' } }),
+    ]);
+    expect(moments.size).toBe(3);
   });
 
   it('says the bridge is down instead of throwing, and errors on a refused call', async () => {

@@ -507,6 +507,11 @@ test('an agent queues a job and asks the bridge for a Run; the extension runs it
     expect((await status())?.fields.length).toBeGreaterThan(0);
     expect(await form.evaluate(() => document.body.dataset.submitted)).toBeUndefined();
 
+    // #37: the Office gets a picture of the tab at Submit, only with the token.
+    const shot = () => fetch(`${bridgeUrl}/office/screens/job-1?token=${token}`);
+    await expect.poll(async () => (await shot()).headers.get('content-type'), { timeout: 15_000 }).toBe('image/jpeg');
+    expect((await fetch(`${bridgeUrl}/office/screens/job-1`)).status).toBe(401);
+
     // #29: the owner submits (here: the site shows its thank-you page), and the job is marked submitted.
     const ready = (await (await api('GET', '/ready')).json()) as { id: string; title?: string; company?: string }[];
     expect(ready.map((j) => [j.id, j.company])).toEqual([['job-1', 'Example Co.']]);

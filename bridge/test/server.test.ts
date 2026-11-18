@@ -196,6 +196,21 @@ test('the Office (#35): the page needs no token, its stream does, and a change s
   }
 });
 
+test('screenshots (#37): the latest per job, in memory, shown on the Office only with the token', async () => {
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 0xff, 0xd9]);
+  assert.equal((await call('POST', '/ext/screens', { jobId: 'j1', image: 'https://x.test/a.jpg' })).status, 400);
+  assert.equal((await call('POST', '/ext/screens', { jobId: 'j1', image: `data:image/jpeg;base64,${jpeg.toString('base64')}` })).status, 201);
+  assert.equal(bridge.snapshot().ready.find((j) => j.id === 'j1')?.screenAt !== null, true, 'the snapshot says there is one');
+
+  assert.equal((await fetch(base + '/office/screens/j1')).status, 401);
+  const got = await fetch(base + `/office/screens/j1?token=${TOKEN}`);
+  assert.equal(got.status, 200);
+  assert.equal(got.headers.get('content-type'), 'image/jpeg');
+  assert.deepEqual(Buffer.from(await got.arrayBuffer()), jpeg);
+  assert.equal((await fetch(base + `/office/screens/none?token=${TOKEN}`)).status, 404);
+  assert.equal(existsSync(join(dir, 'screens')), false, 'nothing on disk');
+});
+
 test('bad requests say what is wrong', async () => {
   assert.equal((await call('POST', '/queue/j2/status', { status: 'done' })).status, 400);
   assert.equal((await call('POST', '/queue/missing/status', { status: 'stuck' })).status, 404);

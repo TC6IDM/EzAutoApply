@@ -88,10 +88,23 @@ export class BridgeClient {
     return this.call('POST', '/ext/runs', { jobId, run, fields });
   }
 
+  /** For the Office (#37): a picture of the job's tab, as a JPEG data URL. Kept in the bridge's memory only. */
+  postScreen(jobId: string, image: string): Promise<unknown> {
+    return this.call('POST', '/ext/screens', { jobId, image });
+  }
+
   /** For #18: an incident (already redacted by the caller). */
   postIncident(incident: Record<string, unknown>): Promise<{ id: string }> {
     return this.call('POST', '/incidents', incident);
   }
+}
+
+/**
+ * When the Office gets a new screenshot of a Run's tab (#37): once per page and once when it
+ * stops, so a long fill doesn't send a picture on every report.
+ */
+export function screenMoment(run: { page: number; status: string; stop?: { reason: string } }): string {
+  return `${run.page}:${run.status}:${run.stop?.reason ?? ''}`;
 }
 
 const bare = (url: string) => url.replace(/[?#].*$/, '').replace(/\/+$/, '');

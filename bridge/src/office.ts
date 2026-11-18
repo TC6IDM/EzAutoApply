@@ -35,6 +35,8 @@ export interface OfficeJob {
   /** Labels of fields an agent answered (check them before Submit), and of fields that need the owner. */
   agentAnswered: string[];
   needs: string[];
+  /** When the bridge got the latest screenshot of the job's tab (#37), if it has one. */
+  screenAt: string | null;
   updatedAt: string;
 }
 
@@ -84,7 +86,7 @@ const docName = (j: QueueJob): string => {
   return j.tier === 'A' ? `Tailored CV (${base})` : base;
 };
 
-export function officeJob(j: QueueJob, report?: { run: RunState; fields: unknown[] }): OfficeJob {
+export function officeJob(j: QueueJob, report?: { run: RunState; fields: unknown[] }, screenAt: string | null = null): OfficeJob {
   const fields = (report?.fields ?? []) as ReportedField[];
   const agentIds = new Set((j.agentAnswers ?? []).map((a) => a.fieldId));
   const src = { rules: 0, answers: 0, classifier: 0, agent: 0 };
@@ -120,6 +122,7 @@ export function officeJob(j: QueueJob, report?: { run: RunState; fields: unknown
     src,
     agentAnswered: [...agentIds].map(byId),
     needs: fields.filter((f) => f.status === 'needs').map((f) => f.label ?? f.id ?? '').filter(Boolean).slice(0, 6),
+    screenAt,
     updatedAt: j.updatedAt,
   };
 }
@@ -159,12 +162,14 @@ export function officeSnapshot(o: {
   stopped: boolean;
   maxReadyOpen: number;
   incidentsToday: number;
+  /** Job id → when its latest screenshot came in. */
+  screens?: Map<string, string>;
   now: number;
 }): OfficeSnapshot {
   const today = new Date(o.now).toISOString().slice(0, 10);
   const counts = Object.fromEntries(JOB_STATUSES.map((s) => [s, 0])) as Record<JobStatus, number>;
   for (const j of o.jobs) counts[j.status] = (counts[j.status] ?? 0) + 1;
-  const view = (j: QueueJob) => officeJob(j, o.runs.get(j.id));
+  const view = (j: QueueJob) => officeJob(j, o.runs.get(j.id), o.screens?.get(j.id) ?? null);
   const held = o.jobs.filter((j) => HELD.includes(j.status) && j.worker);
   const names = [...o.workersSeen.entries()].sort((a, b) => a[1] - b[1]).map(([n]) => n);
   for (const j of held) if (!names.includes(j.worker!)) names.push(j.worker!);

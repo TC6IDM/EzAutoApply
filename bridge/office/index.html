@@ -78,6 +78,7 @@ button { font: inherit; color: inherit; }
   border-radius: 10px; box-shadow: var(--shadow); padding: 12px; width: min(320px, calc(100vw - 32px)); display: grid; gap: 10px; z-index: 40; }
 /* `hidden` wins over the display rules above (a .confirm or .btn would otherwise still show). */
 [hidden] { display: none !important; }
+.shot { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); }
 .confirm p { margin: 0; }
 .confirm div { display: flex; gap: 8px; justify-content: flex-end; }
 .stats { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
@@ -503,6 +504,13 @@ table.src tr.skip td { color: var(--ink-3); }
     return h;
   }
 
+  /** The latest picture of the job's tab (#37), kept in the bridge's memory only. */
+  function shotHTML(j, title = 'Last screenshot') {
+    if (!j.screenAt) return '';
+    const src = `/office/screens/${encodeURIComponent(j.id)}?token=${encodeURIComponent(TOKEN)}&at=${encodeURIComponent(j.screenAt)}`;
+    return `<div class="sect"><div class="sect-h"><span>${title}</span><span class="num">${hhmmss(j.screenAt)}</span></div><img class="shot" src="${esc(src)}" alt="${esc(j.company)}’s application tab at ${hhmmss(j.screenAt)}" loading="lazy"></div>`;
+  }
+
   function applierHTML(a) {
     const st = statusOf(a.id), j = a.job;
     let h = `<div class="now-row">${pill(st)}<p class="now">${esc(a.phase === 'off' ? '' : a.now)}</p></div>`;
@@ -514,6 +522,7 @@ table.src tr.skip td { color: var(--ink-3); }
       h += `<div class="sect"><div class="sect-h"><span>Pages</span><span class="num">page ${j.page + 1}</span></div>
         <ol class="stepper">${j.pages.map((p, i) => `<li class="${i < j.page ? 'done' : i === j.page ? 'cur' : ''}"><span>${i + 1}</span></li>`).join('')}<li class="submit"><span>Submit</span></li></ol></div>`;
       const p = j.pages[j.page];
+      h += shotHTML(j);
       h += `<div class="sect"><div class="sect-h"><span>This page</span><span class="num">${p.filled}/${p.total} fields</span></div><div class="form-mini">${formRows(j)}</div></div>`;
       const tot = SRC.reduce((x, s) => x + j.src[s.k], 0);
       h += `<div class="sect"><div class="sect-h"><span>Who filled what</span><span class="num">${tot} fields</span></div>
@@ -550,7 +559,7 @@ table.src tr.skip td { color: var(--ink-3); }
     if (tab === 'ready') {
       h += S.ready.length ? S.ready.map((j) => {
         const flagged = j.agentAnswered.length ? `An agent answered ${j.agentAnswered.length}: ${j.agentAnswered.join(', ')}. Check before you submit.` : 'Every field from your records';
-        return `<article class="card"><div class="card-top"><strong>${esc(j.company)}</strong><span class="tier">Tier ${j.tier}</span></div><div class="card-meta">${meta(j.role, j.ats, j.doc)}<br>${esc(flagged)} · stopped at ${esc(j.at)}${j.by ? ' by ' + esc(j.by) : ''}</div>
+        return `<article class="card"><div class="card-top"><strong>${esc(j.company)}</strong><span class="tier">Tier ${j.tier}</span></div><div class="card-meta">${meta(j.role, j.ats, j.doc)}<br>${esc(flagged)} · stopped at ${esc(j.at)}${j.by ? ' by ' + esc(j.by) : ''}</div>${shotHTML(j, 'At Submit')}
           <div class="card-actions"><button type="button" class="btn small" data-act="goJob" data-arg="${esc(j.id)}">Go to its tab</button><button type="button" class="btn small" data-act="submitted" data-arg="${esc(j.id)}">I submitted it</button></div></article>`;
       }).join('') : '<p class="empty">Nothing is waiting at Submit.</p>';
       h += `<p class="empty" style="font-size:12px">Tabs stay open until you submit. Appliers pause while ${S.maxReadyOpen} jobs wait here. The extension marks a job sent when its tab shows the confirmation page.</p>`;
