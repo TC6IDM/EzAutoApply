@@ -211,6 +211,40 @@ test('screenshots (#37): the latest per job, in memory, shown on the Office only
   assert.equal(existsSync(join(dir, 'screens')), false, 'nothing on disk');
 });
 
+test('the fleet switches (#54): read, change in part, and claims obey them', async () => {
+  const dir3 = mkdtempSync(join(tmpdir(), 'ezaa-bridge-switches-'));
+  const q = new QueueStore(join(dir3, 'queue.jsonl'));
+  const settingsFile = join(dir3, 'fleet-settings.json');
+  const b = createBridge({ token: TOKEN, queue: q, incidentsDir: join(dir3, 'incidents'), port: 0, settingsFile });
+  await new Promise<void>((r) => b.server.listen(0, '127.0.0.1', r));
+  const at = `http://127.0.0.1:${(b.server.address() as AddressInfo).port}`;
+  const go = async (method: string, path: string, body?: unknown) => {
+    const res = await fetch(at + path, { method, headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const text = await res.text();
+    return { status: res.status, json: text ? JSON.parse(text) : null };
+  };
+  try {
+    assert.equal((await go('GET', '/settings')).json.apply.linkedinEasy, false);
+    q.add([{ ...job('easy'), applyKind: 'linkedin-easy' }, { ...job('ext'), applyKind: 'external', source: 'linkedin' }]);
+    // Easy Apply is off by default: the external job goes out, the Easy Apply one stays queued.
+    assert.equal((await go('GET', '/queue/next?worker=w1')).json.id, 'ext');
+    assert.equal((await go('GET', '/queue/next?worker=w1')).status, 204);
+    assert.equal(q.get('easy')?.status, 'queued');
+
+    assert.equal((await go('PUT', '/settings', { apply: { linkedinEasy: true } })).json.apply.linkedinEasy, true);
+    assert.equal(JSON.parse(readFileSync(settingsFile, 'utf8')).apply.linkedinEasy, true, 'saved');
+    assert.equal((await go('PUT', '/settings', { apply: { linkedinEazy: true } })).status, 400);
+
+    await go('PUT', '/settings', { parts: { appliers: false } });
+    q.add([job('later')]);
+    assert.equal((await go('GET', '/queue/next?worker=w1')).status, 423, 'appliers off: no claims');
+    await go('PUT', '/settings', { parts: { appliers: true } });
+    assert.ok(['easy', 'later'].includes((await go('GET', '/queue/next?worker=w1')).json.id));
+  } finally {
+    b.server.close();
+  }
+});
+
 test('bad requests say what is wrong', async () => {
   assert.equal((await call('POST', '/queue/j2/status', { status: 'done' })).status, 400);
   assert.equal((await call('POST', '/queue/missing/status', { status: 'stuck' })).status, 404);

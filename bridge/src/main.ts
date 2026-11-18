@@ -24,7 +24,7 @@ const tokenFile = join(home, 'bridge-token');
 if (!existsSync(tokenFile)) writeFileSync(tokenFile, `${randomBytes(24).toString('base64url')}\n`, { mode: 0o600 });
 const token = readFileSync(tokenFile, 'utf8').trim();
 
-const { server } = createBridge({ token, queue: new QueueStore(queueFile), incidentsDir: join(home, 'incidents'), port, maxReadyOpen });
+const { server } = createBridge({ token, queue: new QueueStore(queueFile), incidentsDir: join(home, 'incidents'), port, maxReadyOpen, settingsFile: join(home, 'fleet-settings.json') });
 server.listen(port, '127.0.0.1', () => {
   console.log(`EzAutoApply bridge on http://127.0.0.1:${port}`);
   console.log(`  token: ${tokenFile} (paste it into the extension's Settings once)`);

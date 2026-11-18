@@ -13,7 +13,7 @@ No packages of its own: Node 24 runs the TypeScript directly, and `npm run compi
 
 | Setting (environment) | Default |
 |---|---|
-| `EZAA_HOME` | `~/.ezautoapply` (the token in `bridge-token`, incidents in `incidents/<date>/`) |
+| `EZAA_HOME` | `~/.ezautoapply` (the token in `bridge-token`, incidents in `incidents/<date>/`, the fleet switches in `fleet-settings.json`) |
 | `EZAA_QUEUE_FILE` | `../ai-job-search/apply_queue/queue.jsonl` beside this repo |
 | `EZAA_BRIDGE_PORT` | `8100` |
 | `EZAA_MAX_READY` | `6`: claims pause while this many jobs wait for your Submit (#29) |
@@ -56,6 +56,7 @@ Without WebGL (or offline, since three.js comes from a CDN) the office falls bac
 | `GET /ready` | jobs waiting for your Submit, each with `agentAnswered` (the labels of the fields an agent answered, to check first) |
 | `POST /ready/:id/focus` | bring that job's tab and window to the front ("go to tab") |
 | `POST /queue/:id/status {status: "submitted"}` | mark a job submitted by hand; the extension also does it when the tab shows the site's confirmation page after your Submit |
+| `GET /settings` · `PUT /settings {group: {switch: bool}}` | the fleet switches (#54): `parts` (scout, appliers, answerer, fixer, outreach), `sources` (linkedin, simplify, recommendations, jobbank, indeed), `apply` (external, linkedinEasy, indeedApply, tailored), `site` (createAccounts, gmailCodes). They are kept in `fleet-settings.json`. A PUT changes only what it names and refuses unknown names. Defaults: Indeed, Indeed Apply and LinkedIn Easy Apply off, the rest on. The bridge enforces what it can: with appliers off, `/queue/next` answers 423; a job whose source or way of applying is off stays queued until it's turned back on. The other switches are for the agents to obey (#56). |
 | `POST /stop-all` · `POST /resume` | the kill switch: every lease released, waiting commands dropped, the extension told to stop every Run, no new claims or Runs until resumed |
 | `GET /ext/commands?wait=25` | for the extension: long-poll for commands (each handed out once) |
 | `POST /ext/runs {jobId, run}` | for the extension: a Run's state; a stopped Run sets the job's status (`submitReady` → `ready`, a blocker → `needsYou`, `noProgress`… → `stuck`) |

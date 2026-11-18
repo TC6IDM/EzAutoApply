@@ -127,12 +127,15 @@ export class QueueStore {
     });
   }
 
-  /** The next queued job for `worker` (Tier A first, then oldest), leased for LEASE_MS. */
-  claim(worker: string): QueueJob | null {
+  /**
+   * The next queued job for `worker` (Tier A first, then oldest), leased for LEASE_MS. Jobs
+   * `allow` refuses (the fleet switches, #54) stay queued for when they are turned back on.
+   */
+  claim(worker: string, allow: (j: QueueJob) => boolean = () => true): QueueJob | null {
     return this.change((all) => {
       this.expireLeases(all);
       const next = all
-        .filter((j) => j.status === 'queued')
+        .filter((j) => j.status === 'queued' && allow(j))
         .sort((a, b) => (a.tier === 'A' ? 0 : 1) - (b.tier === 'A' ? 0 : 1) || a.createdAt.localeCompare(b.createdAt))[0];
       if (!next) return null;
       next.worker = worker;

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { RunState, StopReason } from '../../extension/src/run/types.ts';
 import { officeSnapshot } from './office.ts';
+import { DEFAULT_SETTINGS, type FleetSettings, loadSettings, mergeSettings, saveSettings, switchedOff } from './settings.ts';
 import { JOB_STATUSES, type JobStatus, type QueueStore } from './queue.ts';
 
 /**
@@ -29,6 +30,8 @@ export interface BridgeOptions {
   maxReadyOpen?: number;
   /** The Fleet Office page (#35), served at /office. */
   officeFile?: string;
+  /** Where the fleet switches are kept (#54); without it they live in memory only (tests). */
+  settingsFile?: string;
 }
 
 export const OFFICE_FILE = fileURLToPath(new URL('../office/index.html', import.meta.url));
@@ -85,6 +88,7 @@ export function createBridge(o: BridgeOptions) {
   const waiters = new Set<() => void>();
   let stopped = false;
   /** Worker name → when it first asked for a job: the Office's applier desks. */
+  let settings: FleetSettings = o.settingsFile ? loadSettings(o.settingsFile) : structuredClone(DEFAULT_SETTINGS);
   const workersSeen = new Map<string, number>();
   const incidentsByDay = new Map<string, number>();
   /**
@@ -160,13 +164,14 @@ export function createBridge(o: BridgeOptions) {
     }
     if (m === 'GET' && p === '/queue/next') {
       if (stopped) throw new HttpError(423, 'Stopped: POST /resume first');
+      if (!settings.parts.appliers) throw new HttpError(423, 'Appliers are switched off (PUT /settings)');
       // Each ready job keeps its tab open for the owner; past the limit the appliers wait (#29).
       const ready = o.queue.all().filter((j) => j.status === 'ready').length;
       const limit = o.maxReadyOpen ?? MAX_READY_OPEN;
       if (ready >= limit) return [429, { error: `Paused: ${ready} jobs wait for your Submit`, ready, maxReadyOpen: limit }];
       const worker = url.searchParams.get('worker') || 'worker';
       if (!workersSeen.has(worker)) workersSeen.set(worker, now());
-      const job = o.queue.claim(worker);
+      const job = o.queue.claim(worker, (j) => !switchedOff(j, settings));
       return job ? [200, job] : [204, null];
     }
     let hit = /^\/queue\/([^/]+)\/status$/.exec(p);
@@ -239,6 +244,15 @@ export function createBridge(o: BridgeOptions) {
       const jobId = decodeURIComponent(hit[1]);
       if (!o.queue.get(jobId)) throw new HttpError(404, 'No such job');
       return [202, { commandId: queueCommand({ type: 'focus', jobId }).id }];
+    }
+    // The fleet switches (#54): every agent reads them here; PUT takes a partial update.
+    if (m === 'GET' && p === '/settings') return [200, settings];
+    if (m === 'PUT' && p === '/settings') {
+      const { settings: next, errors } = mergeSettings(settings, await body(req));
+      if (errors.length) throw new HttpError(400, errors.join('; '));
+      settings = next;
+      if (o.settingsFile) saveSettings(o.settingsFile, settings);
+      return [200, settings];
     }
     if (m === 'POST' && p === '/stop-all') {
       stopped = true;
