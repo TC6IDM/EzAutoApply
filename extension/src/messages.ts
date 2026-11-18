@@ -37,7 +37,10 @@ export type ContentToBackground =
   | { type: 'progress'; progress: FillProgress | null }
   | { type: 'fieldEdited'; fieldId: string; userValue: AnswerValue }
   | { type: 'answersUsed'; ids: string[] }
-  | { type: 'autofillAll' };
+  | { type: 'autofillAll' }
+  /** The floating button's Run / Stop (a trusted click in its closed shadow root). */
+  | { type: 'runAll' }
+  | { type: 'stopRun' };
 
 /** Sent by the side panel to the background. */
 export type PanelToBackground =
@@ -79,7 +82,9 @@ export type BackgroundToContent =
   | { type: 'siteErrors' }
   | { type: 'settingsChanged'; settings: Settings }
   /** All of the tab's frames together, for the top frame's floating button; null when none is filling. */
-  | { type: 'fillProgress'; progress: FillProgress | null };
+  | { type: 'fillProgress'; progress: FillProgress | null }
+  /** The tab's Run, for the top frame's floating button. */
+  | { type: 'runState'; run: RunState };
 
 /** The page button the side panel's Advance button presses: Next, Submit, Sign In, Apply. */
 export interface AdvanceTarget {

@@ -75,3 +75,33 @@ export const STOP_TEXT: Record<StopReason, string> = {
   interrupted: 'Interrupted',
   cancelled: 'Stopped',
 };
+
+/** What to do next after each stop. */
+export const NEXT_STEP: Record<StopReason, string> = {
+  submitReady: 'Check the answers on the page, then press its Submit button yourself.',
+  submitted: 'Nothing left to do on this page.',
+  needsYou: 'Answer them below or on the page, then press Run again.',
+  review: 'Check them below, then press Run again. (Settings can let Run go on past these.)',
+  validationErrors: 'Fix what the site points out, then press Run again.',
+  noProgress: 'Look at the page for anything missing, then press Run again.',
+  verificationCode: 'Enter the code the site sent you, then press Run again.',
+  captcha: 'Solve it on the page, then press Run again.',
+  assessment: 'It’s a test to take yourself; Run doesn’t do these.',
+  externalRedirect: 'If this is still the application, press Run again.',
+  noButton: 'Go on by hand, then press Run again.',
+  maxPages: 'Press Run again to carry on.',
+  interrupted: 'Press Run again to carry on.',
+  cancelled: 'Press Run again to carry on.',
+};
+
+/** "Page 3 · filled 14 · 1 needs you": the stepper line, from the latest page. */
+export function stepLine(run: RunState): string {
+  const last = run.history[run.history.length - 1];
+  const parts = [`Page ${run.page}`];
+  if (last?.page === run.page) {
+    parts.push(`filled ${last.filled}`);
+    if (last.review) parts.push(`${last.review} to check`);
+    if (last.needs) parts.push(`${last.needs} ${last.needs === 1 ? 'needs' : 'need'} you`);
+  }
+  return parts.join(' · ');
+}

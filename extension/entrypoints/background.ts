@@ -162,6 +162,7 @@ async function readRun(tabId: number): Promise<RunState | null> {
 async function saveRun(run: RunState): Promise<void> {
   await browser.storage.session.set({ [runKey(run.tabId)]: run });
   broadcast({ type: 'runChanged', tabId: run.tabId, run });
+  toTab(run.tabId, { type: 'runState', run }, 0).catch(() => {});
 }
 
 /** Autofill every frame and wait until the last one is done (the message only waits for the first). */
@@ -365,6 +366,11 @@ async function handleContent(msg: ContentToBackground, sender: Browser.runtime.M
       return null;
     case 'autofillAll':
       if (tabId !== undefined) await autofillTab(tabId);
+      return null;
+    case 'runAll':
+      return tabId === undefined ? null : startRun(tabId);
+    case 'stopRun':
+      if (tabId !== undefined) cancelled.add(tabId);
       return null;
   }
 }

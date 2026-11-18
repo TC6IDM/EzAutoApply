@@ -5,6 +5,7 @@ import { type AnswerValue, DOC_KIND_LABELS, type DocKind, type DocumentMeta } fr
 import { hasProfile, listDocuments, saveAnswer } from '../../db';
 import type { FieldReport, FillStatus } from '../../fill/types';
 import type { AdvanceTarget, SaveAnswerRequest } from '../../messages';
+import { NEXT_STEP, type RunState, STOP_TEXT, stepLine } from '../../run/types';
 import type { Goto } from '../App';
 import { type ActiveTab, send, setDocSelection, useTabState } from '../api';
 import { LocateIcon } from '../icons';
@@ -395,6 +396,60 @@ function AdvanceButton(props: { tabId: number; enabled: boolean; onError(message
   );
 }
 
+/**
+ * Run to Submit (#9, #13): fills every page, presses Next / Sign in / Create account, and stops
+ * before Submit. Shows the page it's on while it runs, and why it stopped and what to do after.
+ */
+function RunPanel(props: { tabId: number; run: RunState | null; enabled: boolean; onError(message: string): void }) {
+  const { tabId, run, enabled, onError } = props;
+  const [starting, setStarting] = useState(false);
+  const running = run?.status === 'running';
+  const start = async () => {
+    setStarting(true);
+    try {
+      await send({ type: 'startRun', tabId });
+    } catch (e) {
+      onError((e as Error).message);
+    } finally {
+      setStarting(false);
+    }
+  };
+  const stop = () => send({ type: 'cancelRun', tabId }).catch((e: Error) => onError(e.message));
+  const reason = run?.stop?.reason;
+
+  return (
+    <div className="run-panel">
+      {running ? (
+        <Button className="run" onClick={stop}>
+          Stop Run
+        </Button>
+      ) : (
+        <Button className="run" onClick={start} disabled={!enabled || starting} title="Fills every page and presses Next, then stops before Submit. It never presses Submit.">
+          {run ? 'Run to Submit again' : 'Run to Submit'}
+        </Button>
+      )}
+      {running && (
+        // Not a live region: the step line changes with every page. The stop is announced.
+        <p className="run-step">
+          <span className="spinner" aria-hidden="true" />
+          {stepLine(run)}
+        </p>
+      )}
+      {run && reason && !running && (
+        <div className={`run-stop ${reason === 'submitReady' || reason === 'submitted' ? 'ok' : 'attention'}`} role="status">
+          <strong>{STOP_TEXT[reason]}</strong>
+          {run.stop?.detail && <span className="run-detail">{run.stop.detail}</span>}
+          <span className="run-next">{NEXT_STEP[reason]}</span>
+          <small>
+            {run.history.length} {run.history.length === 1 ? 'page' : 'pages'}
+            {run.history.some((h) => h.pressed) && ` · pressed ${run.history.flatMap((h) => (h.pressed ? [`“${h.pressed}”`] : [])).join(', ')}`}
+          </small>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** "1 needs you", "2 need you". */
 function countLabel(status: FillStatus, n: number): string {
   if (status === 'needs') return n === 1 ? 'needs you' : 'need you';
@@ -471,10 +526,11 @@ export function ApplyView(props: { tab: ActiveTab | null; goto: Goto; active: bo
             ))}
           </div>
         )}
-        <Button kind="primary" onClick={autofill} disabled={!webPage || busy}>
+        <Button kind="primary" onClick={autofill} disabled={!webPage || busy || state.run?.status === 'running'}>
           {busy ? 'Filling…' : fields.length ? 'Autofill again' : 'Autofill this page'}
         </Button>
-        {tab && webPage && <AdvanceButton tabId={tab.id} enabled={props.active && !busy} onError={setError} />}
+        {tab && webPage && <RunPanel tabId={tab.id} run={state.run} enabled={!busy} onError={setError} />}
+        {tab && webPage && <AdvanceButton tabId={tab.id} enabled={props.active && !busy && state.run?.status !== 'running'} onError={setError} />}
         {!webPage && <p className="hint">Open a job application in this tab to autofill it.</p>}
         {progress ? (
           // Not a live region: it changes with every field. The counts after the run are announced.

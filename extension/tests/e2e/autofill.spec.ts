@@ -436,6 +436,26 @@ test('Run fills every step, presses Next and Continue, and stops at "Apply" with
   expect(await form.evaluate(() => document.body.dataset.submitted)).toBeUndefined();
 });
 
+test('the panel\'s Run button runs to Submit and says what to do next (#13)', async ({ context, extensionId, site }) => {
+  test.setTimeout(90_000);
+  const panel = await context.newPage();
+  await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+  await importResume(panel);
+  await classifierOff(panel);
+  const form = await context.newPage();
+  await form.goto(`${site}/multistep.html`);
+  await form.evaluate(() => ((document.getElementById('years') as HTMLInputElement).value = '1'));
+  // The panel follows the active tab.
+  await form.bringToFront();
+  await panel.getByRole('button', { name: 'Run to Submit', exact: true }).click();
+  const stop = panel.locator('.run-stop');
+  await expect(stop).toContainText('Ready to submit', { timeout: 60_000 });
+  await expect(stop).toContainText('press its Submit button yourself');
+  await expect(stop).toContainText('3 pages · pressed “Next”, “Continue”');
+  await expect(panel.getByRole('button', { name: 'Run to Submit again' })).toBeEnabled();
+  expect(await form.evaluate(() => document.body.dataset.submitted)).toBeUndefined();
+});
+
 test('with Laya running: rules fill instantly, then leftovers go to the classifier', async ({ context, worker, extensionId, site }) => {
   const laya = await fetch('http://127.0.0.1:8000/health').then((r) => r.ok).catch(() => false);
   test.skip(!laya, 'needs a Laya server on 127.0.0.1:8000 (classifier\start.ps1)');

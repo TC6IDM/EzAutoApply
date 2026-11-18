@@ -37,9 +37,10 @@ export default defineContentScript({
 
     const showButton = () => {
       if (!isTop || ui?.attached || !settings?.showFloatingButton || !looksLikeApplication()) return;
-      ui = new FloatingUi(() => {
-        send({ type: 'autofillAll' }).catch((e: Error) => ui?.toast(e.message));
-      });
+      ui = new FloatingUi(
+        () => send({ type: 'autofillAll' }).catch((e: Error) => ui?.toast(e.message)),
+        (stop) => send({ type: stop ? 'stopRun' : 'runAll' }).catch((e: Error) => ui?.toast(e.message)),
+      );
     };
 
     const applySettings = (s: Settings) => {
@@ -114,6 +115,10 @@ export default defineContentScript({
           return false;
         case 'fillProgress':
           ui?.setProgress(msg.progress);
+          sendResponse(null);
+          return false;
+        case 'runState':
+          ui?.setRun(msg.run);
           sendResponse(null);
           return false;
       }

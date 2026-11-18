@@ -5,7 +5,7 @@ import type { FieldReport } from '../../src/fill/types';
 import type { AdvanceTarget } from '../../src/messages';
 import { newRun, type PageCheck, type RunDeps, runPages } from '../../src/run/loop';
 import { acceptAccountTerms, pageFingerprint } from '../../src/run/page';
-import type { RunState } from '../../src/run/types';
+import { type RunState, stepLine } from '../../src/run/types';
 
 /** One page of a stand-in application, as the Run would read it. */
 interface FakePage {
@@ -159,6 +159,17 @@ describe('Run to Submit: the loop (#9)', () => {
   it('stops when cancelled, and reports interrupted when the page goes away', async () => {
     expect((await run([{ button: next() }, { button: next() }], {}, { cancelAt: 1 })).r.stop).toEqual({ reason: 'cancelled' });
     expect((await run([{ button: next() }], {}, { throwAt: 0 })).r.stop).toEqual({ reason: 'interrupted', detail: 'Receiving end does not exist' });
+  });
+});
+
+describe('Run to Submit: the stepper line (#13)', () => {
+  it('says the page and how its fill went', () => {
+    const r = newRun(1, 'https://x.test', 0);
+    expect(stepLine(r)).toBe('Page 1');
+    r.history.push({ page: 1, url: 'x', filled: 14, review: 2, needs: 1 });
+    expect(stepLine(r)).toBe('Page 1 · filled 14 · 2 to check · 1 needs you');
+    r.page = 2;
+    expect(stepLine(r)).toBe('Page 2');
   });
 });
 

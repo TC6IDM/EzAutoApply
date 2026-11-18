@@ -4,7 +4,7 @@ A browser extension that fills out job applications for you.
 
 You give it your resume once. It parses it into a profile and keeps the original files of your resumes, cover letters and transcripts so it can upload them for you. Then it fills in the application on whatever site you're on when you click **Autofill**. Questions it can't answer are flagged. You answer them once, and from then on those answers fill automatically too.
 
-It works on any site: Greenhouse, Lever, Ashby, Workday, LinkedIn, Indeed and one-off company forms. **It never submits or moves on by itself.** You review the page, then click Submit yourself, or press **Advance** in the side panel, which presses the page's own Next, Submit or Sign In button for you.
+It works on any site: Greenhouse, Lever, Ashby, Workday, LinkedIn, Indeed and one-off company forms. **It never submits.** You review the page, then click Submit yourself. **Advance** in the side panel presses the page's own Next, Submit or Sign In button once for you, and **Run to Submit** fills every page and presses Next until only Submit is left.
 
 Everything runs on your computer. Your profile and documents are stored in your browser, and the optional classifier (Laya) runs locally too.
 
@@ -114,6 +114,8 @@ Values go in the way a person would enter them:
 - **Repeating sections:** before filling, EzAutoApply clicks **Add / Add Another** in the Work Experience and Education sections until there's one entry per job and school in your profile, then fills them most recent first. It only clicks buttons that say "Add…" inside those sections. Autofill never clicks Save, Next, Continue or Submit.
 
 **Advance**, under the Autofill button in the side panel, is on whenever the page has a button that moves the application along: **Sign In** or **Create Account**, **Apply** (on Workday, **Apply Manually**, so Workday doesn't read your resume), **Next**, **Save and Continue**, or **Submit**. It shows that button's name ("Advance: Save and Continue") and presses it when you press Advance, never otherwise. Buttons like Back, Cancel, Add, Upload and "Sign in with Google" are never chosen.
+
+**Run to Submit**, beside Autofill (and **Run** on the page's floating button), does the whole application in one press: it fills the page, presses its Next, Continue, Sign In or Create Account button (with your saved password, ticking "I accept the terms" when creating an account), and does the same on each new page. It **never presses Submit**: it stops when Submit is the only way on, and says so. It also stops, and says what to do, at a required question it can't answer, an answer that needs checking (unless you turn that off in Settings), a CAPTCHA, a verification code, an assessment, or when the site shows an error after Next. Press **Stop Run** at any time.
 
 Nothing is drawn on the page. The side panel lists what was filled, what's worth a check, and what needs you.
 

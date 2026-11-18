@@ -76,6 +76,7 @@ export function useTabState(tabId: number | undefined): {
       if (msg.tabId !== tabId) return;
       if (msg.type === 'autofillStarted') setBusy(true);
       if (msg.type === 'fillProgress') setProgress(msg.progress);
+      if (msg.type === 'runChanged') setState((s) => ({ ...s, run: msg.run }));
       if (msg.type === 'tabStateChanged') {
         setBusy(false);
         load();
