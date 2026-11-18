@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
@@ -6,6 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { RunState, StopReason } from '../../extension/src/run/types.ts';
 import { type OfficeEvent, officeSnapshot, switchEvents } from './office.ts';
+import { readSprint } from './sprint.ts';
 import { CHANNELS, markProspect, PROSPECT_STATUSES, type ProspectStatus, readProspects, recruiterView } from './outreach.ts';
 import { groupTickets, OUTCOMES, type Outcome, readIncidentFiles, readResolutions, type Ticket, writeResolutions } from './tickets.ts';
 import { DEFAULT_SETTINGS, type FleetSettings, loadSettings, mergeSettings, saveSettings, switchedOff } from './settings.ts';
@@ -36,6 +38,8 @@ export interface BridgeOptions {
   settingsFile?: string;
   /** ai-job-search's prospects (#41): ~/.ezautoapply/outreach/prospects.jsonl. Without it the recruiter page is empty. */
   prospectsFile?: string;
+  /** A running /ezaa-sprint (#50): its folder (`<temp>/ezaa-sprint`) and its script, for Wind down. Without them, no sprint shows. */
+  sprint?: { dir: string; script: string };
 }
 
 export const OFFICE_FILE = fileURLToPath(new URL('../office/index.html', import.meta.url));
@@ -285,6 +289,16 @@ export function createBridge(o: BridgeOptions) {
     }
     if (m === 'POST' && p === '/fleet/reload') return [202, { commandId: queueCommand({ type: 'reload' }).id }];
 
+    // A running sprint (#50): read-only, and Wind down, which the sprint obeys after the issue it is on.
+    if (m === 'GET' && p === '/sprint') return [200, o.sprint ? readSprint(o.sprint.dir, now()) : null];
+    if (m === 'POST' && p === '/sprint/wind-down') {
+      if (!o.sprint || !readSprint(o.sprint.dir, now())) throw new HttpError(404, 'No sprint is running');
+      const said = await new Promise<string>((resolve, reject) =>
+        execFile(process.execPath, [o.sprint!.script, 'wind-down'], { timeout: 15_000 }, (err, stdout) => (err ? reject(new HttpError(500, `wind-down failed: ${err.message}`)) : resolve(String(stdout).trim()))),
+      );
+      return [200, { ok: true, said }];
+    }
+
     // The owner's recruiter page (#41): what /prospects found and drafted. The owner sends every message.
     if (m === 'GET' && p === '/outreach') return [200, o.prospectsFile ? readProspects(o.prospectsFile) : []];
     hit = /^\/outreach\/(p-[0-9a-f]{10})\/status$/.exec(p);
@@ -375,6 +389,7 @@ export function createBridge(o: BridgeOptions) {
       settings,
       tickets: tickets().slice(0, 12),
       recruiters: o.prospectsFile ? recruiterView(readProspects(o.prospectsFile)) : [],
+      sprint: o.sprint ? readSprint(o.sprint.dir, now()) : null,
       extraEvents: switchLog,
       now: now(),
     });

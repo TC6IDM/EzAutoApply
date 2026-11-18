@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { QueueStore } from './queue.ts';
@@ -21,13 +21,15 @@ const port = Number(process.env.EZAA_BRIDGE_PORT) || 8100;
 const maxReadyOpen = Number(process.env.EZAA_MAX_READY) || undefined;
 // Where ai-job-search's /prospects keeps the people and messages for the recruiter page (#41).
 const prospectsFile = join(process.env.EZAA_OUTREACH_DIR || join(home, 'outreach'), 'prospects.jsonl');
+// A running /ezaa-sprint (#50): its state lives in the temp folder; Wind down runs its own script.
+const sprint = { dir: join(tmpdir(), 'ezaa-sprint'), script: join(repo, '.claude', 'skills', 'ezaa-sprint', 'sprint.mjs') };
 
 mkdirSync(home, { recursive: true });
 const tokenFile = join(home, 'bridge-token');
 if (!existsSync(tokenFile)) writeFileSync(tokenFile, `${randomBytes(24).toString('base64url')}\n`, { mode: 0o600 });
 const token = readFileSync(tokenFile, 'utf8').trim();
 
-const { server } = createBridge({ token, queue: new QueueStore(queueFile), incidentsDir: join(home, 'incidents'), port, maxReadyOpen, settingsFile: join(home, 'fleet-settings.json'), prospectsFile });
+const { server } = createBridge({ token, queue: new QueueStore(queueFile), incidentsDir: join(home, 'incidents'), port, maxReadyOpen, settingsFile: join(home, 'fleet-settings.json'), prospectsFile, sprint });
 server.listen(port, '127.0.0.1', () => {
   console.log(`EzAutoApply bridge on http://127.0.0.1:${port}`);
   console.log(`  token: ${tokenFile} (paste it into the extension's Settings once)`);

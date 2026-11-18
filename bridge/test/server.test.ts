@@ -7,6 +7,7 @@ import { after, before, test } from 'node:test';
 import { QueueStore } from '../src/queue.ts';
 import { createBridge } from '../src/server.ts';
 import { sampleProspects } from './sample-prospects.ts';
+import { sampleState } from './sample-sprint.ts';
 
 const TOKEN = 'test-token-0123456789';
 const dir = mkdtempSync(join(tmpdir(), 'ezaa-bridge-'));
@@ -135,6 +136,35 @@ test('the recruiter page (#41): prospects from ai-job-search, marked by the owne
     assert.deepEqual(b.snapshot().recruiters.map((p) => [p.name, p.status]), [['Sam Example', 'found'], ['Alex Sample', 'sent'], ['Pat Sent', 'sent']]);
     // Without the file the page is empty, never an error.
     assert.deepEqual((await call('GET', '/outreach')).json, []);
+  } finally {
+    b.server.close();
+  }
+});
+
+test('a running sprint (#50): shown read-only, and Wind down runs the sprint\'s own script', async () => {
+  const dir5 = mkdtempSync(join(tmpdir(), 'ezaa-bridge-sprint-'));
+  const sprintDir = join(dir5, 'ezaa-sprint');
+  mkdirSync(sprintDir);
+  // A stand-in for sprint.mjs: records its arguments, so the test never touches a real sprint.
+  const script = join(dir5, 'fake-sprint.mjs');
+  writeFileSync(script, `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(join(dir5, 'called.json'))}, JSON.stringify(process.argv.slice(2)));\nconsole.log('wind-down: finishing the current issue');\n`);
+  const b = createBridge({ token: TOKEN, queue: new QueueStore(join(dir5, 'queue.jsonl')), incidentsDir: join(dir5, 'incidents'), port: 0, sprint: { dir: sprintDir, script } });
+  await new Promise<void>((r) => b.server.listen(0, '127.0.0.1', r));
+  const base5 = `http://127.0.0.1:${(b.server.address() as AddressInfo).port}`;
+  const c = async (method: string, path: string) => {
+    const res = await fetch(base5 + path, { method, headers: { authorization: `Bearer ${TOKEN}` } });
+    return { status: res.status, json: await res.json().catch(() => null) };
+  };
+  try {
+    assert.equal((await c('GET', '/sprint')).json, null);
+    assert.equal((await c('POST', '/sprint/wind-down')).status, 404, 'nothing to wind down');
+    writeFileSync(join(sprintDir, 'state.json'), JSON.stringify(sampleState({ readings: [{ at: new Date().toISOString() }] })));
+    assert.equal((await c('GET', '/sprint')).json.current.n, 50);
+    assert.equal(b.snapshot().sprint?.branch, 'sprint/2026-11-18-0039');
+    const wd = await c('POST', '/sprint/wind-down');
+    assert.deepEqual([wd.status, wd.json.said], [200, 'wind-down: finishing the current issue']);
+    assert.deepEqual(JSON.parse(readFileSync(join(dir5, 'called.json'), 'utf8')), ['wind-down']);
+    assert.equal((await call('GET', '/sprint')).json, null, 'a bridge without the option shows no sprint');
   } finally {
     b.server.close();
   }

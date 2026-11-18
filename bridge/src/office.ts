@@ -2,6 +2,7 @@ import type { RunState } from '../../extension/src/run/types.ts';
 import { JOB_STATUSES, type JobStatus, type QueueJob } from './queue.ts';
 import { DEFAULT_SETTINGS, type FleetSettings } from './settings.ts';
 import type { Prospect } from './outreach.ts';
+import type { SprintView } from './sprint.ts';
 import type { Ticket } from './tickets.ts';
 
 /**
@@ -69,6 +70,7 @@ export interface OfficeSnapshot {
   tickets: Ticket[];
   /** Real people's names: served only on the token-gated stream, never written anywhere by the bridge. */
   recruiters: Prospect[];
+  sprint: SprintView | null;
 }
 
 /** Ticker lines for a change of switches: "Switched off: LinkedIn Easy Apply". */
@@ -221,6 +223,8 @@ export function officeSnapshot(o: {
   tickets?: Ticket[];
   /** The recruiter page (#41): people with messages to send, then those written to (outreach.ts › recruiterView). */
   recruiters?: Prospect[];
+  /** A running /ezaa-sprint (#50), or null. */
+  sprint?: SprintView | null;
   /** Lines that come from the bridge rather than a job (switch changes). */
   extraEvents?: OfficeEvent[];
   now: number;
@@ -258,5 +262,6 @@ export function officeSnapshot(o: {
     settings: o.settings ?? DEFAULT_SETTINGS,
     tickets: o.tickets ?? [],
     recruiters: o.recruiters ?? [],
+    sprint: o.sprint ?? null,
   };
 }

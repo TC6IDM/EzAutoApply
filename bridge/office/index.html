@@ -279,6 +279,7 @@ table.src tr.skip td { color: var(--ink-3); }
         </div>
       </div>
       <div class="controls">
+        <button type="button" class="btn" id="sprintBtn" hidden>Sprint</button>
         <button type="button" class="btn" id="switchesBtn">Switches</button>
         <button type="button" class="btn primary" id="launch" hidden>Resume fleet</button>
         <button type="button" class="btn danger" id="stop" disabled>Stop all</button>
@@ -399,6 +400,7 @@ table.src tr.skip td { color: var(--ink-3); }
     A.fixer.recent = resolved.slice(0, 6);
     A.fixer.live = resolved.some((t) => Date.parse(snap.at) - Date.parse(t.resolution.at) < 3600e3);
     A.fixer.now = A.fixer.live ? `Last: ${OUTCOME_WORDS[resolved[0].resolution.outcome]}, ${ticketLabel(resolved[0])}` : 'Not running. Start it with /ezaa-fixer in Claude Code.';
+    S.sprint = snap.sprint ?? null;
     // The recruiter page (#41): people with messages to send (S.drafts), then those written to.
     S.recruiters = snap.recruiters ?? [];
     S.drafts = S.recruiters.filter((r) => r.status === 'found');
@@ -510,6 +512,33 @@ table.src tr.skip td { color: var(--ink-3); }
       ['gmailCodes', 'Read codes from Gmail', 'Off: a site that sends a code stops and waits for you.'],
     ]],
   ];
+  // A running /ezaa-sprint (#50): read from its own files; Wind down is the only thing the Office can ask of it.
+  const REPO_URL = 'https://github.com/TC6IDM/EzAutoApply';
+  const VERDICT_WORDS = { GO: 'Taking new issues', SMALL: 'Small issues only', WRAP: 'Finishing up, then a checkpoint', STOP: 'Checkpointing now', UNKNOWN: 'Usage unknown: finishing the current issue' };
+  const VERDICT_TONE = { GO: 'ok', SMALL: 'run', WRAP: 'warn', STOP: 'warn', UNKNOWN: 'idle' };
+  const issueLink = (n, text) => `<a href="${REPO_URL}/issues/${Number(n)}" target="_blank" rel="noopener noreferrer">#${Number(n)}</a>${text ? ' ' + esc(text) : ''}`;
+  const pct = (v) => (v == null ? '?' : `${v}%`);
+  function sprintHTML() {
+    const sp = S.sprint;
+    if (!sp) return '<p class="empty">No sprint is running. Start one with /ezaa-sprint in Claude Code.</p>';
+    const st = { label: sp.windingDown ? 'Winding down' : sp.verdict, tone: sp.windingDown ? 'warn' : VERDICT_TONE[sp.verdict] };
+    const now = sp.current ? `On ${issueLink(sp.current.n, sp.current.title)}` : esc(sp.windingDown ? 'Winding down: no new issue' : 'Between issues');
+    let h = `<div class="now-row">${pill(st)}<p class="now">${now}</p></div>`;
+    const u = sp.usage;
+    h += `<div class="sect"><div class="sect-h"><span>Usage</span><span class="num">${esc(VERDICT_WORDS[sp.verdict])}</span></div>
+      <ul class="rows"><li><span>5-hour window</span><span class="mono">${pct(u?.session)}</span>${u?.sessionResets ? `<span class="sub">resets ${esc(when(u.sessionResets))}</span>` : ''}</li>
+      <li><span>Week</span><span class="mono">${pct(u?.weekly)}</span>${u?.weeklyResets ? `<span class="sub">resets ${esc(when(u.weeklyResets))}</span>` : ''}</li></ul>
+      <p class="empty" style="font-size:12px">Small issues only from ${sp.lines.smallAt}%, no new issue from ${sp.lines.newAt}%, checkpoint at ${sp.lines.stopAt}%.${sp.keepGoing ? ' Keep going: it waits for the reset and carries on.' : ''}</p></div>`;
+    const prs = [sp.pr != null ? `<a href="${REPO_URL}/pull/${Number(sp.pr)}" target="_blank" rel="noopener noreferrer">EzAutoApply #${Number(sp.pr)}</a>` : '', ...sp.linkedPrs.map((l) => webLink(l.url, `${esc(l.repo.split('/')[1])} #${Number(l.number)}`))].filter(Boolean);
+    if (prs.length) h += `<div class="sect"><div class="sect-h"><span>Pull requests</span></div><p class="card-meta">${prs.join(' · ')}</p></div>`;
+    h += `<div class="sect"><div class="sect-h"><span>Done</span><span class="num">${sp.done.length}</span></div>${sp.done.length ? `<ul class="rows">${sp.done.slice().reverse().slice(0, 12).map((d) => `<li class="card-meta"><span>${issueLink(d.n, d.title)}</span>${d.cost != null ? `<span class="mono">${d.cost}%</span>` : ''}</li>`).join('')}</ul>` : '<p class="empty">Nothing finished yet.</p>'}</div>`;
+    if (sp.skipped.length) h += `<div class="sect"><div class="sect-h"><span>Passed over</span><span class="num">${sp.skipped.length}</span></div><ul class="rows">${sp.skipped.map((d) => `<li class="card-meta"><span>${issueLink(d.n)}</span><span class="sub">${esc(d.why)}</span></li>`).join('')}</ul></div>`;
+    h += sp.windingDown
+      ? '<p class="empty" style="font-size:12px">Winding down: it finishes the issue it is on, pushes, updates the PR, then stops.</p>'
+      : `<div class="win-actions"><button type="button" class="btn small" data-act="windDown">Wind down</button></div><p class="empty" style="font-size:12px">Wind down never stops it mid-issue: it finishes the one it is on, pushes and checkpoints.</p>`;
+    return h;
+  }
+
   function switchesHTML() {
     if (!S.settings) return '<p class="empty">Waiting for the bridge.</p>';
     return SWITCHES.map(([group, title, items]) => `<div class="sect"><div class="sect-h"><span>${esc(title)}</span></div><ul class="switches">${items.map(([key, name, off]) => {
@@ -695,6 +724,7 @@ table.src tr.skip td { color: var(--ink-3); }
   function winMeta(id) {
     if (id === 'you') return { title: 'Your inbox', sub: 'Things only you can do', c: 'var(--you)' };
     if (id === 'switches') return { title: 'Switches', sub: 'Turn any part of the fleet on or off', c: 'var(--accent)' };
+    if (id === 'sprint') return { title: 'Sprint', sub: S.sprint ? `Claude working the board · ${S.sprint.branch}` : 'No sprint running', c: 'var(--opus)' };
     const a = A[id];
     return { title: a.name, sub: `${MODEL[a.model].label} · ${a.role}`, c: MODEL[a.model].c };
   }
@@ -755,6 +785,7 @@ table.src tr.skip td { color: var(--ink-3); }
     let html;
     if (id === 'you') html = youHTML(el);
     else if (id === 'switches') html = switchesHTML();
+    else if (id === 'sprint') html = sprintHTML();
     else { const a = A[id]; html = a.kind === 'applier' ? applierHTML(a) : a.kind === 'fixer' ? fixerHTML(a) : a.kind === 'scout' ? scoutHTML(a) : outreachHTML(a); }
     setHTML(body, html);
   }
@@ -775,6 +806,7 @@ table.src tr.skip td { color: var(--ink-3); }
       case 'submitted': tell(post(`/queue/${path(arg)}/status`, { status: 'submitted', note: 'marked in the Office' }), 'Marked as submitted. /queue sync-tracker adds it to your tracker.'); break;
       case 'requeue': tell(post(`/queue/${path(arg)}/status`, { status: 'queued', note: 'queued again from the Office' }), 'Back in the queue'); break;
       case 'skip': tell(post(`/queue/${path(arg)}/status`, { status: 'skipped', note: 'skipped in the Office' }), 'Skipped'); break;
+      case 'windDown': tell(post('/sprint/wind-down'), 'Asked the sprint to wind down. It finishes the issue it is on first.'); break;
       // The recruiter page (#41): copy a message to send it yourself, then mark what you did.
       case 'copy': {
         const [pid, part] = arg.split(':');
@@ -828,6 +860,9 @@ table.src tr.skip td { color: var(--ink-3); }
     const live = S.link === 'live';
     $('#launch').hidden = !(live && S.mode === 'stopped');
     $('#stop').disabled = !live || S.mode === 'stopped';
+    const sp = S.sprint, sb = $('#sprintBtn');
+    sb.hidden = !sp;
+    if (sp) setHTML(sb, `Sprint <b class="mono">${esc(sp.verdict)}</b>`);
   }
   function render() {
     renderStats(); renderRoster(); renderTicker(); renderControls();
@@ -839,6 +874,7 @@ table.src tr.skip td { color: var(--ink-3); }
   // Stopped by Stop all: appliers get no new jobs until you resume.
   $('#launch').addEventListener('click', () => tell(post('/resume'), 'Fleet resumed: appliers can take jobs again'));
   $('#switchesBtn').addEventListener('click', () => openWin('switches'));
+  $('#sprintBtn').addEventListener('click', () => openWin('sprint'));
   $('#stop').addEventListener('click', () => { $('#stopConfirm').hidden = false; $('#stopNo').focus(); });
   $('#stopNo').addEventListener('click', () => { $('#stopConfirm').hidden = true; });
   $('#stopYes').addEventListener('click', () => {

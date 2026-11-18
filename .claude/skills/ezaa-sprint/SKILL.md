@@ -175,7 +175,9 @@ One sprint also works `TC6IDM/ai-job-search` (`LINKED_REPOS` in
 A sprint is never cut off mid-issue; it **winds down**: no new issue, the one in
 progress finished properly, then the Checkpoint. "wind down", "wrap up",
 `/ezaa-sprint wind down`, or `node .claude/skills/ezaa-sprint/sprint.mjs wind-down`
-in any terminal (the hook passes it on); `wind-down --undo` takes it back. An
+in any terminal (the hook passes it on), or the Wind down button in the Fleet Office's
+Sprint window (#50, which runs the same command and otherwise only reads the state file);
+`wind-down --undo` takes it back. An
 issue begun but not yet worked on is put back (`skip`, card to Todo, a comment).
 
 ## 3. Checkpoint (WRAP after the current issue, STOP at once)
