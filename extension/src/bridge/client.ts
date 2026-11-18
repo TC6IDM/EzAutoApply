@@ -28,6 +28,8 @@ export interface BridgeField {
   options: string[];
   key?: string;
   note?: string;
+  /** Where the value came from (rule, answerBank, classifier…): the Office's "who filled what" (#35). */
+  source?: string;
 }
 
 export function bridgeFields(fields: FieldReport[]): BridgeField[] {
@@ -41,6 +43,7 @@ export function bridgeFields(fields: FieldReport[]): BridgeField[] {
     options: f.options,
     ...(f.key && { key: f.key }),
     ...(f.note && { note: f.note }),
+    ...(f.source !== 'none' && { source: f.source }),
   }));
 }
 

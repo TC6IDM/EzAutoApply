@@ -18,13 +18,31 @@ No packages of its own: Node 24 runs the TypeScript directly, and `npm run compi
 | `EZAA_BRIDGE_PORT` | `8100` |
 | `EZAA_MAX_READY` | `6`: claims pause while this many jobs wait for your Submit (#29) |
 
-Every call except `GET /health` needs `Authorization: Bearer <token>`. Calls from a web page (an `Origin` that isn't `chrome-extension://`) and calls to any host name but `127.0.0.1` / `localhost` are refused.
+Every call except `GET /health` and the Office page needs `Authorization: Bearer <token>`. Calls from a web page (an `Origin` that isn't `chrome-extension://` or the bridge's own address) and calls to any host name but `127.0.0.1` / `localhost` are refused.
+
+## The Fleet Office
+
+`npm start` prints a link, `http://127.0.0.1:8100/office#token=…`. Open it to watch the fleet live (#35). The page is `office/index.html`, built from the design in `docs/fleet-office-prototype.html`. It shows the following:
+
+- A 3D office with a desk per applier: the first four workers to ask for a job, in that order.
+- Each applier's job, its pages, the fields on the current page (labels and counts, never values) and who filled them.
+- The queue in claim order.
+- Your inbox: jobs ready to submit (with "Go to its tab" and "I submitted it"), jobs that need you or are stuck (go to the tab, queue it again, or skip it), and the fields agents answered.
+- Today's submissions and incidents.
+- Stop all and Resume.
+
+Scout, Fixer and Outreach show as not running until their agents exist.
+
+The token rides in the link's `#fragment`, which the browser never sends. The page keeps it in session storage and drops it from the address bar. The page itself carries no data. Its stream, `GET /office/events?token=…` (server-sent events: a `snapshot` whenever something changes, built by `src/office.ts`), takes the token in the query because EventSource can't send headers. The page's buttons call the API with the token as usual.
+
+Without WebGL (or offline, since three.js comes from a CDN) the office falls back to the agent list and windows. With reduced motion, nothing animates.
 
 ## Calls
 
 | Call | What |
 |---|---|
 | `GET /health` | `{ ok, stopped }` |
+| `GET /office` · `GET /office/events?token=` | the Fleet Office page · its live stream (above) |
 | `GET /queue` · `POST /queue {jobs}` | every job · add jobs (by `id`, once each) |
 | `GET /queue/next?worker=w1` | claim the next job (Tier A first, then oldest), leased 20 min; 204 when none, 423 after Stop all, 429 `{ready, maxReadyOpen}` while that many jobs wait for your Submit (an applier waits and asks again; it leaves each ready job's tab open) |
 | `POST /queue/:id/status {status, note?, page?, tabUrl?}` | `running`/`claimed` renew the lease, anything else ends it |

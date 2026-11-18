@@ -144,6 +144,58 @@ test('the ready list says what agents answered, "go to tab" reaches the extensio
   }
 });
 
+test('the Office (#35): the page needs no token, its stream does, and a change shows up on it', async () => {
+  const page = await fetch(base + '/office');
+  assert.equal(page.status, 200);
+  assert.match(page.headers.get('content-type') ?? '', /text\/html/);
+  assert.match(page.headers.get('content-security-policy') ?? '', /connect-src 'self'/);
+  assert.match(await page.text(), /<title>Fleet Office<\/title>/);
+
+  assert.equal((await fetch(base + '/office/events')).status, 401);
+  assert.equal((await fetch(base + '/office/events?token=wrong-token-0123456789')).status, 401);
+  // A page on another site can't read the stream even with the token in hand.
+  assert.equal((await fetch(base + `/office/events?token=${TOKEN}`, { headers: { origin: 'https://evil.example' } })).status, 403);
+
+  const ac = new AbortController();
+  const res = await fetch(base + `/office/events?token=${TOKEN}`, { signal: ac.signal });
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type') ?? '', /text\/event-stream/);
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffered = '';
+  const nextSnapshot = async () => {
+    for (;;) {
+      const at = buffered.indexOf('\n\n');
+      if (at >= 0) {
+        const chunk = buffered.slice(0, at);
+        buffered = buffered.slice(at + 2);
+        const data = /^event: snapshot\ndata: (.*)$/m.exec(chunk);
+        if (data) return JSON.parse(data[1]);
+        continue;
+      }
+      const { value, done } = await reader.read();
+      if (done) throw new Error('stream ended');
+      buffered += decoder.decode(value, { stream: true });
+    }
+  };
+  try {
+    const first = await nextSnapshot();
+    assert.equal(typeof first.counts.queued, 'number');
+    assert.ok(first.workers.some((w: { name: string }) => w.name === 'w1'), 'a worker that asked for a job has a desk');
+    // The page's own origin may act (Stop all, Resume, "I submitted it").
+    const own = await fetch(base + '/queue', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json', origin: base },
+      body: JSON.stringify({ jobs: [job('office-1')] }),
+    });
+    assert.equal(own.status, 201);
+    const next = await nextSnapshot();
+    assert.ok(next.queue.some((j: { id: string }) => j.id === 'office-1'));
+  } finally {
+    ac.abort();
+  }
+});
+
 test('bad requests say what is wrong', async () => {
   assert.equal((await call('POST', '/queue/j2/status', { status: 'done' })).status, 400);
   assert.equal((await call('POST', '/queue/missing/status', { status: 'stuck' })).status, 404);

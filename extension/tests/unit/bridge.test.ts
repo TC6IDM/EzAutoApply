@@ -25,7 +25,9 @@ describe('the local bridge client (#17)', () => {
     const field = { id: 'f1', frameId: 0, label: 'Phone', kind: 'text', options: [], required: true, status: 'filled', source: 'rule', confidence: 1, valueText: '555 0100', key: 'phone' } as FieldReport;
     await client.reportRun('j1', newRun(3, 'https://x.test/apply', 0, 'j1'), bridgeFields([field]));
     const sent = JSON.parse(String(f.calls[1].init?.body));
-    expect(sent.fields).toEqual([{ id: 'f1', frameId: 0, label: 'Phone', kind: 'text', status: 'filled', required: true, options: [], key: 'phone' }]);
+    // Where the value came from goes too (the Office's "who filled what", #35); the value never does.
+    expect(sent.fields).toEqual([{ id: 'f1', frameId: 0, label: 'Phone', kind: 'text', status: 'filled', required: true, options: [], key: 'phone', source: 'rule' }]);
+    expect(bridgeFields([{ ...field, status: 'needs', source: 'none' }])[0]).not.toHaveProperty('source');
     expect(JSON.stringify(sent)).not.toContain('555 0100');
   });
 

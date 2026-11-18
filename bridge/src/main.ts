@@ -29,4 +29,6 @@ server.listen(port, '127.0.0.1', () => {
   console.log(`EzAutoApply bridge on http://127.0.0.1:${port}`);
   console.log(`  token: ${tokenFile} (paste it into the extension's Settings once)`);
   console.log(`  queue: ${queueFile}`);
+  // The token rides in the address's #fragment, which the browser never sends; the page keeps it for its stream.
+  console.log(`  Fleet Office: http://127.0.0.1:${port}/office#token=${token}`);
 });
