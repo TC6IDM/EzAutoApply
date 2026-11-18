@@ -67,3 +67,70 @@ export function finishRefusal({ n, dirty, subject, note }) {
   if (!note) return { code: 1, why: 'finish needs --note "<what changed, where>" for the issue\'s In Review comment' };
   return null;
 }
+
+// ---------- usage per issue (#49) ----------
+// The board keeps what each finished issue took ("Usage %": the 5-hour window it
+// used), so the sizes' costs are measured across sprints instead of guessed.
+export const USAGE_FIELD = 'Usage %';
+export const MEASURED_AFTER = 5;               // a size's own average is used once this many are measured
+export const SIZE_FACTOR = { XS: 0.5, S: 1, M: 2, L: 4, XL: 8 }; // the guess, relative to an S
+
+/**
+ * What an issue used, from the reading at `begin` to now: { session, weekly } in
+ * points of each limit. A figure that went down (its limit reset meanwhile) or
+ * wasn't read is null.
+ */
+export function issueUsage(start, u) {
+  if (!start || !u || u.error) return { session: null, weekly: null };
+  const delta = (now, then) => (typeof now === 'number' && typeof then === 'number' && now >= then ? now - then : null);
+  return { session: delta(u.session, start.sessionAtStart), weekly: delta(u.weekly, start.weeklyAtStart) };
+}
+
+/** "used about 4% of the 5-hour window, 1% of the week", or null when neither was measured. */
+export function usageNote({ session, weekly }) {
+  const parts = [session !== null && `${session}% of the 5-hour window`, weekly !== null && `${weekly}% of the week`].filter(Boolean);
+  return parts.length ? `used about ${parts.join(', ')}` : null;
+}
+
+const sizeOf = s => String(s ?? '').replace(/^size:/, '').toUpperCase() || null;
+
+/** Per size, from board rows [{ size, usage }]: { S: { n, avg }, … } (only measured rows count). */
+export function sizeAverages(rows) {
+  const by = {};
+  for (const r of rows || []) {
+    const size = sizeOf(r.size);
+    if (!size || typeof r.usage !== 'number' || !Number.isFinite(r.usage)) continue;
+    (by[size] ||= []).push(r.usage);
+  }
+  return Object.fromEntries(Object.entries(by).map(([k, v]) => [k, { n: v.length, avg: Math.round((v.reduce((a, b) => a + b, 0) / v.length) * 10) / 10 }]));
+}
+
+/**
+ * The expected cost of an issue of `size`: its measured average once MEASURED_AFTER
+ * are on the board, else a guess (this sprint's average, else DEFAULT_ISSUE_COST, for an S,
+ * scaled by SIZE_FACTOR). { cost, measured, n }.
+ */
+export function expectedCost(size, averages, sprintAverage = null) {
+  const key = sizeOf(size) || 'S';
+  const m = averages?.[key];
+  if (m && m.n >= MEASURED_AFTER) return { cost: m.avg, measured: true, n: m.n };
+  const base = sprintAverage ?? DEFAULT_ISSUE_COST;
+  return { cost: Math.round(base * (SIZE_FACTOR[key] ?? 1)), measured: false, n: m?.n ?? 0 };
+}
+
+/**
+ * Issues whose measured usage sits nearer another size's average than their own
+ * label's (only sizes with at least `min` measured count). [{ n, size, usage, looks }].
+ */
+export function misSized(rows, averages, min = 3) {
+  const known = Object.entries(averages || {}).filter(([, v]) => v.n >= min);
+  if (known.length < 2) return [];
+  const out = [];
+  for (const r of rows || []) {
+    const size = sizeOf(r.size);
+    if (!size || typeof r.usage !== 'number') continue;
+    const nearest = known.reduce((best, [k, v]) => (Math.abs(v.avg - r.usage) < Math.abs(best[1].avg - r.usage) ? [k, v] : best));
+    if (nearest[0] !== size && known.some(([k]) => k === size)) out.push({ n: r.n, size, usage: r.usage, looks: nearest[0] });
+  }
+  return out;
+}

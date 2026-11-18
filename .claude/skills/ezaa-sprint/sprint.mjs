@@ -33,6 +33,9 @@
 //                         (the merge closes it, maintainer 2026-11-12) and adds that it is not yet seen.
 //   ... checkpoint [--title "…"] [--intro-file f.md]  Rewrite the PR (title, Claude's description
 //                         above the generated part, usage) and take the running label off: CI runs once.
+//   ... sizes             What each size has cost, measured on the board ("Usage %", set by finish
+//                         from the 5-hour reading at begin and finish), and issues whose size label
+//                         looks wrong. `next` shows each candidate's expected cost from the same figures.
 //   ... statusline        The status line command: saves the 5-hour and weekly figures Claude Code
 //                         hands it, so usage() rarely needs the endpoint (and its 429s).
 //   ... skip N --why "…"  Note an issue passed over (needs a phone, a decision, too big…).
@@ -57,7 +60,7 @@ import { join, resolve } from 'node:path';
 import https from 'node:https';
 
 import { REPO, REPO_NAME, OWNER, PROJECT, MILESTONE_ORDER as MILESTONES } from '../ezaa-issues/config.mjs';
-import { STALE_HOURS, KEEP_GOING_STALE_HOURS, DEFAULT_SMALL_AT, DEFAULT_NEW_AT, DEFAULT_STOP_AT, FABLE_LINES, LARGE_SESSION_AT, LARGE_WEEKLY_UNDER, DEFAULT_ISSUE_COST, defaultLines, until, judge, isLarge, largeAllowed, averageCost, finishRefusal } from './verdict.mjs';
+import { STALE_HOURS, KEEP_GOING_STALE_HOURS, DEFAULT_SMALL_AT, DEFAULT_NEW_AT, DEFAULT_STOP_AT, FABLE_LINES, LARGE_SESSION_AT, LARGE_WEEKLY_UNDER, DEFAULT_ISSUE_COST, defaultLines, until, judge, isLarge, largeAllowed, averageCost, finishRefusal, USAGE_FIELD, MEASURED_AFTER, issueUsage, usageNote, sizeAverages, expectedCost, misSized } from './verdict.mjs';
 const DIR = join(tmpdir(), 'ezaa-sprint');
 const STATE = join(DIR, 'state.json');
 const CACHE = join(DIR, 'usage.json');
@@ -224,7 +227,7 @@ function prBody(s, pr, running) {
   lines.push(...(done.length ? ['## Done',
     // Every finished issue closes on merge (maintainer, 2026-11-12), including one
     // nobody has seen on a phone yet; the line says so instead of keeping it open.
-    ...done.map(d => `- ${d.title ? `${d.title}: ` : ''}Fixes #${d.n}${d.device ? ' (not yet checked on a live job site)' : ''}${d.cost != null ? ` · ${d.cost}% of the 5-hour window` : ''}`)]
+    ...done.map(d => `- ${d.title ? `${d.title}: ` : ''}Fixes #${d.n}${d.device ? ' (not yet checked on a live job site)' : ''}${d.cost != null ? ` · ${d.cost}% of the 5-hour window` : ''}${d.weeklyCost != null ? `, ${d.weeklyCost}% of the week` : ''}`)]
     : ['Nothing finished yet.']));
   // Commits on the branch from an earlier sprint on it (a restart, --here) are
   // not in s.done, and without their Fixes lines the merge left them open (#473,
@@ -287,6 +290,29 @@ function publish(s, running) {
 }
 
 // ---------- issues ----------
+// ---------- usage per issue on the board (#49) ----------
+// Every finished issue's 5-hour usage goes into the board's "Usage %" number
+// field, so the cost of each size is measured across sprints (the state file is
+// deleted by `end`; the board stays). The field is made on first use.
+function boardItems() {
+  return JSON.parse(sh('gh', ['project', 'item-list', PROJECT, '--owner', OWNER, '--limit', '1000', '--format', 'json'])).items;
+}
+// [{ n, size, usage }] for the board's issues (the field keys are the lowercased field names).
+function boardUsage() {
+  const key = USAGE_FIELD.toLowerCase();
+  return boardItems().filter(i => i.content?.number).map(i => ({ n: i.content.number, size: i.size ?? null, usage: typeof i[key] === 'number' ? i[key] : null }));
+}
+function setBoardUsage(n, value) {
+  const fields = JSON.parse(sh('gh', ['project', 'field-list', PROJECT, '--owner', OWNER, '--format', 'json', '--limit', '50'])).fields;
+  let field = fields.find(f => f.name === USAGE_FIELD);
+  if (!field) field = JSON.parse(sh('gh', ['project', 'field-create', PROJECT, '--owner', OWNER, '--name', USAGE_FIELD, '--data-type', 'NUMBER', '--format', 'json']));
+  const item = boardItems().find(i => i.content?.number === n);
+  if (!item) return false;
+  const projectId = sh('gh', ['project', 'view', PROJECT, '--owner', OWNER, '--format', 'json', '--jq', '.id']);
+  sh('gh', ['project', 'item-edit', '--id', item.id, '--project-id', projectId, '--field-id', field.id, '--number', String(value)]);
+  return true;
+}
+
 const has = (issue, name) => issue.labels.some(l => l.name === name);
 const rank = (issue, prefix, order) => { const i = order.findIndex(v => has(issue, `${prefix}${v}`)); return i < 0 ? order.length : i; };
 
@@ -551,6 +577,23 @@ if (action === 'aftercompact') {
 }
 
 // `lines [--model <id>]`: the lines `start` would choose now, and why. Changes nothing.
+if (action === 'sizes') {
+  // The measured cost of each size, from the board's "Usage %" (#49), and issues whose label looks wrong.
+  const rows = boardUsage();
+  const averages = sizeAverages(rows);
+  const measured = rows.filter(r => r.usage !== null).length;
+  if (!measured) { console.log(`No issue has a ${USAGE_FIELD} yet: \`finish\` sets it for each issue a sprint finishes.`); process.exit(0); }
+  console.log(`${measured} issue${measured === 1 ? '' : 's'} measured (${USAGE_FIELD}: the 5-hour window an issue used):`);
+  for (const size of ['XS', 'S', 'M', 'L', 'XL']) {
+    const a = averages[size];
+    if (a) console.log(`  size:${size}  ${a.avg}% on average over ${a.n}${a.n >= MEASURED_AFTER ? '' : ` (next uses it from ${MEASURED_AFTER})`}`);
+  }
+  const odd = misSized(rows, averages);
+  for (const o of odd) console.log(`  #${o.n} is size:${o.size} but used ${o.usage}%, nearer size:${o.looks}'s average`);
+  if (!odd.length) console.log('  no size label looks wrong yet (needs two sizes with 3+ measured each)');
+  process.exit(0);
+}
+
 if (action === 'lines') {
   const d = defaultLines(opt('model') ? { id: opt('model'), name: null } : sessionModel());
   console.log(`small issues only from ${d.smallAt}%, no new issue from ${d.newAt}%, checkpoint at ${d.stopAt}%: ${d.why}`);
@@ -668,12 +711,20 @@ if (action === 'next') {
   console.log([queue.length ? `named first: ${queue.map(n => `#${n}`).join(' ')}${only ? ' (only these)' : ''}` : '',
     only ? '' : mine ? (mineThenOpen(s) ? 'then issues assigned to you, then unassigned ones (never anyone else\'s)' : 'then only issues assigned to you') : 'then issues assigned to you and unassigned ones (never anyone else\'s)'].filter(Boolean).join('; '));
   if (j.used !== null) console.log(`room before checkpoint: ${j.stopAt - j.used}% · an issue has cost ${cost ? `${cost}% on average this sprint` : `~${DEFAULT_ISSUE_COST}% (a guess until one is measured)`}`);
+  // What each size costs, measured on the board across sprints (#49); a guess until MEASURED_AFTER of a size.
+  let averages = {};
+  try { averages = sizeAverages(boardUsage()); } catch { /* the board is a nicety here; the list still prints */ }
+  const measured = Object.entries(averages).map(([k, v]) => `${k} ${v.avg}% (${v.n})`);
+  if (measured.length) console.log(`measured per size on the board: ${measured.join(' · ')}; a size's own average counts from ${MEASURED_AFTER} issues`);
+  const sizeLabel = i => i.labels.map(l => l.name).find(n => n.startsWith('size:'));
+  const fits = i => { const e = expectedCost(sizeLabel(i), averages, cost); return { ...e, ok: j.used === null || e.cost <= j.stopAt - j.used }; };
   if (j.verdict === 'GO') console.log(large.ok ? `${large.why}; work it in steps, wip/issue-N at each pause.` : `${large.why}: large issues are left out of this list.`);
   if (j.verdict === 'SMALL') console.log(`Past ${j.smallAt}%: size:S issues only.`);
   else if (j.verdict !== 'GO') console.log('Not GO: start no new issue.');
   for (const i of list) {
     const labels = i.labels.map(l => l.name).filter(n => /^(P\d|size:|platform:|type:)/.test(n)).join(' ');
-    console.log(`#${i.number}  ${i.title}${i.named ? '  [named]' : ''}\n        ${labels} · ${i.milestone?.title || 'no milestone'}`);
+    const f = fits(i);
+    console.log(`#${i.number}  ${i.title}${i.named ? '  [named]' : ''}\n        ${labels} · ${i.milestone?.title || 'no milestone'} · ~${f.cost}%${f.measured ? ' (measured)' : ''}${f.ok ? '' : ` · does not fit the ${j.stopAt - j.used}% left`}`);
   }
   if (!list.length) console.log('Nothing left that Claude can take on its own.');
   process.exit(0);
@@ -734,12 +785,16 @@ if (action === 'begin' || action === 'finish' || action === 'skip') {
   if (action === 'begin' && !s.external) { try { const pr = openPr(s.branch); if (pr) sprintLabel(pr.number, RUNNING); } catch { /* the label is cosmetic; never block the work on it */ } }
   if (action === 'finish') {
     const start = s.current?.n === n ? s.current : null;
-    const cost = start && used !== null && start.sessionAtStart !== null && used >= start.sessionAtStart ? used - start.sessionAtStart : null;
+    const took = issueUsage(start, u);
+    const cost = took.session;
+    // Into the In Review note, and onto the board where `next` and `sizes` read it back (#49).
+    const usageLine = usageNote(took);
+    if (cost !== null) { try { setBoardUsage(n, cost); } catch { console.log(`(could not set ${USAGE_FIELD} on the board for #${n})`); } }
     // --needs-live: built and checked as far as tests and fixtures can (unit,
     // e2e fixtures), but nobody has run it on a real application site yet.
     let title = null;
     try { title = sh('gh', ['issue', 'view', String(n), '--repo', REPO, '--json', 'title', '--jq', '.title']); } catch { /* the PR line goes without it */ }
-    s.done.push({ n, title, at: new Date().toISOString(), cost, ...(flag('needs-live') && { device: true }) });
+    s.done.push({ n, title, at: new Date().toISOString(), cost, weeklyCost: took.weekly, ...(flag('needs-live') && { device: true }) });
     s.current = null;
     writeState(s);
     console.log(`#${n} done${cost !== null ? `, cost ${cost}% of the 5-hour window` : ''}`);
@@ -747,12 +802,12 @@ if (action === 'begin' || action === 'finish' || action === 'skip') {
     if (s.external) {
       // The commit and its PR are the other repo's (already pushed there, under
       // that repo's own rule); here only the card moves, with the PR's address.
-      console.log(sh(process.execPath, [work, 'review', String(n), '--note', `${opt('note')}; ${opt('pr')}`]));
+      console.log(sh(process.execPath, [work, 'review', String(n), '--note', `${opt('note')}; ${opt('pr')}${usageLine ? `; ${usageLine}` : ''}`]));
     } else {
       // Straight onto the PR and into In Review (maintainer, 2026-11-13), not at the checkpoint.
       const pr = publish(s, true);
       console.log(`pushed; PR #${pr} updated ("${RUNNING}": CI waits for the checkpoint)`);
-      console.log(sh(process.execPath, [work, 'review', String(n), '--note', `${opt('note')}; PR #${pr}`]));
+      console.log(sh(process.execPath, [work, 'review', String(n), '--note', `${opt('note')}; PR #${pr}${usageLine ? `; ${usageLine}` : ''}`]));
     }
   }
   if (action === 'skip') {
@@ -825,5 +880,5 @@ if (action === 'end') {
   process.exit(0);
 }
 
-console.log('usage: sprint.mjs start|budget [--hook]|next|begin N|finish N --note "…"|checkpoint|ask "…"|skip N --why "…"|wind-down [--undo]|status|summary|end');
+console.log('usage: sprint.mjs start|budget [--hook]|next|sizes|begin N|finish N --note "…"|checkpoint|ask "…"|skip N --why "…"|wind-down [--undo]|status|summary|end');
 process.exit(1);

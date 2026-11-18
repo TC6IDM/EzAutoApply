@@ -84,3 +84,45 @@ test('finish refuses a dirty tree, a commit that does not name #N, and no note',
   assert.equal(finishRefusal({ n: 48, dirty: '', subject: 'Tests for the guard (#48)', note: '' }).code, 1);
   assert.equal(finishRefusal({ n: 48, dirty: '', subject: 'Tests for the guard (#48)', note: 'x' }), null);
 });
+
+// ---------- usage per issue (#49) ----------
+import { issueUsage, usageNote, sizeAverages, expectedCost, misSized, MEASURED_AFTER, DEFAULT_ISSUE_COST } from '../skills/ezaa-sprint/verdict.mjs';
+
+test('issue usage is the rise since begin; a reset or a missing reading is null', () => {
+  const start = { sessionAtStart: 48, weeklyAtStart: 53 };
+  assert.deepEqual(issueUsage(start, { session: 52, weekly: 54 }), { session: 4, weekly: 1 });
+  assert.deepEqual(issueUsage(start, { session: 3, weekly: 54 }), { session: null, weekly: 1 }, 'the 5-hour window reset meanwhile');
+  assert.deepEqual(issueUsage(start, { error: 'x' }), { session: null, weekly: null });
+  assert.deepEqual(issueUsage(null, { session: 1, weekly: 1 }), { session: null, weekly: null });
+});
+
+test('the usage note names what was measured', () => {
+  assert.equal(usageNote({ session: 4, weekly: 1 }), 'used about 4% of the 5-hour window, 1% of the week');
+  assert.equal(usageNote({ session: null, weekly: 0 }), 'used about 0% of the week');
+  assert.equal(usageNote({ session: null, weekly: null }), null);
+});
+
+test('per-size averages from the board ignore unmeasured and unsized rows', () => {
+  const rows = [{ size: 'S', usage: 4 }, { size: 'size:S', usage: 3 }, { size: 'M', usage: 9 }, { size: 'M', usage: null }, { size: null, usage: 5 }];
+  assert.deepEqual(sizeAverages(rows), { S: { n: 2, avg: 3.5 }, M: { n: 1, avg: 9 } });
+});
+
+test('expected cost: the measured average from MEASURED_AFTER issues, else a scaled guess', () => {
+  const few = { M: { n: MEASURED_AFTER - 1, avg: 30 } };
+  assert.deepEqual(expectedCost('size:M', few), { cost: DEFAULT_ISSUE_COST * 2, measured: false, n: MEASURED_AFTER - 1 });
+  assert.deepEqual(expectedCost('size:M', few, 3), { cost: 6, measured: false, n: MEASURED_AFTER - 1 }, "this sprint's average beats the default");
+  assert.deepEqual(expectedCost('size:M', { M: { n: MEASURED_AFTER, avg: 30 } }), { cost: 30, measured: true, n: MEASURED_AFTER });
+  assert.equal(expectedCost(undefined, {}).cost, DEFAULT_ISSUE_COST, 'unsized counts as an S');
+});
+
+test('mis-sized issues sit nearer another size average', () => {
+  const rows = [
+    ...[3, 4, 5].map((usage, i) => ({ n: i + 1, size: 'S', usage })),
+    ...[10, 12, 14].map((usage, i) => ({ n: i + 10, size: 'M', usage })),
+    { n: 20, size: 'S', usage: 13 },
+    { n: 21, size: 'L', usage: 4 },
+  ];
+  const odd = misSized(rows, sizeAverages(rows));
+  assert.deepEqual(odd.map(o => [o.n, o.looks]), [[20, 'M']], 'L has too few measured to judge');
+  assert.deepEqual(misSized(rows.slice(0, 3), sizeAverages(rows.slice(0, 3))), [], 'one size alone says nothing');
+});

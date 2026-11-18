@@ -124,7 +124,13 @@ node .claude/skills/ezaa-sprint/sprint.mjs start [--issues 12,34,56 [--only]] [-
    - opens the sprint's PR on the first finished issue, or updates it;
    - rewrites the PR body: Fixes lines, in progress, passed over, and the
      **5-hour and weekly usage**;
-   - runs `work.mjs review N`, so the card moves to **In Review** at once.
+   - runs `work.mjs review N`, so the card moves to **In Review** at once;
+   - writes what the issue used ("about 4% of the 5-hour window, 1% of the
+     week") into that note, and the 5-hour figure into the board's **Usage %**
+     field (made on first use). `next` shows each candidate's expected cost
+     from those figures (a size's own average once 5 of that size are
+     measured, a guess before), and `sprint.mjs sizes` lists the averages and
+     any issue whose size label looks wrong.
 
    Never write or edit the PR body by hand: `sprint.mjs` owns it; Claude's own
    description goes in through `checkpoint --intro-file`. While the sprint works,
