@@ -5,6 +5,7 @@ import { SystemOneClient } from '../src/classifier/systemone';
 import { uploadFileName } from '../src/core/documents';
 import { isAccountSite, isExternalRedirect } from '../src/core/sites';
 import type { SiteError } from '../src/fill/siteErrors';
+import { fieldIncidents, type Incident, incidentKey, type Redaction, redactionsFor, runIncidents } from '../src/incidents/incident';
 import { newRun, type PageCheck, type RunDeps, runPages } from '../src/run/loop';
 import type { RunState } from '../src/run/types';
 import type { AnswerValue, DocKind, DocSelection } from '../src/core/types';
@@ -167,6 +168,31 @@ async function saveRun(run: RunState): Promise<void> {
   if (run.jobId && bridge) {
     const fields = Object.values((await readTab(run.tabId)).reports).flatMap((r) => r.fields);
     bridge.client.reportRun(run.jobId, run, bridgeFields(fields)).catch(() => {});
+  }
+  if (bridge && run.status === 'stopped') {
+    const tab = await readTab(run.tabId);
+    const fields = Object.values(tab.reports).flatMap((r) => r.fields);
+    const url = tab.reports['0']?.url ?? run.startUrl;
+    fileIncidents((r) => runIncidents(run, fields, { url, now: Date.now() }, r)).catch(() => {});
+  }
+}
+
+// ---- Incidents (#18, plan §8.2) ------------------------------------------------------------
+// Every field it couldn't fill, and every Run that couldn't move on, goes to the bridge with
+// the profile's values replaced by placeholders. Only while the bridge is on: there is
+// nowhere else to put them, and nothing is kept in the extension.
+const filed = new Set<string>();
+
+async function fileIncidents(make: (r: Redaction[]) => Incident[]): Promise<void> {
+  const client = bridge?.client;
+  if (!client) return;
+  const incidents = make(redactionsFor(await getProfile()));
+  if (filed.size > 5000) filed.clear();
+  for (const incident of incidents) {
+    const key = incidentKey(incident);
+    if (filed.has(key)) continue;
+    filed.add(key);
+    client.postIncident(incident as unknown as Record<string, unknown>).catch(() => filed.delete(key));
   }
 }
 
@@ -418,6 +444,12 @@ async function handleContent(msg: ContentToBackground, sender: Browser.runtime.M
         else delete state.reports[String(frameId)];
       });
       if (report.fields.length) await recordApplication(tabId, report, sender.tab).catch(() => {});
+      // Once the frame is done (not while the classifier still works on its leftovers).
+      if (bridge && !report.pending && report.fields.length) {
+        const run = await readRun(tabId);
+        const ctx = { url: report.url || sender.url || '', now: Date.now(), ...(run?.status === 'running' && { page: run.page, ...(run.jobId && { jobId: run.jobId }) }) };
+        fileIncidents((r) => fieldIncidents(report.fields, ctx, r)).catch(() => {});
+      }
       return null;
     }
     case 'progress':

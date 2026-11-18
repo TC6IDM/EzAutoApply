@@ -74,8 +74,10 @@ export interface FieldReport {
   current?: AnswerValue;
   /** What the user typed or picked on the page after the run, if anything. */
   userValue?: AnswerValue;
-  /** Trimmed HTML around a field that wasn't filled (values stripped), for bug reports. */
+  /** Trimmed HTML around a field that wasn't filled (values stripped), for bug reports and incidents. */
   debug?: string;
+  /** The filler wrote a value but couldn't confirm the page took it (an incident, #18). */
+  uncertain?: boolean;
 }
 
 /** How far an autofill run has got: shown on the page's button and in the side panel while it runs. */

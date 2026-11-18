@@ -37,6 +37,16 @@ export function isApplicationSite(url: string): boolean {
   return matches(hostOf(url), APPLICATION_SITES);
 }
 
+/** Which applicant-tracking system a page is on ("workday", "greenhouse", …), or "other". For incidents (#18). */
+export function atsOf(url: string): string {
+  const host = hostOf(url);
+  if (/linkedin\.com$/.test(host)) return 'linkedin';
+  if (/indeed\.com$/.test(host)) return 'indeed';
+  const domain = APPLICATION_SITES.find((d) => host === d || host.endsWith(`.${d}`));
+  if (!domain) return 'other';
+  return /workday/.test(domain) ? 'workday' : domain.split('.')[0];
+}
+
 export function isAccountSite(url: string): boolean {
   return matches(hostOf(url), ACCOUNT_SITES);
 }

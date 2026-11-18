@@ -1,7 +1,7 @@
 import { type BrowserContext, test as base, chromium, expect, type Page, type Worker } from '@playwright/test';
 import { strToU8, zipSync } from 'fflate';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -458,7 +458,7 @@ test('the panel\'s Run button runs to Submit and says what to do next (#13)', as
   expect(await form.evaluate(() => document.body.dataset.submitted)).toBeUndefined();
 });
 
-test('an agent queues a job and asks the bridge for a Run; the extension runs it and reports back (#17)', async ({ context, extensionId, site }) => {
+test('an agent queues a job and asks the bridge for a Run; the extension runs it and reports back (#17)', async ({ context, worker, extensionId, site }) => {
   test.setTimeout(120_000);
   // The real bridge (bridge/src/main.ts) on its own port, with a throwaway home and queue.
   const home = mkdtempSync(join(tmpdir(), 'ezaa-e2e-bridge-'));
@@ -506,6 +506,25 @@ test('an agent queues a job and asks the bridge for a Run; the extension runs it
     expect(queue.find((j) => j.id === 'job-1')?.status).toBe('ready');
     expect((await status())?.fields.length).toBeGreaterThan(0);
     expect(await form.evaluate(() => document.body.dataset.submitted)).toBeUndefined();
+
+    // #18: a field it couldn't fill becomes an incident in the bridge's folder, with no profile value in it.
+    const apply = `${site}/apply.html`;
+    await form.goto(apply);
+    await autofill(worker, apply);
+    const dir = join(home, 'incidents');
+    const incidents = (): { kind: string; ats: string; url: string; field?: { label: string } }[] => {
+      try {
+        return readdirSync(dir, { recursive: true })
+          .map(String)
+          .filter((name) => name.endsWith('.json'))
+          .map((name) => JSON.parse(readFileSync(join(dir, name), 'utf8')));
+      } catch {
+        return [];
+      }
+    };
+    await expect.poll(() => incidents().find((i) => i.field?.label.startsWith('Why do you want'))?.kind, { timeout: 30_000 }).toBe('unmatched');
+    const written = JSON.stringify(incidents()).toLowerCase();
+    for (const value of ['jordan', 'rivera', 'example.com', '123-4567', 'jrivera', 'acme corp']) expect(written, value).not.toContain(value);
   } finally {
     proc.kill();
   }
