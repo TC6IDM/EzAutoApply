@@ -48,6 +48,8 @@ export type PanelToBackground =
   /** run: Run to Submit's stricter reading, where anything that may send the application is Submit. */
   | { type: 'findAdvance'; tabId: number; run?: boolean }
   | { type: 'advance'; tabId: number; frameId: number }
+  /** The top frame says the application went through ("Thank you for applying"), or null. */
+  | { type: 'confirmation'; tabId: number }
   | { type: 'classifierHealth' }
   | { type: 'settingsChanged' };
 
@@ -59,6 +61,7 @@ export type BackgroundToContent =
   | { type: 'focusField'; fieldId: string }
   | { type: 'findAdvance'; run?: boolean }
   | { type: 'advance' }
+  | { type: 'confirmation' }
   | { type: 'settingsChanged'; settings: Settings }
   /** All of the tab's frames together, for the top frame's floating button; null when none is filling. */
   | { type: 'fillProgress'; progress: FillProgress | null };

@@ -3,6 +3,7 @@ import { defineContentScript } from 'wxt/utils/define-content-script';
 import { AutofillController } from '../src/content/controller';
 import { FloatingUi } from '../src/content/floatingUi';
 import { findAdvanceButton, pressAdvance } from '../src/fill/advance';
+import { confirmationOf } from '../src/fill/confirmation';
 import type { Settings } from '../src/core/types';
 import { type BackgroundToContent, call, type ContentToBackground } from '../src/messages';
 
@@ -70,6 +71,9 @@ export default defineContentScript({
           sendResponse(b ? { label: b.label, kind: b.kind, score: b.score, ...(b.why && { why: b.why }) } : null);
           return false;
         }
+        case 'confirmation':
+          sendResponse(confirmationOf(document, location.href));
+          return false;
         case 'advance': {
           // Looked up again: the page may have changed since the panel last asked.
           const b = findAdvanceButton(document);

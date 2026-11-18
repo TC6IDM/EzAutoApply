@@ -265,6 +265,8 @@ async function handlePanel(msg: PanelToBackground): Promise<unknown> {
       return findAdvance(msg.tabId, msg.run);
     case 'advance':
       return toTab(msg.tabId, { type: 'advance' }, msg.frameId);
+    case 'confirmation':
+      return toTab(msg.tabId, { type: 'confirmation' }, 0).catch(() => null);
     case 'classifierHealth':
       return new SystemOneClient((await getSettings()).classifier).health();
     case 'settingsChanged': {

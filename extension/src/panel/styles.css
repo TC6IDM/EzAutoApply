@@ -420,6 +420,13 @@ textarea {
   text-wrap: balance;
 }
 
+/* In place of the Advance button once the page says the application went through (#14). */
+.hint.sent {
+  color: var(--text);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));

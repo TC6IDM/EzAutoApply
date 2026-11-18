@@ -336,15 +336,21 @@ function AdvanceButton(props: { tabId: number; enabled: boolean; onError(message
   /** undefined while still looking; null when the page has nothing to press. */
   const [target, setTarget] = useState<AdvanceTarget | null | undefined>(undefined);
   const [pressing, setPressing] = useState(false);
+  /** The page says the application went through ("Thank you for applying"). */
+  const [sent, setSent] = useState<string | null>(null);
 
   useEffect(() => {
     setTarget(undefined);
+    setSent(null);
     if (!enabled) return;
     let alive = true;
     const look = () => {
       send<AdvanceTarget | null>({ type: 'findAdvance', tabId })
         .then((t) => alive && setTarget(t ?? null))
         .catch(() => alive && setTarget(null));
+      send<{ detail: string } | null>({ type: 'confirmation', tabId })
+        .then((c) => alive && setSent(c?.detail ?? null))
+        .catch(() => alive && setSent(null));
     };
     look();
     const timer = window.setInterval(look, 2000);
@@ -367,6 +373,14 @@ function AdvanceButton(props: { tabId: number; enabled: boolean; onError(message
       setPressing(false);
     }
   };
+
+  if (sent && !target) {
+    return (
+      <p className="hint center sent" role="status" title={sent}>
+        Application sent: the page says “{sent}”
+      </p>
+    );
+  }
 
   // The label is the page's own button text, of any length, so it's cut to one line (full text in the title).
   return (
