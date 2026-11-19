@@ -39,6 +39,20 @@ describe('blockers Run to Submit stops at (#11)', () => {
     }
   });
 
+  it('not a page that only says it has a CAPTCHA (iCIMS: body.has-hcaptcha, #92)', () => {
+    // iCIMS's markup: the class on <body>, the hCaptcha itself invisible.
+    document.body.className = 'iCIMS_chrome iCIMS_chrome157 has-hcaptcha';
+    document.body.innerHTML = `<form><input name="email"><div id="h-captcha" class="h-captcha" data-size="invisible"><iframe src="https://newassets.hcaptcha.com/captcha/v1/x/static/hcaptcha.html#frame=checkbox-invisible"></iframe></div><button>Next</button></form>`;
+    try {
+      expect(findBlockers(document).map((b) => b.kind)).toEqual([]);
+      // A wrapper whose own class names the widget still counts.
+      document.body.insertAdjacentHTML('beforeend', '<div class="captcha-wrapper"><p>Type the letters</p></div>');
+      expect(findBlockers(document).map((b) => b.kind)).toEqual(['captcha']);
+    } finally {
+      document.body.className = '';
+    }
+  });
+
   it('not the invisible reCAPTCHA v3 badge on ordinary forms', () => {
     expect(kinds(BLOCKER_PAGES.invisibleRecaptcha)).toEqual([]);
   });
