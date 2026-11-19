@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { FIELD_KEYS } from '../../src/core/fieldKeys';
 import { matchRules } from '../../src/fill/match/rules';
 import type { FieldInfo } from '../../src/fill/types';
-import { field, opts } from './helpers';
+import { field, opts, sampleProfile } from './helpers';
 
 const keyOf = (f: Partial<FieldInfo>) => matchRules(field(f))?.key ?? null;
 
@@ -100,6 +101,35 @@ describe('matchRules: choice questions', () => {
     expect(keyOf({ label: 'Are you currently pursuing further education (e.g., post-secondary education)?', kind: 'select', options: yesNo })).not.toBe('degree');
     expect(keyOf({ label: 'Will you have completed your degree by the start of the program?', kind: 'select', options: yesNo })).not.toBe('degree');
     expect(keyOf({ label: 'Pursuing a degree?', kind: 'select', options: yesNo })).not.toBe('degree');
+  });
+
+  describe('"Have you worked at <company>?"', () => {
+    const yesNo = opts('Yes', 'No');
+    const def = FIELD_KEYS.find((d) => d.key === 'workedHereBefore')!;
+    const answer = (label: string) => def.resolve({ profile: sampleProfile(), index: 0, label, section: '', kind: 'radio' });
+
+    it.each([
+      'Have you previously worked at Hootsuite? *',
+      'Have you worked at DoorDash?*',
+      'Have you previously been employed at Intuit? *',
+      'Have you ever worked for Globex before?',
+    ])('%s → workedHereBefore', (label) => {
+      expect(keyOf({ label, kind: 'radio', options: yesNo })).toBe('workedHereBefore');
+    });
+
+    it('answers from the work history: Yes only for an employer in it', () => {
+      expect(answer('Have you worked at DoorDash?*')).toBe(false);
+      expect(answer('Have you previously been employed at Intuit? *')).toBe(false);
+      expect(answer('Have you ever worked for Globex before?')).toBe(true);
+      expect(answer('Have you previously worked at Acme?')).toBe(true);
+      // "Here" names no company: left for the owner.
+      expect(answer('Have you worked here before?')).toBeNull();
+    });
+
+    it('never answers whether someone they know works there', () => {
+      expect(keyOf({ label: 'Do you have a relative or friend who has worked at Intuit?', kind: 'radio', options: yesNo })).not.toBe('workedHereBefore');
+      expect(keyOf({ label: 'Have you worked at Intuit?', kind: 'text' })).not.toBe('workedHereBefore');
+    });
   });
 
   it('a bool key never matches a free-text field', () => {

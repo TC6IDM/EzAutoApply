@@ -1,4 +1,5 @@
 import { canonicalCountry, detectCountry } from './geo';
+import { normalize } from './normalize';
 import {
   DECLINE,
   educationByRecency,
@@ -130,6 +131,35 @@ const NOT_EMPLOYED = 'N/A';
 /** The job marked current; a past job isn't the current one, however recent. */
 function currentJob(ctx: ResolveContext) {
   return experienceByRecency(ctx.profile).find((e) => e.current) ?? null;
+}
+
+/** "Have you (ever / previously) worked at / been employed by X". */
+const WORKED_AT = /\bhave you (ever )?(previously |formerly )?(worked|been employed|been an? (employee|intern|contractor)) (at|for|by|with) /;
+const NOT_A_COMPANY = /^(us|here|this (company|organi[sz]ation|employer)|the company|our (company|organi[sz]ation))$/;
+
+/** The company a "have you worked at X" question names, or null ("here", "us"). */
+function workedAtCompany(label: string): string | null {
+  const n = normalize(label).replace(/[?*:.]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const m = WORKED_AT.exec(n);
+  if (!m) return null;
+  const company = n
+    .slice(m.index + m[0].length)
+    .replace(/\b(before|previously|in the past|ever|or (any|one) of .*|or its .*|as an? .*|in any capacity.*)$/, '')
+    .trim();
+  return company && !NOT_A_COMPANY.test(company) ? company : null;
+}
+
+const COMPANY_SUFFIX = /\b(inc|corp|corporation|co|company|ltd|llc|limited|plc|group)\b/g;
+
+/** "Acme Corp" and "Acme" are the same employer; "theScore / ESPN BET" is both. */
+function sameCompany(employer: string, named: string): boolean {
+  const clean = (s: string) => normalize(s).replace(COMPANY_SUFFIX, '').replace(/[^\p{L}\p{N} ]/gu, ' ').replace(/\s+/g, ' ').trim();
+  const want = clean(named);
+  if (!want) return false;
+  return employer
+    .split(/[/|,&]| and /)
+    .map(clean)
+    .some((e) => e && (e === want || ` ${e} `.includes(` ${want} `) || ` ${want} `.includes(` ${e} `)));
 }
 
 /** "Most recent employer" asks for the last job even when it has ended; "current employer" doesn't. */
@@ -508,6 +538,18 @@ export const FIELD_KEYS: FieldKeyDef[] = [
     label: [/\b(total )?years of (professional |relevant |work |industry )?experience\b/, /\bhow many years (of )?(professional |work |relevant )?experience\b/, /^experience years$/],
     exclude: [/\b(with|using)\b/], maxWords: 15,
     resolve: (c) => (c.profile.experience.length ? String(yearsOfExperience(c.profile)) : null),
+  },
+  {
+    // The company is named in the question, so the work history answers it.
+    key: 'workedHereBefore', category: 'experience', title: 'Worked at this company before', valueType: 'bool', noClassify: true,
+    description: 'Whether the applicant has previously worked at the company named in the question',
+    label: [WORKED_AT],
+    exclude: [/\b(relative|related|family|friend|know|anyone|someone|spouse|referr)/], maxWords: 14,
+    resolve: (c) => {
+      const company = workedAtCompany(c.label);
+      if (!company) return null;
+      return c.profile.experience.some((e) => sameCompany(e.company, company));
+    },
   },
 
   // ── education ──────────────────────────────────────────────────────────
