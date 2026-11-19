@@ -5,6 +5,7 @@ import { fallbackOption, isPlaceholderOption, matchOption, type OptionLike, scor
 import { type DocKind, type FieldValue, isFileRef, isSecretRef, type SecretRef } from '../core/types';
 import { byId, isVisible, sleep, waitFor } from './dom';
 import { textOf } from './labels';
+import { passwordMinLength } from './password';
 import { fallbackNote, valueText } from './pipeline';
 import { isSearchPrompt, promptChoices } from './scan';
 import type { FieldDescriptor, Resolution } from './types';
@@ -26,7 +27,7 @@ export interface DocumentPayload {
 export interface FillContext {
   getDocument(kind: DocKind): Promise<DocumentPayload | null>;
   /** Fetched only when it's about to be typed in; null when not set or not allowed on this site. */
-  getSecret(name: SecretRef['secret']): Promise<string | null>;
+  getSecret(name: SecretRef['secret'], minLength?: number): Promise<string | null>;
 }
 
 /** `uncertain`: filled, but the page didn't clearly confirm it (or chose something close), so it should be checked. */
@@ -1017,7 +1018,8 @@ export async function fillField(field: FieldDescriptor, res: Resolution, ctx: Fi
     }
     if (isSecretRef(value) || field.kind === 'password') {
       if (!isSecretRef(value) || field.kind !== 'password') return { ok: false, reason: 'Only the account password goes into password fields' };
-      const secret = await ctx.getSecret(value.secret);
+      // A site that asks for a longer password gets "!" added (#85); the background remembers it for the site.
+      const secret = await ctx.getSecret(value.secret, passwordMinLength(field.element as HTMLInputElement));
       if (!secret) return { ok: false, reason: PASSWORD_MISSING };
       typeInto(field.element as HTMLInputElement, secret);
       return { ok: true, valueText: '••••••••' };

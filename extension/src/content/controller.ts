@@ -182,7 +182,7 @@ export class AutofillController {
   private fillContext(): FillContext {
     return {
       getDocument: (kind) => call<DocumentResponse>(() => this.send({ type: 'getDocument', kind })),
-      getSecret: (name) => call<string | null>(() => this.send({ type: 'getSecret', name })),
+      getSecret: (name, minLength) => call<string | null>(() => this.send({ type: 'getSecret', name, ...(minLength && { minLength }) })),
     };
   }
 
