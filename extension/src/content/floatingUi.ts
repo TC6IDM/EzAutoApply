@@ -72,6 +72,8 @@ export class FloatingUi {
   private progress: FillProgress | null = null;
 
   constructor(onAutofill: () => void, onRun: (stop: boolean) => void = () => {}) {
+    // A content script orphaned by an extension reload leaves its button behind; this one replaces it.
+    document.getElementById(OWN_UI_ID)?.remove();
     this.host = document.createElement('div');
     this.host.id = OWN_UI_ID;
     const root = this.host.attachShadow({ mode: 'closed' });
