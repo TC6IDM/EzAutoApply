@@ -20,7 +20,7 @@ beforeEach(() => {
  * controlled by Greenhouse) but open from the "Toggle flyout" button; the location box
  * only searches on typed input.
  */
-function mountGreenhouseSelect(id: string, label: string, options: string[], opts: { searchOnly?: boolean } = {}) {
+function mountGreenhouseSelect(id: string, label: string, options: string[], opts: { searchOnly?: boolean; limit?: number } = {}) {
   const wrap = document.createElement('div');
   wrap.className = 'select__container';
   wrap.innerHTML = `
@@ -62,7 +62,9 @@ function mountGreenhouseSelect(id: string, label: string, options: string[], opt
   wrap.querySelector('button')?.addEventListener('click', () => (menu ? close() : open(options)));
   input.addEventListener('input', (e) => {
     // Only real typing searches.
-    if (e instanceof InputEvent && e.inputType === 'insertText') open(options.filter((o) => o.toLowerCase().includes(input.value.toLowerCase())));
+    // Every word typed must appear in the option; the search shows at most `limit` results.
+    const words = input.value.toLowerCase().split(/[\s,]+/).filter(Boolean);
+    if (e instanceof InputEvent && e.inputType === 'insertText') open(options.filter((o) => words.every((w) => o.toLowerCase().includes(w))).slice(0, opts.limit ?? 50));
   });
   input.addEventListener('keydown', (e) => e.key === 'Escape' && close());
   return { chosen: () => value.querySelector('.select__single-value')?.textContent ?? '' };
@@ -85,6 +87,15 @@ describe('Greenhouse dropdowns', () => {
     expect(matchRules(f)?.key).toBe('location');
     expect(await fillField(f, res(f, 'Toronto, ON', 'location'), ctx)).toMatchObject({ ok: true, valueText: 'Toronto, Ontario, Canada' });
     expect(loc.chosen()).toBe('Toronto, Ontario, Canada');
+  });
+
+  it('searches "city region" when the city alone only shows other places with that name', { timeout: 20000 }, async () => {
+    // Greenhouse shows 10 results; a common town name fills them with other countries' towns.
+    const others = ['Virginia, United States', 'New Jersey, United States', 'England, United Kingdom', 'Connecticut, United States', 'California, United States', 'Tasmania, Australia', 'Maine, United States', 'Michigan, United States', 'Maryland, United States', 'Indiana, United States'];
+    const loc = mountGreenhouseSelect('candidate-location', 'Location (City)', [...others.map((r) => `Springfield, ${r}`), 'Springfield, Ontario, Canada'], { searchOnly: true, limit: 10 });
+    const [f] = scanFields(document);
+    expect(await fillField(f, res(f, 'Springfield, Ontario', 'location'), ctx)).toMatchObject({ ok: true, valueText: 'Springfield, Ontario, Canada' });
+    expect(loc.chosen()).toBe('Springfield, Ontario, Canada');
   });
 
   it('matches locations by city plus region or country', () => {

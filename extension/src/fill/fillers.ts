@@ -676,6 +676,13 @@ function searchTextFor(want: string): string {
   return normalize(full).split(' ').slice(0, 2).join(' ');
 }
 
+/** "Woodbridge, ON" → "woodbridge ontario": a location's city and its region in full, or null when it has no region. */
+function locationSearchText(want: string): string | null {
+  const [city, region] = want.split(',').map((s) => s.trim());
+  if (!city || !region) return null;
+  return normalize(`${city} ${canonicalRegion(region) ?? canonicalCountry(region) ?? region}`);
+}
+
 async function fillCombobox(field: FieldDescriptor, res: Resolution, allowFallback = true): Promise<FillOutcome> {
   const el = field.element;
   const value = res.value;
@@ -727,6 +734,17 @@ async function fillCombobox(field: FieldDescriptor, res: Resolution, allowFallba
     const after = (await waitForOptions(el, known, 2500, true)) ?? [];
     if (after.length) seen = after;
     choice = pick(after);
+    // A common town name fills a location search's few results with other places of that name
+    // (Greenhouse shows 10): search again with the region too, "woodbridge ontario".
+    const narrower = input && !choice && (res.key === 'location' || res.key === 'city') ? locationSearchText(wantText) : null;
+    if (input && narrower && narrower !== search) {
+      typed = narrower;
+      typeSearch(input, narrower);
+      await sleep(300);
+      const again = (await waitForOptions(el, known, 2500, true)) ?? [];
+      if (again.length) seen = again;
+      choice = pick(again);
+    }
   }
 
   if (!choice) {
