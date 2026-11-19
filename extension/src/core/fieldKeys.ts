@@ -524,7 +524,10 @@ export const FIELD_KEYS: FieldKeyDef[] = [
     description: 'Degree earned or pursued, such as a Bachelor’s or Master’s',
     label: [/\bdegree( type| level| name| obtained| earned)?\b/, /\b(level|type) of (degree|education)\b/, /\beducation level\b/, /\bhighest (level of )?(education|degree)\b/, /\bqualification\b/],
     attr: [/\bdegree\b/],
-    exclude: [/\b(field|major|area|discipline|subject|do you|have you|are you|pursuing|years)\b/], maxWords: 8,
+    // Long labels only when they ask for the highest one ("What is the highest level of education
+    // you have completed?", Cisco); otherwise a long label is a yes/no question about a degree.
+    exclude: [/\b(field|major|area|discipline|subject|do you|have you|are you|will you|years)\b/, /^(currently |still )?pursuing\b/, /^(?!.*\bhighest\b)(\S+ ){8,}\S/],
+    maxWords: 14,
     resolve: (c) => text(edu(c)?.degree),
   },
   {

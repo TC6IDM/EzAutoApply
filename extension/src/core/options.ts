@@ -81,6 +81,20 @@ export function degreeLevel(text: string): string | null {
   return null;
 }
 
+const DEGREE_SUBJECTS: [string, RegExp][] = [
+  ['engineering', /\b(engineering|b ?eng|m ?eng|beng|meng)\b/],
+  ['business', /\b(business|commerce|bba|b ?comm?)\b/],
+  ['education', /\b(education|b ?ed|m ?ed)\b/],
+  ['science', /\b(science|b ?sc|m ?sc|bsc|msc|b ?s|m ?s)\b/],
+  ['arts', /\b(arts|b ?a|m ?a)\b/],
+];
+
+/** "B.Eng." and "Bachelor of Engineering" are the same subject, so a list of named bachelor's degrees picks that one. */
+function degreeSubject(n: string): string | null {
+  for (const [id, re] of DEGREE_SUBJECTS) if (re.test(n)) return id;
+  return null;
+}
+
 interface Range {
   lo: number;
   hi: number;
@@ -150,7 +164,10 @@ export function scoreOption(label: string, want: string): number {
   if (conceptA && conceptA === conceptOf(b)) return 0.95;
 
   const da = degreeLevel(a);
-  if (da && da === degreeLevel(b)) return 0.9;
+  if (da && da === degreeLevel(b)) {
+    const sa = degreeSubject(a);
+    return sa && sa === degreeSubject(b) ? 0.94 : 0.9;
+  }
 
   const n = numberOf(want);
   if (n !== null && /^\$?\s*[\d,.]+\s*k?\s*(years?)?$/i.test(want.trim())) {

@@ -87,6 +87,21 @@ describe('matchRules: choice questions', () => {
     expect(keyOf({ label, kind: 'select', options: opts('A', 'B') })).toBe(key);
   });
 
+  it.each([
+    'What is the highest level of education you have completed? *',
+    'Highest Degree Obtained or Pursuing',
+    'What is the highest degree you have completed or are currently pursuing? *',
+  ])('"%s" → degree (Cisco, Avature)', (label) => {
+    expect(keyOf({ label, kind: 'select', options: opts("Bachelor's Degree", "Master's Degree") })).toBe('degree');
+  });
+
+  it('keeps long yes/no questions about a degree away from the degree key', () => {
+    const yesNo = opts('Yes', 'No');
+    expect(keyOf({ label: 'Are you currently pursuing further education (e.g., post-secondary education)?', kind: 'select', options: yesNo })).not.toBe('degree');
+    expect(keyOf({ label: 'Will you have completed your degree by the start of the program?', kind: 'select', options: yesNo })).not.toBe('degree');
+    expect(keyOf({ label: 'Pursuing a degree?', kind: 'select', options: yesNo })).not.toBe('degree');
+  });
+
   it('a bool key never matches a free-text field', () => {
     expect(keyOf({ label: 'Are you willing to relocate?', kind: 'text' })).toBeNull();
   });

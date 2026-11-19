@@ -50,6 +50,12 @@ describe('option matching', () => {
   it('matches degree levels', () => {
     expect(degreeLevel('B.S. in Computer Science')).toBe('bachelor');
     expect(pick(["High School", "Associate's Degree", "Bachelor's Degree", "Master's Degree"], 'Bachelor of Science')).toBe("Bachelor's Degree");
+    // Cisco's list, in its order.
+    const cisco = ['Please Select', 'Doctorate', 'High School Diploma/GED', 'Master of Business', "Master's Degree (MS/MA/etc)", 'Other Diploma/Degree/Certification', 'Trade School Graduate', 'Apprenticeship', 'None of the Above', "Associate's Degree (AA/AS/etc)", "Bachelor's Degree (BA/BS /etc)"];
+    expect(pick(cisco, 'Bachelor of Engineering')).toBe("Bachelor's Degree (BA/BS /etc)");
+    const named = ['Associate of Science', 'Bachelor of Arts', 'Bachelor of Business Administration', 'Bachelor of Engineering', 'Bachelor of Science', "Bachelor's equivalent (international or other)", 'Master of Engineering'];
+    expect(pick(named, 'Bachelor of Engineering')).toBe('Bachelor of Engineering');
+    expect(pick(named, 'B.Eng.')).toBe('Bachelor of Engineering');
   });
 
   it('matches EEO answers phrased differently', () => {
