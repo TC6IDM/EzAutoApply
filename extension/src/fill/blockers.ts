@@ -60,15 +60,24 @@ function hasRoom(el: Element): boolean {
 }
 const shownCaptcha = (el: Element) => shown(el) && hasRoom(el);
 
+/**
+ * An element that could be a CAPTCHA widget, not a page or form that only says one is somewhere
+ * (#92: iCIMS puts `has-hcaptcha` on `<body>` while its hCaptcha stays invisible).
+ */
+function captchaBox(el: Element): boolean {
+  if (el.matches('html, body, form, main')) return false;
+  return [...el.classList].some((c) => /captcha|turnstile/i.test(c) && !/^(has|with|uses|no)[-_]/i.test(c));
+}
+
 function captcha(root: ParentNode): Blocker | null {
   for (const frame of deepQueryAll<HTMLIFrameElement>(root, 'iframe')) {
     const src = frame.getAttribute('src') ?? '';
-    if (/size=invisible/.test(src) || frame.closest('.grecaptcha-badge') || !shownCaptcha(frame)) continue;
+    if (/size=invisible|frame=checkbox-invisible/.test(src) || frame.closest('.grecaptcha-badge, [data-size="invisible"]') || !shownCaptcha(frame)) continue;
     const hit = CAPTCHA_FRAME.find(([re]) => re.test(src));
     if (hit) return { kind: 'captcha', detail: `${hit[1]} on the page`, element: frame };
   }
   for (const el of deepQueryAll<HTMLElement>(root, '.g-recaptcha, .h-captcha, .cf-turnstile, [class*="captcha" i]')) {
-    if (el.closest('.grecaptcha-badge') || el.getAttribute('data-size') === 'invisible' || !shownCaptcha(el)) continue;
+    if (!captchaBox(el) || el.closest('.grecaptcha-badge') || el.getAttribute('data-size') === 'invisible' || !shownCaptcha(el)) continue;
     return { kind: 'captcha', detail: 'a CAPTCHA box on the page', element: el };
   }
   for (const el of deepQueryAll<HTMLElement>(root, 'label, h1, h2, h3, p, span, div[role="heading"]')) {
