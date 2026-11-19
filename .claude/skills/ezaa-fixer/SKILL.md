@@ -67,6 +67,10 @@ leading slash (Git Bash rewrites `/tickets` into a Windows path; the helper undo
      ("Willing to work weekends?"). → step 4.
    - **Code gap**: a known key wasn't recognised ("Mobile #" for `phone`), the value was right
      but no option matched, a widget didn't take the value, or Next wasn't found. → step 5.
+     A `handFilled` ticket whose field status is `notScanned` is a field the scan **never
+     found** (an applier filled it by hand; the extension then saved its markup, #98): a scan
+     gap in `fill/scan.ts` / `fill/labels.ts`. Its snippet is the fixture; the failing test is
+     that `scanFields` doesn't list it. `seen` means the scan found it but nothing filled it.
    - **Attestation, or nothing in the records supports an answer** → `needsYou`, with a note
      saying what to answer.
 4. **Data gap.** Find the answer in the knowledge layer (ai-job-search's profile files and the

@@ -20,6 +20,7 @@ import {
 } from '../messages';
 import type { FloatingUi } from './floatingUi';
 import { flash } from './highlight';
+import { cleanHtml } from './missed';
 
 export type Send = (msg: ContentToBackground) => Promise<unknown>;
 
@@ -68,18 +69,8 @@ export function readValue(f: FieldDescriptor): AnswerValue {
  */
 export function debugHtml(f: FieldDescriptor): string {
   const container = f.element.closest('[data-automation-id^="formField"]') ?? f.element.parentElement?.parentElement ?? f.element;
-  const clone = container.cloneNode(true) as Element;
-  // Noise that says nothing about the field (and can be large): scripts, styles, icons.
-  for (const n of Array.from(clone.querySelectorAll('script, style, noscript, svg, template'))) n.remove();
-  for (const n of [clone, ...Array.from(clone.querySelectorAll('*'))]) {
-    n.removeAttribute('value');
-    n.removeAttribute('style');
-    if (n instanceof HTMLInputElement || n instanceof HTMLTextAreaElement) n.value = '';
-    // A textarea's text is its starting value, and outerHTML writes it out.
-    if (n instanceof HTMLTextAreaElement) n.textContent = '';
-  }
   // Profile values in the text around it are replaced by the background before an incident leaves (#18).
-  return clone.outerHTML.replace(/\s+/g, ' ').slice(0, DEBUG_HTML_MAX);
+  return cleanHtml(container, DEBUG_HTML_MAX);
 }
 
 /** Enough for a Workday form field with its open list; incidents allow up to 30 KB (incidents/incident.ts). */

@@ -16,7 +16,7 @@ export type Model = (typeof MODELS)[number];
 /** What any agent it starts runs on: the appliers' choice, or Opus for the Fixer. */
 export type AgentModel = Model | 'opus';
 /** The agents that aren't appliers. */
-const HELPERS = ['scout', 'fixer'];
+const HELPERS = ['scout', 'fixer', 'outreach'];
 
 /** Everything an applier may use: the bridge helpers, reading the records, its own notes, the fleet browser. */
 export const APPLIER_TOOLS = [
@@ -65,6 +65,27 @@ export const SCOUT_TOOLS = [
 
 export function scoutArgs(top: number): string[] {
   return ['-p', `/scout --top ${top}`, '--model', 'sonnet', ...STREAM, '--allowedTools', ...SCOUT_TOOLS];
+}
+
+/**
+ * Outreach (#97): with its switch on, one headless Sonnet runs ai-job-search's `/prospects` a day:
+ * it researches a few people at companies that fit, through web search only, and drafts messages
+ * into the private prospects file through `prospects.py`. No browser and nothing that sends.
+ */
+export const OUTREACH_TOOLS = [
+  'Bash(python tools/applier.py switches)',
+  'Bash(python tools/prospects.py:*)',
+  'Read',
+  'Glob',
+  'Grep',
+  'WebFetch',
+  'WebSearch',
+  'Skill',
+  'ToolSearch',
+];
+
+export function outreachArgs(): string[] {
+  return ['-p', '/prospects', '--model', 'sonnet', ...STREAM, '--disallowedTools', 'PowerShell', '--allowedTools', ...OUTREACH_TOOLS];
 }
 
 /**
@@ -336,6 +357,18 @@ export class Launcher {
 
   fixerRunning(): boolean {
     return this.procs.has('fixer');
+  }
+
+  outreachRunning(): boolean {
+    return this.procs.has('outreach');
+  }
+
+  /** Outreach (#97): one `/prospects` run in ai-job-search. One at a time. */
+  launchOutreach(): boolean {
+    if (!this.claude) throw new Error('Claude Code not found: set EZAA_CLAUDE to the claude executable');
+    if (this.outreachRunning()) return false;
+    this.start('outreach', 'sonnet', outreachArgs());
+    return true;
   }
 
   /** The Scout's last run, while none runs now: how it ended. */

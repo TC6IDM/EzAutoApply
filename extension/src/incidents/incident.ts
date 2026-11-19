@@ -12,7 +12,8 @@ import type { RunState } from '../run/types';
  * Everything here is pure, so the redaction is unit-tested: no profile value may survive.
  */
 
-export type IncidentKind = 'unmatched' | 'wrongValue' | 'widgetFailed' | 'rejected' | 'navigation';
+/** `handFilled`: an applier filled a field itself that the extension didn't fill or never found (#98). */
+export type IncidentKind = 'unmatched' | 'wrongValue' | 'widgetFailed' | 'rejected' | 'navigation' | 'handFilled';
 
 export interface Incident {
   id: string;
@@ -33,6 +34,8 @@ export interface Incident {
   /** The HTML around the field: values stripped by the content script, profile values replaced here. ≤ MAX_SNIPPET. */
   domSnippet?: string;
   stop?: { reason: string; detail?: string };
+  /** The applier's incident (label only) this one stands in for, with the page's markup (#98). */
+  replaces?: string;
 }
 
 export const MAX_SNIPPET = 30_000;
@@ -202,6 +205,25 @@ export function runIncidents(run: RunState, fields: FieldReport[], ctx: Incident
     return [{ ...base(c, 'navigation'), stop: { reason: stop.reason, ...(stop.detail && { detail: redact(stop.detail, r) }) } }];
   }
   return [];
+}
+
+/**
+ * A field an applier reported by its label (#98), now with the page's markup around it: the
+ * Fixer gets a fixture to teach the scan with. `seen` says whether the scan found a control there.
+ */
+export function missedIncident(
+  ctx: IncidentContext,
+  m: { label: string; html: string; seen: boolean; frameId: number; kind: IncidentKind; note?: string; replaces?: string },
+  r: Redaction[],
+): Incident {
+  const said = m.seen ? 'The scan found a control here but did not fill it.' : 'The scan never found this field.';
+  return {
+    ...base(ctx, m.kind),
+    field: { id: '', frameId: m.frameId, label: redact(m.label, r), kind: 'unknown', options: [], required: false, status: m.seen ? 'seen' : 'notScanned' },
+    note: redact(m.note ? `${m.note} ${said}` : said, r),
+    domSnippet: redact(m.html, r).slice(0, MAX_SNIPPET),
+    ...(m.replaces && { replaces: m.replaces }),
+  };
 }
 
 /** The same problem on the same page is filed once (reports are re-sent after every edit). */
