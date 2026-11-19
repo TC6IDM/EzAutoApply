@@ -80,7 +80,9 @@ leading slash (Git Bash rewrites `/tickets` into a Windows path; the helper undo
    ```bash
    git worktree add ../EzAutoApply-fix -b fix/<yyyy-mm-dd>-<slug> origin/main   # once; reuse it after
    ```
-   No `extension/node_modules` yet → `cd extension && npm ci` first.
+   **Every command from the worktree's root, one per call, with the Bash tool** (#89): never
+   `cd`, `Set-Location`, `&&`, `;`, `|` or `$()`. A headless run refuses them and nobody is
+   there to approve. No `extension/node_modules` yet → `npm ci --prefix extension --no-audit --no-fund`.
    1. **Fixture** from the redacted `domSnippet`: a DOM fixture in `tests/unit/fixtures.ts`
       (or `tests/e2e/pages/<ats>-<widget>.html` when only a real browser shows it).
    2. **Failing test first**: `tests/unit/rules.test.ts` for a missed key (CLAUDE.md: a new
@@ -88,9 +90,12 @@ leading slash (Git Bash rewrites `/tickets` into a Windows path; the helper undo
       test file for a filler, `advance.test.ts` for navigation. Run it; see it fail.
    3. **The fix**, where CLAUDE.md's architecture says it belongs: `core/fieldKeys.ts`
       (regex / `variants`), `core/options.ts`, `fill/fillers.ts` / `scan.ts`, `fill/advance.ts`.
-   4. **Checks**, all from `extension/` (PowerShell, uppercase `C:\`): `npm run compile`,
-      `npm test`, `npm run replay` (no case may get worse; never `EZAA_REPLAY_ACCEPT=1` on
-      your own), `npm run build:fleet`.
+   4. **Checks**, each from the root through `npm --prefix extension`: one test file is
+      `npm --prefix extension test -- tests/unit/<file>.test.ts -t "<name>"`; then
+      `npm --prefix extension run compile`, `npm --prefix extension test`,
+      `npm --prefix extension run replay` (no case may get worse; never `EZAA_REPLAY_ACCEPT=1`
+      on your own), `npm --prefix extension run build:fleet`. (`npx vitest` from the root
+      fetches a vitest without the extension's packages.)
    5. All green → `POST /fleet/reload`, resolve `fixed` with the note "branch, files, test
       added, replay result". Two honest tries and still red → `git stash` the attempt on the
       branch, resolve `cantFix` with what was tried; the applier fills that one field itself.

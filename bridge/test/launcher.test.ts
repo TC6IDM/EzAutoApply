@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
-import { ACTIVITY_KEPT, activityOf, APPLIER_TOOLS, applierArgs, findClaude, FIXER_TOOLS, fixerArgs, type Git, Launcher, SCOUT_TOOLS, scoutArgs } from '../src/launcher.ts';
+import { ACTIVITY_KEPT, activityOf, APPLIER_TOOLS, applierArgs, findClaude, FIXER_CHECKS, FIXER_TOOLS, fixerArgs, type Git, Launcher, SCOUT_TOOLS, scoutArgs } from '../src/launcher.ts';
 import { QueueStore } from '../src/queue.ts';
 import { createBridge } from '../src/server.ts';
 
@@ -241,6 +241,12 @@ test('the Fixer: Opus running /ezaa-fixer in its worktree, editing only extensio
   assert.deepEqual(toolsOf(args), FIXER_TOOLS);
   assert.ok(!FIXER_TOOLS.some((t) => t === 'Bash' || t === 'Edit' || t === 'Write' || t.startsWith('Write(') || /git (commit|push)|gh pr|curl/.test(t)), 'no open shell, no commits, no pushes, no curl');
   assert.ok(!args.includes('--chrome'), 'the Fixer works through the bridge, not a browser');
+  // #89: no cd, no PowerShell; every check it is told to run is on its list.
+  assert.deepEqual(args.slice(args.indexOf('--disallowedTools'), args.indexOf('--disallowedTools') + 2), ['--disallowedTools', 'PowerShell']);
+  assert.ok(!FIXER_TOOLS.some((t) => /^Bash\(cd\b/.test(t)));
+  assert.match(args[1], /never cd/);
+  const allowed = (cmd: string) => FIXER_TOOLS.some((t) => { const m = /^Bash\((.*):\*\)$/.exec(t); return !!m && cmd.startsWith(m[1]); });
+  for (const check of FIXER_CHECKS) assert.ok(allowed(check), `allowed: ${check}`);
 });
 
 /** Records git calls; `worktree add` makes the folder so the next start reuses it. */
