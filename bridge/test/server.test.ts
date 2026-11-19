@@ -83,6 +83,30 @@ test('queue, claim, Run, the extension picks it up, and its report sets the job\
   assert.equal((await call('GET', '/tabs/nope/status')).status, 404);
 });
 
+test('a job marked submitted (the needs-you card’s "I submitted it", #94) frees its applier and closes its tab once', async () => {
+  queue.add([{ id: 'j9', applyUrl: 'https://jobs.lever.co/acme/9', company: 'Acme' }]);
+  assert.equal(queue.claim('w9', (j) => j.id === 'j9')?.id, 'j9');
+  await call('POST', '/queue/j9/status', { status: 'needsYou', note: 'captcha', tabUrl: 'https://jobs.lever.co/acme/9/apply' });
+  await call('GET', '/ext/commands');
+  await call('POST', '/queue/j9/status', { status: 'submitted', note: 'marked in the Office' });
+  assert.equal(queue.get('j9')?.worker, undefined);
+  assert.deepEqual((await call('GET', '/ext/commands')).json.map((c: { type: string; jobId: string; urlPrefix?: string }) => [c.type, c.jobId, c.urlPrefix]),
+    [['close', 'j9', 'https://jobs.lever.co/acme/9/apply']]);
+  await call('POST', '/queue/j9/status', { status: 'submitted', note: 'again' });
+  assert.deepEqual((await call('GET', '/ext/commands')).json, [], 'only when it becomes submitted');
+});
+
+test('an applier that started again takes back its job’s tab into its new group (#95)', async () => {
+  queue.add([{ id: 'j10', applyUrl: 'https://jobs.lever.co/acme/10', company: 'Acme' }]);
+  queue.setStatus('j10', 'needsYou', { tabUrl: 'https://jobs.lever.co/acme/10/apply' });
+  await call('GET', '/ext/commands');
+  assert.equal((await call('POST', '/queue/j10/adopt', { groupId: 1923492873 })).status, 202);
+  assert.deepEqual((await call('GET', '/ext/commands')).json.map((c: { type: string; jobId: string; groupId: number; urlPrefix?: string }) => [c.type, c.jobId, c.groupId, c.urlPrefix]),
+    [['adopt', 'j10', 1923492873, 'https://jobs.lever.co/acme/10/apply']]);
+  assert.equal((await call('POST', '/queue/j10/adopt', { groupId: 'x' })).status, 400);
+  assert.equal((await call('POST', '/queue/nope/adopt', { groupId: 1 })).status, 404);
+});
+
 test('a Run with no address goes to the job’s own', async () => {
   await call('POST', '/run', { jobId: 'j2' });
   const [cmd] = (await call('GET', '/ext/commands')).json;

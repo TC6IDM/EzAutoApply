@@ -62,6 +62,10 @@ export type Command =
   | { id: string; type: 'stopAll'; at: number }
   /** Bring the job's tab and window to the front (the ready list's "go to tab", #29). */
   | { id: string; type: 'focus'; jobId: string; at: number }
+  /** The job was submitted (#94): close its tab (the one its Run used, else the one the applier named). */
+  | { id: string; type: 'close'; jobId: string; urlPrefix?: string; at: number }
+  /** An applier started again in a new tab group (#95): move the job's tab into that group. */
+  | { id: string; type: 'adopt'; jobId: string; groupId: number; urlPrefix?: string; at: number }
   /** The Fixer rebuilt the fleet build: reload it (only "EzAutoApply (fleet)" obeys; #32). */
   | { id: string; type: 'reload'; at: number };
 
@@ -250,6 +254,17 @@ export function createBridge(o: BridgeOptions) {
     return cmd;
   };
 
+  /**
+   * A job's status, and when it has just become `submitted` (the Office's "I submitted it", an
+   * applier's mark, the extension seeing the thank-you page), its tab closes (owner, #94).
+   */
+  const setJobStatus = (id: string, status: JobStatus, more: { note?: string; page?: number; tabUrl?: string } = {}): QueueJob | null => {
+    const was = o.queue.get(id)?.status;
+    const job = o.queue.setStatus(id, status, more);
+    if (job && status === 'submitted' && was !== 'submitted') queueCommand({ type: 'close', jobId: id, ...(job.tabUrl && { urlPrefix: job.tabUrl }) });
+    return job;
+  };
+
   const tokenOk = (req: IncomingMessage, url?: URL) => {
     // The Office page's EventSource can't send headers, so its stream alone takes the token in the query.
     const given = url?.searchParams.get('token') ?? (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
@@ -334,7 +349,7 @@ export function createBridge(o: BridgeOptions) {
       const b = await body(req);
       const status = str(b.status, 'status') as JobStatus;
       if (!JOB_STATUSES.includes(status)) throw new HttpError(400, `status must be one of ${JOB_STATUSES.join(', ')}`);
-      const job = o.queue.setStatus(decodeURIComponent(hit[1]), status, {
+      const job = setJobStatus(decodeURIComponent(hit[1]), status, {
         note: typeof b.note === 'string' ? b.note : undefined,
         page: typeof b.page === 'number' ? b.page : undefined,
         tabUrl: typeof b.tabUrl === 'string' ? b.tabUrl : undefined,
@@ -396,6 +411,16 @@ export function createBridge(o: BridgeOptions) {
         const agentAnswered = (j.agentAnswers ?? []).map((a) => fields.find((f) => f.id === a.fieldId)?.label ?? a.fieldId);
         return { ...j, agentAnswered, maxReadyOpen: o.maxReadyOpen ?? MAX_READY_OPEN };
       })];
+    }
+    hit = /^\/queue\/([^/]+)\/adopt$/.exec(p);
+    if (m === 'POST' && hit) {
+      // Each start of an applier is a new Claude in Chrome tab group; it takes back the job's old tab (#95).
+      const jobId = decodeURIComponent(hit[1]);
+      const job = o.queue.get(jobId);
+      if (!job) throw new HttpError(404, 'No such job');
+      const groupId = Number((await body(req)).groupId);
+      if (!Number.isInteger(groupId) || groupId < 0) throw new HttpError(400, 'groupId must be the tab group id tabs_context_mcp gives');
+      return [202, { commandId: queueCommand({ type: 'adopt', jobId, groupId, ...(job.tabUrl && { urlPrefix: job.tabUrl }) }).id }];
     }
     hit = /^\/ready\/([^/]+)\/focus$/.exec(p);
     if (m === 'POST' && hit) {
@@ -549,7 +574,7 @@ export function createBridge(o: BridgeOptions) {
         o.queue.setStatus(jobId, 'running', { note: `at Submit (${run.stop.detail ?? 'Submit'}): the applier is checking every field`, page: run.page });
       } else if (run.stop && AFTER_RUN[run.stop.reason]) {
         const note = run.stop.detail ? `${run.stop.reason}: ${run.stop.detail}` : run.stop.reason;
-        o.queue.setStatus(jobId, AFTER_RUN[run.stop.reason]!, { note, page: run.page });
+        setJobStatus(jobId, AFTER_RUN[run.stop.reason]!, { note, page: run.page });
       }
       return [200, { ok: true }];
     }

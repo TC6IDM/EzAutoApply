@@ -745,7 +745,7 @@ table.src tr.skip td { color: var(--ink-3); }
     }
     if (tab === 'needs') {
       h += S.needs.length ? S.needs.map((n) => `<article class="card"><div class="card-top"><strong>${esc(n.company)}</strong><span class="tier">${esc(n.ats)}</span></div><div class="card-meta">${meta(n.role, n.at)}</div><p class="msg">${esc(n.reason)}</p>
-        <div class="card-actions"><button type="button" class="btn small" data-act="goJob" data-arg="${esc(n.id)}">Go to its tab</button>${n.worker ? `<button type="button" class="btn small" data-act="sendBack" data-arg="${esc(n.id)}" title="You fixed what it waited on: ${esc(n.worker)} carries on from its tab">Send back to ${esc(n.worker)}</button>` : ''}<button type="button" class="btn small" data-act="requeue" data-arg="${esc(n.id)}">Queue it again</button><button type="button" class="btn small" data-act="skip" data-arg="${esc(n.id)}">Skip it</button></div></article>`).join('') : '<p class="empty">Nothing needs you.</p>';
+        <div class="card-actions"><button type="button" class="btn small" data-act="goJob" data-arg="${esc(n.id)}">Go to its tab</button>${n.worker ? `<button type="button" class="btn small" data-act="sendBack" data-arg="${esc(n.id)}" title="You fixed what it waited on: ${esc(n.worker)} carries on from its tab">Send back to ${esc(n.worker)}</button>` : ''}<button type="button" class="btn small" data-act="submitted" data-arg="${esc(n.id)}" title="You applied to it yourself: it counts as sent and its tab closes">I submitted it</button><button type="button" class="btn small" data-act="requeue" data-arg="${esc(n.id)}">Queue it again</button><button type="button" class="btn small" data-act="skip" data-arg="${esc(n.id)}">Skip it</button></div></article>`).join('') : '<p class="empty">Nothing needs you.</p>';
     }
     if (tab === 'answers') {
       h += S.answers.length ? S.answers.map((x) => `<article class="card"><div class="card-meta">${meta(x.company, 'answered by ' + x.by)}</div><strong>${esc(x.q)}</strong></article>`).join('') : '<p class="empty">No agent answers on the ready jobs.</p>';
@@ -843,7 +843,7 @@ table.src tr.skip td { color: var(--ink-3); }
         tell(post('/settings', { [group]: { [key]: on } }, 'PUT'), `${on ? 'Switched on' : 'Switched off'}. Agents pick it up at their next step.`);
         break;
       }
-      case 'submitted': tell(post(`/queue/${path(arg)}/status`, { status: 'submitted', note: 'marked in the Office' }), 'Marked as submitted. /queue sync-tracker adds it to your tracker.'); break;
+      case 'submitted': tell(post(`/queue/${path(arg)}/status`, { status: 'submitted', note: 'marked in the Office' }), 'Marked as submitted: its tab closes in a few seconds. /queue sync-tracker adds it to your tracker.'); break;
       case 'requeue': tell(post(`/queue/${path(arg)}/status`, { status: 'queued', note: 'queued again from the Office' }), 'Back in the queue'); break;
       case 'skip': tell(post(`/queue/${path(arg)}/status`, { status: 'skipped', note: 'skipped in the Office' }), 'Skipped'); break;
       // You fixed what it waited on (#82): the applier that held it carries on from its tab.

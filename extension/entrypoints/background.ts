@@ -257,6 +257,13 @@ async function syncBridge(): Promise<void> {
 }
 
 /** The Run a bridge job is on (the latest one kept in session storage), or undefined. */
+/** A job's open tab: the one its Run used, else one showing `urlPrefix` (the address its applier recorded). */
+async function jobTabId(jobId: string, urlPrefix?: string): Promise<number | undefined> {
+  const ran = await runForJob(jobId);
+  if (ran && (await browser.tabs.get(ran.tabId).catch(() => null))) return ran.tabId;
+  return urlPrefix ? findJobTab(await browser.tabs.query({}), urlPrefix)?.id : undefined;
+}
+
 async function runForJob(jobId: string): Promise<RunState | undefined> {
   const all = await browser.storage.session.get(null);
   return Object.values(all).find((v) => (v as RunState)?.jobId === jobId && typeof (v as RunState).tabId === 'number') as RunState | undefined;
@@ -342,6 +349,18 @@ async function onBridgeCommand(client: BridgeClient, cmd: BridgeCommand): Promis
     run.status = 'stopped';
     run.stop = { reason: 'interrupted', detail: 'No open tab shows this job' };
     await client.reportRun(cmd.jobId, run, []);
+    return;
+  }
+  if (cmd.type === 'close') {
+    // Submitted (#94): its tab closes a few seconds later, like after the confirmation page.
+    const tabId = await jobTabId(cmd.jobId, cmd.urlPrefix);
+    if (tabId !== undefined) setTimeout(() => browser.tabs.remove(tabId).catch(() => {}), CLOSE_AFTER_SUBMIT_MS);
+    return;
+  }
+  if (cmd.type === 'adopt') {
+    // The applier started again in a new tab group (#95): the job's tab joins it, and the emptied old group goes.
+    const tabId = await jobTabId(cmd.jobId, cmd.urlPrefix);
+    if (tabId !== undefined) await browser.tabs.group({ tabIds: [tabId], groupId: cmd.groupId }).catch(() => {});
     return;
   }
   const run = await runForJob(cmd.jobId);

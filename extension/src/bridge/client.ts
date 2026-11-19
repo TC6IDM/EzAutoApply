@@ -16,6 +16,10 @@ export type BridgeCommand =
   | { id: string; type: 'stopAll' }
   /** The ready list's "go to tab" (#29): bring the job's tab and window to the front. */
   | { id: string; type: 'focus'; jobId: string }
+  /** The job was submitted (#94): close its tab, the one its Run used, else one showing `urlPrefix`. */
+  | { id: string; type: 'close'; jobId: string; urlPrefix?: string }
+  /** An applier started again in a new tab group (#95): move the job's tab into that group. */
+  | { id: string; type: 'adopt'; jobId: string; groupId: number; urlPrefix?: string }
   /** The Fixer rebuilt the fleet build (#32): reload it so the fix takes effect. */
   | { id: string; type: 'reload' };
 
