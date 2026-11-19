@@ -4,7 +4,8 @@ import { FIELD_KEY_MAP } from '../../core/fieldKeys';
 import { type AnswerValue, DOC_KIND_LABELS, type DocKind, type DocumentMeta } from '../../core/types';
 import { getSettings, hasProfile, listDocuments, saveAnswer } from '../../db';
 import type { FieldReport, FillStatus } from '../../fill/types';
-import type { AdvanceTarget, SaveAnswerRequest, SendToFleetResult } from '../../messages';
+import { canAsk } from '../../bridge/client';
+import { type AdvanceTarget, type AskState, askKey, type SaveAnswerRequest, type SendToFleetResult } from '../../messages';
 import { NEXT_STEP, type RunState, STOP_TEXT, stepLine } from '../../run/types';
 import type { Goto } from '../App';
 import { type ActiveTab, send, setDocSelection, useTabState } from '../api';
@@ -128,7 +129,7 @@ function QuestionTitle(props: { field: FieldReport; tabId: number; compact?: boo
 }
 
 /** One field that needs an answer (or a second look). */
-function FieldCard(props: { field: FieldReport; tabId: number; host: string; goto: Goto }) {
+function FieldCard(props: { field: FieldReport; tabId: number; host: string; goto: Goto; ask?: { state?: AskState } }) {
   const { field, tabId, host } = props;
   const [editing, setEditing] = useState(field.status === 'needs' || field.status === 'skipped');
   const [value, setValue] = useState<AnswerValue>(field.current !== undefined && !isBlank(field.current) ? field.current : emptyAnswer(field));
@@ -271,8 +272,50 @@ function FieldCard(props: { field: FieldReport; tabId: number; host: string; got
           <CopyDetails field={field} host={host} />
         </div>
       )}
+      {props.ask && <AskAgent field={field} tabId={tabId} ask={props.ask.state} />}
       {error && <p className="error-text">{error}</p>}
     </li>
+  );
+}
+
+/**
+ * "Ask an agent" (#103): the bridge's Answerer answers this field from the owner's records. The
+ * answer fills for review and is saved unapproved; a question it won't answer comes back with why.
+ */
+function AskAgent(props: { field: FieldReport; tabId: number; ask?: AskState }) {
+  const { field, tabId, ask } = props;
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState('');
+  const go = async () => {
+    setSending(true);
+    setError('');
+    try {
+      await send({ type: 'askAgent', tabId, frameId: field.frameId, fieldId: field.id });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSending(false);
+    }
+  };
+  if (ask?.status === 'asking') {
+    return (
+      <p className="note pending" role="status">
+        <span className="spinner" aria-hidden="true" />
+        An agent is answering this from your records…
+      </p>
+    );
+  }
+  return (
+    <>
+      {ask?.status === 'answered' && <p className="note" role="status">The agent’s answer is filled in: check it on the page. It waits in Answers for your approval.</p>}
+      {ask?.status === 'stopped' && <p className="note" role="status">The agent left this one for you: {ask.why}</p>}
+      <div className="row">
+        <Button small disabled={sending} onClick={go} title="An agent answers this from your records; it fills for you to check">
+          {ask ? 'Ask the agent again' : 'Ask an agent'}
+        </Button>
+      </div>
+      {error && <p className="error-text">{error}</p>}
+    </>
   );
 }
 
@@ -400,14 +443,14 @@ function AdvanceButton(props: { tabId: number; enabled: boolean; onError(message
  * Run to Submit (#9, #13): fills every page, presses Next / Sign in / Create account, and stops
  * before Submit. Shows the page it's on while it runs, and why it stopped and what to do after.
  */
-function RunPanel(props: { tabId: number; run: RunState | null; enabled: boolean; onError(message: string): void }) {
+function RunPanel(props: { tabId: number; run: RunState | null; enabled: boolean; ai: boolean; onError(message: string): void }) {
   const { tabId, run, enabled, onError } = props;
   const [starting, setStarting] = useState(false);
   const running = run?.status === 'running';
-  const start = async () => {
+  const start = async (ai = false) => {
     setStarting(true);
     try {
-      await send({ type: 'startRun', tabId });
+      await send({ type: 'startRun', tabId, ai });
     } catch (e) {
       onError((e as Error).message);
     } finally {
@@ -421,12 +464,24 @@ function RunPanel(props: { tabId: number; run: RunState | null; enabled: boolean
     <div className="run-panel">
       {running ? (
         <Button className="run" onClick={stop}>
-          Stop Run
+          {run.ai ? 'Stop Run with AI' : 'Stop Run'}
         </Button>
       ) : (
-        <Button className="run" onClick={start} disabled={!enabled || starting} title="Fills every page and presses Next, then stops before Submit. It never presses Submit.">
-          {run ? 'Run to Submit again' : 'Run to Submit'}
-        </Button>
+        <div className="row run-buttons">
+          <Button className="run" onClick={() => start()} disabled={!enabled || starting} title="Fills every page and presses Next, then stops before Submit. It never presses Submit.">
+            {run ? 'Run to Submit again' : 'Run to Submit'}
+          </Button>
+          {props.ai && (
+            <Button
+              className="run"
+              onClick={() => start(true)}
+              disabled={!enabled || starting}
+              title="Run to Submit, and what it can't answer (long answers, required questions) goes to an agent that writes it from your records. Still stops before Submit."
+            >
+              Run with AI
+            </Button>
+          )}
+        </div>
       )}
       {running && (
         // Not a live region: the step line changes with every page. The stop is announced.
@@ -483,6 +538,77 @@ function SendToFleet(props: { tabId: number; url: string }) {
   );
 }
 
+/**
+ * "Report a field" (#114): the owner says what went wrong on this page ("Notice period wasn't
+ * found", "Degree gave the wrong answer"). The page's form (values stripped, profile values
+ * replaced) goes to the bridge, whose Reporter logs a GitHub issue for the Fixer or a sprint.
+ */
+function ReportField(props: { tabId: number; url: string }) {
+  const { tabId, url } = props;
+  const [open, setOpen] = useState(false);
+  const [note, setNote] = useState('');
+  const [sending, setSending] = useState(false);
+  const [said, setSaid] = useState<{ ok: boolean; text: string } | null>(null);
+  useEffect(() => {
+    setSaid(null);
+    setOpen(false);
+  }, [tabId, url]);
+  const go = async () => {
+    setSending(true);
+    try {
+      const r = await send<{ id: string; reporter: boolean }>({ type: 'reportField', tabId, note });
+      setSaid({
+        ok: true,
+        text: r.reporter
+          ? 'Sent. An agent is looking at the page and will log an issue for it.'
+          : 'Saved on this computer, but the bridge can’t start the Reporter (Claude Code or the EzAutoApply folder wasn’t found).',
+      });
+      setNote('');
+      setOpen(false);
+    } catch (e) {
+      setSaid({ ok: false, text: (e as Error).message });
+    } finally {
+      setSending(false);
+    }
+  };
+  return (
+    <div className="report-field">
+      {open ? (
+        <>
+          <label className="field">
+            <span>What’s wrong on this page?</span>
+            <textarea
+              rows={3}
+              value={note}
+              maxLength={2000}
+              placeholder="e.g. “Notice period” wasn’t found · “Degree” got the wrong answer"
+              onChange={(e) => setNote(e.target.value)}
+            />
+          </label>
+          <p className="hint">The form goes without your answers, and your details are replaced. The picture of the page stays on this computer.</p>
+          <div className="row">
+            <Button small kind="primary" onClick={go} disabled={sending || !note.trim()}>
+              {sending ? 'Sending…' : 'Send report'}
+            </Button>
+            <Button small kind="ghost" onClick={() => setOpen(false)} disabled={sending}>
+              Cancel
+            </Button>
+          </div>
+        </>
+      ) : (
+        <Button small kind="ghost" onClick={() => setOpen(true)} title="Tell an agent about a field that wasn't found or got the wrong answer; it logs an issue">
+          Report a field
+        </Button>
+      )}
+      {said && (
+        <p className={`hint ${said.ok ? '' : 'error'}`} role="status">
+          {said.text}
+        </p>
+      )}
+    </div>
+  );
+}
+
 /** "1 needs you", "2 need you". */
 function countLabel(status: FillStatus, n: number): string {
   if (status === 'needs') return n === 1 ? 'needs you' : 'need you';
@@ -501,6 +627,20 @@ export function ApplyView(props: { tab: ActiveTab | null; goto: Goto; active: bo
   const fields = useMemo(() => state.reports.flatMap((r) => r.fields), [state]);
   const classifierError = state.reports.find((r) => r.classifierError)?.classifierError;
   const pending = state.reports.find((r) => r.pending)?.pending;
+  const settings = useLiveQuery(getSettings, []);
+  // "Ask an agent" (#103) needs the bridge, which starts the Answerer.
+  const askable = !!settings?.bridgeEnabled && !!settings.bridgeToken;
+  const card = (f: FieldReport) =>
+    tab && (
+      <FieldCard
+        key={`${f.frameId}:${f.id}`}
+        field={f}
+        tabId={tab.id}
+        host={host}
+        goto={goto}
+        ask={askable && canAsk(f) ? { state: state.asks?.[askKey(f.frameId, f.id)] } : undefined}
+      />
+    );
 
   useEffect(() => setError(''), [tab?.id]);
 
@@ -562,9 +702,10 @@ export function ApplyView(props: { tab: ActiveTab | null; goto: Goto; active: bo
         <Button kind="primary" onClick={autofill} disabled={!webPage || busy || state.run?.status === 'running'}>
           {busy ? 'Filling…' : fields.length ? 'Autofill again' : 'Autofill this page'}
         </Button>
-        {tab && webPage && <RunPanel tabId={tab.id} run={state.run} enabled={!busy} onError={setError} />}
+        {tab && webPage && <RunPanel tabId={tab.id} run={state.run} enabled={!busy} ai={askable} onError={setError} />}
         {tab && webPage && <AdvanceButton tabId={tab.id} enabled={props.active && !busy && state.run?.status !== 'running'} onError={setError} />}
         {tab && webPage && <SendToFleet tabId={tab.id} url={tab.url} />}
+        {tab && webPage && askable && <ReportField tabId={tab.id} url={tab.url} />}
         {!webPage && <p className="hint">Open a job application in this tab to autofill it.</p>}
         {progress ? (
           // Not a live region: it changes with every field. The counts after the run are announced.
@@ -619,7 +760,7 @@ export function ApplyView(props: { tab: ActiveTab | null; goto: Goto; active: bo
             {counts.needs ? (
               <ul className="cards rows">
                 {byStatus('needs').map((f) => (
-                  <FieldCard key={`${f.frameId}:${f.id}`} field={f} tabId={tab.id} host={host} goto={goto} />
+                  card(f)
                 ))}
               </ul>
             ) : (
@@ -630,7 +771,7 @@ export function ApplyView(props: { tab: ActiveTab | null; goto: Goto; active: bo
             <Section title="Check these" count={counts.review} defaultOpen>
               <ul className="cards rows">
                 {byStatus('review').map((f) => (
-                  <FieldCard key={`${f.frameId}:${f.id}`} field={f} tabId={tab.id} host={host} goto={goto} />
+                  card(f)
                 ))}
               </ul>
             </Section>
@@ -639,7 +780,7 @@ export function ApplyView(props: { tab: ActiveTab | null; goto: Goto; active: bo
             <Section title="Changed on the page" count={typedElsewhere.length}>
               <ul className="cards rows">
                 {typedElsewhere.map((f) => (
-                  <FieldCard key={`${f.frameId}:${f.id}`} field={f} tabId={tab.id} host={host} goto={goto} />
+                  card(f)
                 ))}
               </ul>
             </Section>
@@ -648,7 +789,7 @@ export function ApplyView(props: { tab: ActiveTab | null; goto: Goto; active: bo
             <Section title="Optional, left blank" count={counts.skipped} defaultOpen={false}>
               <ul className="cards rows">
                 {byStatus('skipped').map((f) => (
-                  <FieldCard key={`${f.frameId}:${f.id}`} field={f} tabId={tab.id} host={host} goto={goto} />
+                  card(f)
                 ))}
               </ul>
             </Section>

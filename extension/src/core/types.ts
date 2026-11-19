@@ -139,6 +139,11 @@ export interface Settings {
   bridgeUrl: string;
   /** From ~/.ezautoapply/bridge-token, pasted once. */
   bridgeToken: string;
+  /**
+   * While the bridge is on (#102): the fleet's tab groups move to a window of their own, so
+   * Claude's tabs don't open beside the owner's, and a finished applier's group closes.
+   */
+  fleetWindow: boolean;
 }
 
 export const LAYA_DEFAULT_URL = 'http://127.0.0.1:8000';
@@ -165,6 +170,7 @@ export function defaultSettings(): Settings {
     bridgeEnabled: false,
     bridgeUrl: 'http://127.0.0.1:8100',
     bridgeToken: '',
+    fleetWindow: true,
   };
 }
 

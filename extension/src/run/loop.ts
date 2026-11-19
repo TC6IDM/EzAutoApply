@@ -34,6 +34,11 @@ export interface RunDeps {
   /** Wait for the page to move on from `before`; false when it didn't. */
   waitForChange(before: PageCheck): Promise<boolean>;
   siteErrors(): Promise<SiteError[]>;
+  /**
+   * Run with AI (#113): ask the Answerer about these fields and wait until each is answered (it
+   * fills the page) or left to the owner, or the wait runs out. What it left, with why.
+   */
+  askAgents?(fields: FieldReport[]): Promise<{ id: string; why: string }[]>;
   save(state: RunState): Promise<void>;
   cancelled(): boolean;
   now(): number;
@@ -46,8 +51,12 @@ export interface RunOptions {
   isExternal(from: string, to: string): boolean;
 }
 
-/** Blockers Run stops at. Sign-in and account-creation forms are steps it takes (#8). */
-const STOPS_AT: BlockerKind[] = ['captcha', 'verificationCode', 'assessment'];
+/**
+ * Blockers Run stops at. Sign-in and account-creation forms are steps it takes (#8). A CAPTCHA
+ * isn't one (owner, 2026-11-19, #111): Run fills the page around it, and only says so where it
+ * matters, at Submit or when Next didn't move.
+ */
+const STOPS_AT: BlockerKind[] = ['verificationCode', 'assessment'];
 
 const listed = (rs: FieldReport[]) => {
   const labels = rs.map((r) => r.label || 'a field');
@@ -67,6 +76,7 @@ export async function runPages(state: RunState, deps: RunDeps, opts: RunOptions)
     return state;
   };
   const blocked = (page: PageCheck) => page.blockers.find((b) => STOPS_AT.includes(b.kind));
+  const captchaOn = (page: PageCheck) => page.blockers.find((b) => b.kind === 'captcha');
 
   try {
     for (;;) {
@@ -85,26 +95,52 @@ export async function runPages(state: RunState, deps: RunDeps, opts: RunOptions)
       if (hard) return stop({ reason: hard.kind as RunStop['reason'], detail: hard.detail });
 
       const ticked = page.blockers.some((b) => b.kind === 'createAccount') ? await deps.acceptTerms() : [];
-      const reports = (await deps.reports()).filter((r) => !ticked.includes(r.id));
+      let reports = (await deps.reports()).filter((r) => !ticked.includes(r.id));
+      // Run with AI (#113): what nothing could answer goes to the Answerer, then Run reads the page again.
+      let left: { id: string; why: string }[] = [];
+      let agent = 0;
+      const toAsk = state.ai && deps.askAgents ? reports.filter(wantsAgent) : [];
+      if (toAsk.length) {
+        state.asking = toAsk.length;
+        await deps.save(state);
+        left = await deps.askAgents!(toAsk).finally(() => delete state.asking);
+        if (deps.cancelled()) return stop({ reason: 'cancelled' });
+        reports = (await deps.reports()).filter((r) => !ticked.includes(r.id));
+        const before = new Set(toAsk.map((r) => r.id));
+        agent = reports.filter((r) => before.has(r.id) && r.status !== 'needs').length;
+      }
       const step: RunStep = {
         page: state.page,
         url: page.url,
         filled: reports.filter((r) => r.status === 'filled').length,
         review: reports.filter((r) => r.status === 'review').length,
         needs: reports.filter((r) => r.status === 'needs').length,
+        ...(agent && { agent }),
       };
       state.history.push(step);
       state.updatedAt = deps.now();
       await deps.save(state);
 
       const needs = reports.filter((r) => r.status === 'needs' && r.required);
-      if (needs.length) return stop({ reason: 'needsYou', detail: listed(needs), fieldIds: needs.map((r) => r.id) });
+      if (needs.length) {
+        // What the Answerer said about the ones it left, so the owner knows why.
+        const why = needs.map((r) => left.find((l) => l.id === r.id)?.why).filter(Boolean);
+        const detail = why.length ? `${listed(needs)} (the agent: ${[...new Set(why)].join('; ')})` : listed(needs);
+        return stop({ reason: 'needsYou', detail, fieldIds: needs.map((r) => r.id) });
+      }
       const review = opts.stopOnReview ? reports.filter((r) => r.status === 'review') : [];
       if (review.length) return stop({ reason: 'review', detail: listed(review), fieldIds: review.map((r) => r.id) });
 
       const button = await deps.findButton();
       if (!button) return stop({ reason: 'noButton' });
-      if (button.kind === 'submit') return stop({ reason: 'submitReady', detail: button.why ? `"${button.label}" ${button.why}` : `"${button.label}"` });
+      if (button.kind === 'submit') {
+        const said = button.why ? `"${button.label}" ${button.why}` : `"${button.label}"`;
+        // A CAPTCHA here is the owner's along with Submit (a solved one may still read as one).
+        const captcha = captchaOn(page);
+        const byAgent = state.history.reduce((n, h) => n + (h.agent ?? 0), 0);
+        const notes = [said, ...(byAgent ? [`${byAgent} answer${byAgent === 1 ? '' : 's'} written by the agent: read them first`] : []), ...(captcha ? ["if the CAPTCHA isn't done yet, do it first"] : [])];
+        return stop({ reason: 'submitReady', detail: notes.join(' · ') });
+      }
       if (state.page >= opts.maxPages) return stop({ reason: 'maxPages', detail: `${opts.maxPages} pages` });
       if (deps.cancelled()) return stop({ reason: 'cancelled' });
 
@@ -113,6 +149,9 @@ export async function runPages(state: RunState, deps: RunDeps, opts: RunOptions)
       await deps.save(state);
 
       if (!(await deps.waitForChange(page))) {
+        // Next didn't move and a CAPTCHA shows: that is what holds it.
+        const captcha = captchaOn(await deps.check());
+        if (captcha) return stop({ reason: 'captcha', detail: `${captcha.detail}: Next didn't move` });
         const errors = await deps.siteErrors();
         if (errors.length) {
           const ids = [...new Set(errors.map((e) => e.fieldId).filter((id): id is string => !!id))];
@@ -129,6 +168,16 @@ export async function runPages(state: RunState, deps: RunDeps, opts: RunOptions)
   }
 }
 
+/**
+ * What Run with AI hands the Answerer (#113): a required question nothing answered, or any
+ * unanswered long-answer box ("Why us?", "Anything else?"). Never a password, a file, or a
+ * question the site already holds an answer for.
+ */
+export function wantsAgent(r: FieldReport): boolean {
+  if (r.status !== 'needs' || r.kind === 'password' || r.kind === 'file') return false;
+  return r.required || r.kind === 'textarea';
+}
+
 function hostOf(url: string): string {
   try {
     return new URL(url).hostname;
@@ -137,6 +186,6 @@ function hostOf(url: string): string {
   }
 }
 
-export function newRun(tabId: number, startUrl: string, now: number, jobId?: string): RunState {
-  return { tabId, startUrl, page: 1, status: 'running', history: [], startedAt: now, updatedAt: now, ...(jobId && { jobId }) };
+export function newRun(tabId: number, startUrl: string, now: number, jobId?: string, ai = false): RunState {
+  return { tabId, startUrl, page: 1, status: 'running', history: [], startedAt: now, updatedAt: now, ...(jobId && { jobId }), ...(ai && { ai }) };
 }

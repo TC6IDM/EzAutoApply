@@ -44,7 +44,7 @@ export function useActiveTab(): ActiveTab | null {
   return tab;
 }
 
-const EMPTY: TabState = { reports: [], selection: {}, progress: null, run: null };
+const EMPTY: TabState = { reports: [], selection: {}, progress: null, run: null, asks: {} };
 
 /**
  * Fill reports and document choices for a tab, kept live via background broadcasts. `busy` holds

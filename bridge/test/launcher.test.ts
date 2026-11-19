@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
-import { ACTIVITY_KEPT, activityOf, APPLIER_TOOLS, applierArgs, findClaude, FIXER_CHECKS, FIXER_TOOLS, fixerArgs, type Git, Launcher, OUTREACH_TOOLS, outreachArgs, SCOUT_TOOLS, scoutArgs } from '../src/launcher.ts';
+import { ACTIVITY_KEPT, activityOf, ANSWERER_TOOLS, answererArgs, APPLIER_TOOLS, applierArgs, REPORTER_TOOLS, reporterArgs, findClaude, FIXER_CHECKS, FIXER_TOOLS, fixerArgs, type Git, Launcher, OUTREACH_TOOLS, outreachArgs, SCOUT_TOOLS, scoutArgs } from '../src/launcher.ts';
 import { QueueStore } from '../src/queue.ts';
 import { createBridge } from '../src/server.ts';
 
@@ -232,14 +232,24 @@ test('Start on an empty queue: the Scout fills it, the appliers start with the f
   }
 });
 
-test('the Fixer: Opus running /ezaa-fixer in its worktree, editing only extension/, never committing (#69)', () => {
-  const args = fixerArgs('C:/Users/x/Desktop/EzAutoApply-fix','fix/2026-11-18-fleet');
+test('the Fixer: Opus running /ezaa-fixer in its worktree, editing only extension/, committing working fixes to its own PR (#69, #101)', () => {
+  const args = fixerArgs('C:/Users/x/Desktop/EzAutoApply-fix', 'fix/2026-11-18-fleet');
   assert.equal(args[0], '-p');
-  assert.match(args[1], /^\/ezaa-fixer .*EzAutoApply-fix, branch fix\/2026-11-18-fleet.*Never commit or push/);
+  assert.match(args[1], /^\/ezaa-fixer .*EzAutoApply-fix, branch fix\/2026-11-18-fleet/);
+  assert.match(args[1], /Every fix is its own commit, and every commit must leave the extension working/);
+  assert.match(args[1], /git push -u origin fix\/2026-11-18-fleet at once/);
+  assert.match(args[1], /gh pr create --base main --head fix\/2026-11-18-fleet/);
+  assert.match(args[1], /never merge, never force-push/);
+  assert.doesNotMatch(args[1], /left uncommitted|git stash list/, 'nothing left over: nothing said');
+  assert.match(fixerArgs('d', 'b', 'kept')[1], /left uncommitted changes here/);
+  assert.match(fixerArgs('d', 'b', 'stashed')[1], /they are in git stash/);
   assert.deepEqual(args.slice(2, 4), ['--model', 'opus']);
   assert.ok(args.join(' ').includes('--output-format stream-json --verbose'));
   assert.deepEqual(toolsOf(args), FIXER_TOOLS);
-  assert.ok(!FIXER_TOOLS.some((t) => t === 'Bash' || t === 'Edit' || t === 'Write' || t.startsWith('Write(') || /git (commit|push)|gh pr|curl/.test(t)), 'no open shell, no commits, no pushes, no curl');
+  assert.ok(!FIXER_TOOLS.some((t) => t === 'Bash' || t === 'Edit' || t === 'Write' || t.startsWith('Write(') || /curl|gh pr (merge|edit|close|ready)|git (merge|rebase|reset|checkout|switch|branch|tag)|--force|--amend/.test(t)), 'no open shell, no merge, no rewriting, no curl');
+  // The only ways to publish: its own commit, a push naming origin, its own PR.
+  const publishing = FIXER_TOOLS.filter((t) => /git (commit|push)|gh pr/.test(t));
+  assert.deepEqual(publishing, ['Bash(git commit -m:*)', 'Bash(git push -u origin:*)', 'Bash(gh pr create:*)', 'Bash(gh pr view:*)', 'Bash(gh pr comment:*)']);
   assert.ok(!args.includes('--chrome'), 'the Fixer works through the bridge, not a browser');
   // #89: no cd, no PowerShell; every check it is told to run is on its list.
   assert.deepEqual(args.slice(args.indexOf('--disallowedTools'), args.indexOf('--disallowedTools') + 2), ['--disallowedTools', 'PowerShell']);
@@ -247,29 +257,47 @@ test('the Fixer: Opus running /ezaa-fixer in its worktree, editing only extensio
   assert.match(args[1], /never cd/);
   const allowed = (cmd: string) => FIXER_TOOLS.some((t) => { const m = /^Bash\((.*):\*\)$/.exec(t); return !!m && cmd.startsWith(m[1]); });
   for (const check of FIXER_CHECKS) assert.ok(allowed(check), `allowed: ${check}`);
+  for (const cmd of ['git add extension', 'git commit -m "Fixer: x (ticket k)"', 'git push -u origin fix/2026-11-18-fleet', 'gh pr view', 'gh pr create --base main --head fix/x --title t --body b', 'git stash push -m k']) {
+    assert.ok(allowed(cmd), `allowed: ${cmd}`);
+  }
+  for (const cmd of ['git push origin main', 'gh pr merge 1', 'git reset --hard', 'git add .claude']) assert.ok(!allowed(cmd), `refused: ${cmd}`);
 });
 
-/** Records git calls; `worktree add` makes the folder so the next start reuses it. */
-function fakeGit(fail: RegExp | null = null) {
+/**
+ * Stands in for git in the Fixer's worktree: `worktree add` makes the folder, `switch -c` moves
+ * HEAD, and the tree's state (dirty, merged into main, stash applies) is set by the test.
+ */
+function fakeGit(o: { fail?: RegExp; dirty?: boolean; merged?: boolean; popFails?: boolean } = {}) {
   const calls: string[] = [];
+  const state = { head: 'fix/2026-11-18-fleet', dirty: o.dirty ?? false, merged: o.merged ?? true };
   const git: Git = (args, cwd) => {
-    calls.push(`${args.join(' ')} @ ${cwd}`);
-    if (fail?.test(args.join(' '))) return { ok: false, out: 'fatal: a branch named it already exists' };
+    const cmd = args.join(' ');
+    calls.push(`${cmd} @ ${cwd}`);
+    if (o.fail?.test(cmd)) return { ok: false, out: 'fatal: a branch named it already exists' };
     if (args[0] === 'worktree') mkdirSync(args[4], { recursive: true });
-    return { ok: true, out: args[0] === 'rev-parse' ? 'fix/2026-11-18-fleet' : '' };
+    if (args[0] === 'switch') state.head = args[2];
+    if (args[0] === 'rev-parse') return { ok: true, out: state.head + '\n' };
+    if (args[0] === 'status') return { ok: true, out: state.dirty ? ' M extension/src/core/fieldKeys.ts\n' : '' };
+    if (args[0] === 'merge-base') return { ok: state.merged, out: '' };
+    if (cmd === 'stash pop' && o.popFails) return { ok: false, out: 'CONFLICT (content)' };
+    return { ok: true, out: '' };
   };
-  return { git, calls };
+  return { git, calls, state };
+}
+
+function fixerLauncher(dir: string, git: Git, at = '2026-11-18T20:05:00Z') {
+  const { spawn, started } = fakeSpawn();
+  const repo = join(dir, 'EzAutoApply');
+  const launcher = new Launcher({ claude: 'claude.exe', cwd: join(dir, 'ai-job-search'), logDir: join(dir, 'fleet'), repo, git, spawn, now: () => Date.parse(at) });
+  return { launcher, started, repo, fixDir: join(dir, 'EzAutoApply-fix') };
 }
 
 test('launchFixer makes the worktree from origin/main once, beside the checkout, and runs there', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'ezaa-fixer-'));
-  const repo = join(dir, 'EzAutoApply');
-  const { spawn, started } = fakeSpawn();
-  const { git, calls } = fakeGit(/-b fix\/2026-11-18-fleet /);
-  const launcher = new Launcher({ claude: 'claude.exe', cwd: join(dir, 'ai-job-search'), logDir: join(dir, 'fleet'), repo, git, spawn, now: () => Date.parse('2026-11-18T20:05:00Z') });
+  const { git, calls } = fakeGit({ fail: /-b fix\/2026-11-18-fleet / });
+  const { launcher, started, repo, fixDir } = fixerLauncher(dir, git);
   assert.equal(launcher.launchFixer(), true);
   assert.equal(launcher.launchFixer(), false, 'one at a time');
-  const fixDir = join(dir, 'EzAutoApply-fix');
   assert.deepEqual(calls, [
     `fetch origin main @ ${repo}`,
     `worktree add -b fix/2026-11-18-fleet ${fixDir} origin/main @ ${repo}`,
@@ -283,9 +311,56 @@ test('launchFixer makes the worktree from origin/main once, beside the checkout,
   started[0].child.kill();
   await tick();
   await tick();
-  calls.length = 0;
+});
+
+test('a Fixer whose PR is not merged yet carries on on its branch, uncommitted work and all (#101)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ezaa-fixer-open-'));
+  mkdirSync(join(dir, 'EzAutoApply-fix'));
+  const { git, calls } = fakeGit({ merged: false, dirty: true });
+  const { launcher, started, fixDir } = fixerLauncher(dir, git);
   assert.equal(launcher.launchFixer(), true);
-  assert.deepEqual(calls, [`rev-parse --abbrev-ref HEAD @ ${fixDir}`], 'the worktree is reused');
+  assert.ok(!calls.some((c) => /^(switch|stash|reset)/.test(c)), 'the branch and the tree are left as they are');
+  assert.match(started[0].args[1], /branch fix\/2026-11-18-fleet\)/);
+  assert.match(started[0].args[1], /left uncommitted changes here/);
+  assert.equal(started[0].cwd, fixDir);
+});
+
+test('once main has its PR, the next Fixer starts a fresh branch from origin/main (#101)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ezaa-fixer-merged-'));
+  mkdirSync(join(dir, 'EzAutoApply-fix'));
+  const { git, calls } = fakeGit();
+  const { launcher, started, repo, fixDir } = fixerLauncher(dir, git, '2026-11-19T09:30:00Z');
+  assert.equal(launcher.launchFixer(), true);
+  assert.deepEqual(calls, [
+    `fetch origin main @ ${repo}`,
+    `rev-parse --abbrev-ref HEAD @ ${fixDir}`,
+    `status --porcelain @ ${fixDir}`,
+    `merge-base --is-ancestor HEAD origin/main @ ${fixDir}`,
+    `switch -c fix/2026-11-19-fleet origin/main @ ${fixDir}`,
+  ]);
+  assert.match(started[0].args[1], /branch fix\/2026-11-19-fleet\)/);
+  assert.doesNotMatch(started[0].args[1], /git stash list|left uncommitted/);
+});
+
+test('uncommitted work from a stopped Fixer comes along to the fresh branch, or waits in the stash (#101)', () => {
+  for (const popFails of [false, true]) {
+    const dir = mkdtempSync(join(tmpdir(), 'ezaa-fixer-left-'));
+    mkdirSync(join(dir, 'EzAutoApply-fix'));
+    const { git, calls } = fakeGit({ dirty: true, popFails, fail: /switch -c fix\/2026-11-19-fleet / });
+    const { launcher, started, fixDir } = fixerLauncher(dir, git, '2026-11-19T09:30:00Z');
+    assert.equal(launcher.launchFixer(), true);
+    const after = calls.slice(3).map((c) => c.replace(` @ ${fixDir}`, ''));
+    assert.deepEqual(after, [
+      'merge-base --is-ancestor HEAD origin/main',
+      'stash push -u -m fixer: left on fix/2026-11-18-fleet',
+      'switch -c fix/2026-11-19-fleet origin/main',
+      'switch -c fix/2026-11-19-fleet-0930 origin/main',
+      'stash pop',
+      ...(popFails ? ['reset --hard HEAD'] : []),
+    ]);
+    assert.match(started[0].args[1], /branch fix\/2026-11-19-fleet-0930\)/);
+    assert.match(started[0].args[1], popFails ? /they are in git stash/ : /left uncommitted changes here/);
+  }
 });
 
 test('the bridge starts the Fixer a moment after a ticket opens, and only while it may (#69)', async () => {
@@ -543,6 +618,133 @@ test('Outreach (#97): its switch on starts /prospects once, with no browser and 
     await call('PUT', '/settings', { parts: { outreach: true } });
     assert.equal(outreachRuns(), 1, 'one at a time');
     assert.equal(launcher.appliers(), 0, 'Outreach is not an applier');
+  } finally {
+    bridge.server.close();
+  }
+});
+
+test('the Answerer: Sonnet running /answer --ask with the rule-keeping script, no browser, no shell (#103)', () => {
+  const args = answererArgs();
+  assert.deepEqual(args.slice(0, 4), ['-p', '/answer --ask', '--model', 'sonnet']);
+  assert.deepEqual(toolsOf(args), ANSWERER_TOOLS);
+  assert.ok(!ANSWERER_TOOLS.some((t) => t === 'Bash' || t === 'Write' || t === 'Edit' || t.startsWith('mcp__') || /curl|git /.test(t)));
+  assert.ok(!args.includes('--chrome'));
+});
+
+test('"Ask an agent" (#103): an ask starts the Answerer, and its answer or its no reaches the asking tab', async () => {
+  const TOKEN = 'test-token-asks-0123456789';
+  const dir = mkdtempSync(join(tmpdir(), 'ezaa-asks-'));
+  const { spawn, started } = fakeSpawn();
+  const launcher = new Launcher({ claude: 'claude.exe', cwd: dir, logDir: join(dir, 'fleet'), spawn });
+  const bridge = createBridge({ token: TOKEN, queue: new QueueStore(join(dir, 'queue.jsonl')), incidentsDir: join(dir, 'incidents'), port: 0, launcher });
+  await new Promise<void>((r) => bridge.server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${(bridge.server.address() as AddressInfo).port}`;
+  const call = async (method: string, path: string, body?: unknown) => {
+    const res = await fetch(base + path, { method, headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const text = await res.text();
+    return { status: res.status, json: text ? JSON.parse(text) : null };
+  };
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const answerers = () => started.filter((s) => s.args[1] === '/answer --ask');
+  const question = (fieldId: string, label: string) => ({ tabId: 7, frameId: 0, fieldId, label, kind: 'textarea', required: true, options: [], url: 'https://jobs.example.test/apply?token=secret', title: 'Engineer at Example' });
+  try {
+    await call('PUT', '/settings', { parts: { answerer: false } });
+    assert.equal((await call('POST', '/asks', question('f1', 'Why us?'))).status, 423, 'switched off: refused, so the panel can say so');
+    await call('PUT', '/settings', { parts: { answerer: true } });
+    assert.equal((await call('POST', '/asks', { ...question('f1', 'Why us?'), tabId: 'x' })).status, 400);
+
+    const one = (await call('POST', '/asks', question('f1', 'Why do you want to work here?'))).json.id as string;
+    const two = (await call('POST', '/asks', question('f2', 'Have you been convicted of a crime?'))).json.id as string;
+    assert.equal(answerers().length, 1, 'one Answerer for both');
+    const waiting = (await call('GET', '/asks?waiting=1')).json as { id: string; page: { url: string; host: string } }[];
+    assert.deepEqual(waiting.map((a) => a.id), [one, two]);
+    assert.equal(waiting[0].page.url, 'https://jobs.example.test/apply', 'the address without its query');
+
+    assert.equal((await call('POST', `/asks/${one}/answer`, { answer: 'Because…', save: { scope: 'jobs.example.test', sourceRefs: ['CLAUDE.md'], createdBy: 'answerer' } })).status, 200);
+    assert.equal((await call('POST', `/asks/${one}/answer`, { answer: 'again' })).status, 409, 'answered once');
+    assert.equal((await call('POST', `/asks/${two}/stop`, { why: 'an attestation: only you answer it' })).status, 200);
+    const cmds = (await call('GET', '/ext/commands?wait=0')).json as Record<string, unknown>[];
+    const answer = cmds.find((c) => c.type === 'answer')!;
+    assert.deepEqual([answer.askId, answer.tabId, answer.frameId, answer.fieldId, answer.answer], [one, 7, 0, 'f1', 'Because…']);
+    const done = cmds.find((c) => c.type === 'askDone')!;
+    assert.deepEqual([done.askId, done.fieldId, done.why], [two, 'f2', 'an attestation: only you answer it']);
+
+    // Asked while it works: it starts again once it ends.
+    await wait(5);
+    const three = (await call('POST', '/asks', question('f3', 'Notice period'))).json.id as string;
+    assert.equal(answerers().length, 1, 'one at a time');
+    answerers()[0].child.kill();
+    await wait(60);
+    assert.equal(answerers().length, 2, 'again, for the ask it never saw');
+    assert.equal(launcher.appliers(), 0, 'the Answerer is not an applier');
+    // That one ends without a word on it: the owner hears so, and it doesn't start a third time.
+    answerers()[1].child.kill();
+    await wait(60);
+    const later = (await call('GET', '/ext/commands?wait=0')).json as Record<string, unknown>[];
+    assert.match(String(later.find((c) => c.type === 'askDone' && c.askId === three)?.why), /ended without answering/);
+    assert.equal(answerers().length, 2);
+    assert.deepEqual((await call('GET', '/asks?waiting=1')).json, []);
+  } finally {
+    bridge.server.close();
+  }
+});
+
+test('the Reporter: Sonnet in the owner’s checkout, reading reports and logging issues, editing only its drafts (#115)', () => {
+  const args = reporterArgs();
+  assert.match(args[1], /^\/ezaa-field-report /);
+  assert.deepEqual(toolsOf(args), REPORTER_TOOLS);
+  assert.ok(!REPORTER_TOOLS.some((t) => t === 'Bash' || t === 'Edit' || t === 'Write' || /git |gh pr|curl|mcp__/.test(t)), 'no shell, no git, no PRs, no browser');
+  assert.deepEqual(REPORTER_TOOLS.filter((t) => t.startsWith('Edit(')), ['Edit(.field-reports/**)']);
+});
+
+test('field reports (#115): kept on disk without values, the Reporter starts in the checkout, and the issue is recorded', async () => {
+  const TOKEN = 'test-token-reports-0123456789';
+  const dir = mkdtempSync(join(tmpdir(), 'ezaa-reports-'));
+  const repo = join(dir, 'EzAutoApply');
+  mkdirSync(repo);
+  const { spawn, started } = fakeSpawn();
+  const launcher = new Launcher({ claude: 'claude.exe', cwd: dir, logDir: join(dir, 'fleet'), repo, spawn });
+  const bridge = createBridge({ token: TOKEN, queue: new QueueStore(join(dir, 'queue.jsonl')), incidentsDir: join(dir, 'incidents'), port: 0, launcher });
+  await new Promise<void>((r) => bridge.server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${(bridge.server.address() as AddressInfo).port}`;
+  const call = async (method: string, path: string, body?: unknown) => {
+    const res = await fetch(base + path, { method, headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const text = await res.text();
+    return { status: res.status, json: text ? JSON.parse(text) : null };
+  };
+  try {
+    assert.equal((await call('POST', '/reports', { url: 'https://x.test/a', note: '' })).status, 400, 'a note is required');
+    const sent = await call('POST', '/reports', {
+      url: 'https://acme.wd1.myworkdayjobs.com/apply?token=abc',
+      ats: 'workday',
+      title: 'Engineer at Acme',
+      note: 'The Notice period dropdown was never found',
+      html: '<div><label>Notice period</label><div class="fake-select"></div></div>',
+      screen: 'data:image/jpeg;base64,' + Buffer.from('jpeg').toString('base64'),
+      fields: [{ frameId: 0, id: 'f1', label: 'Phone', kind: 'text', status: 'filled', required: true, source: 'rule', key: 'phone', options: [], valueText: '555 0100', current: '555 0100' }],
+    });
+    assert.equal(sent.status, 202);
+    const id = sent.json.id as string;
+    const reporters = started.filter((s) => s.args[1].startsWith('/ezaa-field-report'));
+    assert.equal(reporters.length, 1);
+    assert.equal(reporters[0].cwd, repo, 'in the owner’s checkout');
+
+    const folder = join(dir, 'reports', id);
+    const saved = JSON.parse(readFileSync(join(folder, 'report.json'), 'utf8'));
+    assert.equal(saved.url, 'https://acme.wd1.myworkdayjobs.com/apply', 'no query');
+    assert.deepEqual(Object.keys(saved.fields[0]).sort(), ['frameId', 'id', 'key', 'kind', 'label', 'options', 'required', 'source', 'status']);
+    assert.ok(!readFileSync(join(folder, 'report.json'), 'utf8').includes('555'), 'no value kept');
+    assert.ok(existsSync(join(folder, 'page.html')) && existsSync(join(folder, 'screen.jpg')));
+
+    const open = (await call('GET', '/reports?open=1')).json as { id: string }[];
+    assert.deepEqual(open.map((r) => r.id), [id]);
+    const one = (await call('GET', `/reports/${id}`)).json;
+    assert.match(one.html, /fake-select/);
+    assert.equal((await call('POST', `/reports/${id}/issue`, { url: 'https://example.com/x' })).status, 400);
+    assert.equal((await call('POST', `/reports/${id}/issue`, { url: 'https://github.com/TC6IDM/EzAutoApply/issues/200' })).status, 200);
+    assert.deepEqual((await call('GET', '/reports?open=1')).json, []);
+    assert.equal((await call('GET', '/reports/..%2F..%2Fx')).status, 404);
+    reporters[0].child.kill();
   } finally {
     bridge.server.close();
   }

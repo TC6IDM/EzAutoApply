@@ -41,6 +41,8 @@ export interface RunStep {
   needs: number;
   /** The button Run pressed on this page ("Next"), when it pressed one. */
   pressed?: string;
+  /** Run with AI (#113): questions the Answerer filled on this page, for the owner to check. */
+  agent?: number;
 }
 
 export interface RunState {
@@ -51,6 +53,10 @@ export interface RunState {
   startUrl: string;
   /** 1-based page count. */
   page: number;
+  /** Run with AI (#113): questions Run can't answer go to the bridge's Answerer. */
+  ai?: boolean;
+  /** Run with AI: how many questions the agent is writing on this page right now. */
+  asking?: number;
   status: 'running' | 'stopped';
   stop?: RunStop;
   history: RunStep[];
@@ -103,5 +109,6 @@ export function stepLine(run: RunState): string {
     if (last.review) parts.push(`${last.review} to check`);
     if (last.needs) parts.push(`${last.needs} ${last.needs === 1 ? 'needs' : 'need'} you`);
   }
+  if (run.asking) parts.push(`the agent is writing ${run.asking} ${run.asking === 1 ? 'answer' : 'answers'}`);
   return parts.join(' · ');
 }

@@ -106,10 +106,55 @@ describe('Run to Submit: the loop (#9)', () => {
     expect((await run(pages, { stopOnReview: false })).r.stop).toMatchObject({ reason: 'submitReady' });
   });
 
-  it('stops at a CAPTCHA before filling, and at a code box that shows up after filling', async () => {
-    const captcha = await run([{ blockers: [{ kind: 'captcha', detail: 'reCAPTCHA on the page' }] }]);
-    expect(captcha.r.stop).toEqual({ reason: 'captcha', detail: 'reCAPTCHA on the page' });
-    expect(captcha.log.fills).toBe(0);
+  it('fills around a CAPTCHA (owner, #111): it matters only at Submit, or when Next didn’t move', async () => {
+    const reCaptcha = [{ kind: 'captcha' as const, detail: 'reCAPTCHA on the page' }];
+    // Solved or not, a CAPTCHA beside Submit: the page is filled and Run stops at Submit as always.
+    const atSubmit = await run([{ blockers: reCaptcha, reports: [field('salary', 'filled', true)], button: { label: 'Submit Application', kind: 'submit' } }]);
+    expect(atSubmit.log.fills).toBe(1);
+    expect(atSubmit.r.stop).toEqual({ reason: 'submitReady', detail: `"Submit Application" · if the CAPTCHA isn't done yet, do it first` });
+    // Before a Next it goes on; only a Next that didn't move with one showing stops for it.
+    const moved = await run([{ blockers: reCaptcha, button: next() }, { button: { label: 'Submit', kind: 'submit' } }]);
+    expect(moved.log.pressed).toEqual(['Next']);
+    expect(moved.r.stop?.reason).toBe('submitReady');
+    const held = await run([{ blockers: reCaptcha, button: next(), stuck: true }]);
+    expect(held.r.stop).toEqual({ reason: 'captcha', detail: "reCAPTCHA on the page: Next didn't move" });
+  });
+
+  it('Run with AI (#113) hands what nothing answered to the agent, waits, and goes on; Run alone never does', async () => {
+    const pages = (): FakePage[] => [
+      { reports: [field('name', 'filled', true), { ...field('why', 'needs'), kind: 'textarea' }, field('pronouns', 'needs')], button: next() },
+      { reports: [field('salary', 'needs', true), field('note', 'needs')], button: { label: 'Submit', kind: 'submit' } },
+    ];
+    const withAgent = (ps: FakePage[], leave: Record<string, string> = {}) => {
+      const s = stand(ps);
+      const asked: string[][] = [];
+      s.deps.askAgents = async (fields) => {
+        asked.push(fields.map((f) => f.id));
+        // The stand-in Answerer fills what it can on the page it was asked about.
+        for (const p of ps) for (const r of p.reports ?? []) if (fields.some((f) => f.id === r.id) && !leave[r.id!]) r.status = 'filled';
+        return fields.filter((f) => leave[f.id]).map((f) => ({ id: f.id, why: leave[f.id] }));
+      };
+      return { s, asked };
+    };
+
+    const all = withAgent(pages());
+    const r = await runPages(newRun(7, 'https://boards.greenhouse.io/acme/jobs/1', 0, undefined, true), all.s.deps, opts);
+    // The long answer and the required salary; an optional short question stays the owner's.
+    expect(all.asked).toEqual([['why'], ['salary']]);
+    expect(r.stop).toEqual({ reason: 'submitReady', detail: '"Submit" · 2 answers written by the agent: read them first' });
+    expect(r.asking).toBeUndefined();
+
+    const some = withAgent(pages(), { salary: 'nothing on record gives a range' });
+    const r2 = await runPages(newRun(7, 'https://boards.greenhouse.io/acme/jobs/1', 0, undefined, true), some.s.deps, opts);
+    expect(r2.stop).toEqual({ reason: 'needsYou', detail: 'salary (the agent: nothing on record gives a range)', fieldIds: ['salary'] });
+
+    const plain = withAgent(pages());
+    const r3 = await runPages(newRun(7, 'https://boards.greenhouse.io/acme/jobs/1', 0), plain.s.deps, opts);
+    expect(plain.asked).toEqual([]);
+    expect(r3.stop).toEqual({ reason: 'needsYou', detail: 'salary', fieldIds: ['salary'] });
+  });
+
+  it('stops at a code box that shows up after filling', async () => {
     const code = await run([{ blockersAfterFill: [{ kind: 'verificationCode', detail: 'a one-time code box' }], button: next() }]);
     expect(code.r.stop).toMatchObject({ reason: 'verificationCode' });
     expect(code.log.pressed).toEqual([]);
