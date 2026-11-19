@@ -76,6 +76,7 @@ export const LABELS = {
   'area:privacy': ['ededed', 'Secrets, PII, redaction, what leaves the machine'],
   'area:queue': ['ededed', 'Job search, ranking, the queue, the tracker (ai-job-search side)'],
   'area:fixer': ['ededed', 'Incidents, the fixer agent, the replay corpus'],
+  'area:field-report': ['ededed', 'The owner pressed "Report a field": a field not found or answered wrong on a real page (the Reporter, #116)'],
   'area:office': ['ededed', 'The Fleet Office: the 3D view, agent windows, the inbox'],
   'area:outreach': ['ededed', 'Recruiter research and the recruiter page'],
   'area:a11y': ['ededed', 'Keyboard, screen readers, reduced motion'],

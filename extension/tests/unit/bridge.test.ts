@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BridgeClient, bridgeFields, findJobTab, obeysReload, screenMoment } from '../../src/bridge/client';
+import { agentsAtWork, askQuestion, BridgeClient, bridgeFields, canAsk, findJobTab, obeysReload, screenMoment, tabsToClose } from '../../src/bridge/client';
 import type { FieldReport } from '../../src/fill/types';
 import { newRun } from '../../src/run/loop';
 
@@ -65,5 +65,71 @@ describe('the local bridge client (#17)', () => {
     expect(findJobTab(tabs, 'https://boards.greenhouse.io/acme/jobs/4567?utm_source=x')?.id).toBe(2);
     expect(findJobTab(tabs, 'https://jobs.lever.co/acme/1')).toBeNull();
     expect(findJobTab(tabs, '')).toBeNull();
+  });
+});
+
+describe("the fleet's tabs (#102)", () => {
+  it('an ended applier’s groups close, all but the tabs still needed, and nothing else', () => {
+    const tabs = [
+      { id: 1, groupId: 7 }, // the applier's leftover new tab
+      { id: 2, groupId: 7 }, // a job waiting on the owner
+      { id: 3, groupId: 8 }, // another applier's group
+      { id: 4, groupId: -1 }, // the owner's own tab
+      { groupId: 7 },
+    ];
+    expect(tabsToClose(tabs, new Set([7]), new Set([2]))).toEqual([1]);
+    expect(tabsToClose(tabs, new Set(), new Set())).toEqual([]);
+  });
+
+  it('a new group counts as an agent’s only while an applier runs', () => {
+    expect(agentsAtWork({ appliers: [{ worker: 'w1', status: 'ended' }, { worker: 'w2', status: 'running' }] })).toBe(true);
+    expect(agentsAtWork({ appliers: [{ worker: 'w1', status: 'ended' }] })).toBe(false);
+    expect(agentsAtWork({ appliers: [{ worker: 'fixer', status: 'running' }, { worker: 'answerer', status: 'running' }] })).toBe(false);
+    expect(agentsAtWork(null)).toBe(false);
+  });
+});
+
+describe('"Ask an agent" (#103)', () => {
+  const field = (over: Partial<FieldReport> = {}): FieldReport =>
+    ({
+      id: 'f9',
+      frameId: 2,
+      label: 'Why do you want to work here? *',
+      kind: 'textarea',
+      options: [],
+      required: true,
+      status: 'needs',
+      source: 'none',
+      confidence: 0,
+      valueText: 'Jordan Rivera typed this',
+      current: 'what the page holds',
+      userValue: 'what the owner typed',
+      note: 'The site had "Woodbridge, Virginia"',
+      ...over,
+    }) as FieldReport;
+
+  it('sends the question and the page, never a value or a note that could quote one', () => {
+    const q = askQuestion(5, field(), { url: 'https://jobs.example.test/apply/3?token=abc#top', title: 'Engineer at Example' });
+    expect(q).toEqual({
+      tabId: 5,
+      frameId: 2,
+      fieldId: 'f9',
+      label: 'Why do you want to work here? *',
+      kind: 'textarea',
+      options: [],
+      required: true,
+      url: 'https://jobs.example.test/apply/3',
+      title: 'Engineer at Example',
+    });
+    expect(JSON.stringify(q)).not.toMatch(/Jordan|typed|holds|Virginia|token/);
+    expect(askQuestion(5, field({ note: 'The site says: Enter at least 100 characters' }), { url: 'https://x.test/a' }).note).toBe('The site says: Enter at least 100 characters');
+  });
+
+  it('is offered on unanswered and guessed fields, never on a password or a file', () => {
+    expect(canAsk(field())).toBe(true);
+    expect(canAsk(field({ status: 'review' }))).toBe(true);
+    expect(canAsk(field({ status: 'filled' }))).toBe(false);
+    expect(canAsk(field({ kind: 'password' }))).toBe(false);
+    expect(canAsk(field({ kind: 'file' }))).toBe(false);
   });
 });

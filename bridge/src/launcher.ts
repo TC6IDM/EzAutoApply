@@ -16,7 +16,7 @@ export type Model = (typeof MODELS)[number];
 /** What any agent it starts runs on: the appliers' choice, or Opus for the Fixer. */
 export type AgentModel = Model | 'opus';
 /** The agents that aren't appliers. */
-const HELPERS = ['scout', 'fixer', 'outreach'];
+const HELPERS = ['scout', 'fixer', 'outreach', 'answerer', 'reporter'];
 
 /** Everything an applier may use: the bridge helpers, reading the records, its own notes, the fleet browser. */
 export const APPLIER_TOOLS = [
@@ -89,10 +89,58 @@ export function outreachArgs(): string[] {
 }
 
 /**
+ * The Answerer for the owner's own tabs (#103): when the owner presses "Ask an agent" on a field,
+ * one headless Sonnet runs ai-job-search's `/answer --ask`. It reads the records, answers through
+ * `fleet_answer.py` (which holds the rules: no attestations, offered options only, sources), and
+ * may note essays in the application folder. No browser: the extension fills the field.
+ */
+export const ANSWERER_TOOLS = [
+  'Bash(python tools/fleet_answer.py:*)',
+  'Read',
+  'Glob',
+  'Grep',
+  // The posting, when ai-job-search has nothing on the company: reading only.
+  'WebFetch',
+  'Skill',
+  'ToolSearch',
+  // Its answers file (documents/applications/_asks/) and essays' notes; git ignores the folder.
+  'Edit(documents/applications/**)',
+];
+
+export function answererArgs(): string[] {
+  return ['-p', '/answer --ask', '--model', 'sonnet', ...STREAM, '--disallowedTools', 'PowerShell', '--allowedTools', ...ANSWERER_TOOLS];
+}
+
+/**
+ * The Reporter (#115, #116): when the owner reports a field, one headless Sonnet runs
+ * EzAutoApply's `/ezaa-field-report` in the owner's checkout. It reads the report through the
+ * bridge helper and the code, and logs a public-safe issue. It edits nothing but its own issue
+ * drafts (`.field-reports/`, which git ignores), and can't commit, push or touch a PR.
+ */
+export const REPORTER_TOOLS = [
+  'Bash(node .claude/skills/ezaa-fixer/bridge.mjs:*)',
+  'Bash(node .claude/skills/ezaa-issues/create-issues.mjs:*)',
+  'Bash(node .claude/skills/ezaa-issues/sync-board.mjs:*)',
+  'Bash(gh issue list:*)',
+  'Bash(gh issue view:*)',
+  'Bash(gh issue comment:*)',
+  'Read',
+  'Glob',
+  'Grep',
+  'Skill',
+  'ToolSearch',
+  'Edit(.field-reports/**)',
+];
+
+export function reporterArgs(): string[] {
+  return ['-p', '/ezaa-field-report Started by the bridge: log an issue for every open field report, then stop.', '--model', 'sonnet', ...STREAM, '--disallowedTools', 'PowerShell', '--allowedTools', ...REPORTER_TOOLS];
+}
+
+/**
  * The Fixer (#69): when a ticket opens, one headless Opus runs EzAutoApply's `/ezaa-fixer` in its
  * own worktree beside the owner's checkout (`../EzAutoApply-fix`), so the owner's files never
  * change. It may edit only `extension/` there, run the checks, call the bridge through the
- * skill's helper, and log issues. It can't commit or push: those aren't on the list.
+ * skill's helper, and log issues. It commits each working fix to its own branch and PR (#101).
  */
 export const FIXER_TOOLS = [
   'Bash(node .claude/skills/ezaa-fixer/bridge.mjs:*)',
@@ -109,6 +157,14 @@ export const FIXER_TOOLS = [
   'Bash(git diff:*)',
   'Bash(git log:*)',
   'Bash(git stash:*)',
+  // Its own PR (#101, owner 2026-11-19): one commit per working fix, pushed at once. guard.mjs
+  // still refuses a commit on main, a push naming main or upstream, a force-push and `gh pr merge`.
+  'Bash(git add extension:*)',
+  'Bash(git commit -m:*)',
+  'Bash(git push -u origin:*)',
+  'Bash(gh pr create:*)',
+  'Bash(gh pr view:*)',
+  'Bash(gh pr comment:*)',
   'Read',
   'Glob',
   'Grep',
@@ -133,18 +189,37 @@ export const FIXER_CHECKS = [
   'npm --prefix extension run build:fleet',
 ];
 
-export function fixerPrompt(dir: string, branch: string): string {
+/**
+ * What an earlier, stopped Fixer left in the worktree: nothing, uncommitted changes still in the
+ * tree (`kept`), or changes that wouldn't apply on the new branch and wait in `git stash` (`stashed`).
+ */
+export type Leftover = 'none' | 'kept' | 'stashed';
+
+const LEFTOVER_TEXT: Record<Leftover, string> = {
+  none: '',
+  kept: 'A Fixer that was stopped left uncommitted changes here (git status): finish them as fixes like any other, commit each one that passes the checks, and git stash what does not.',
+  stashed: "A Fixer that was stopped left changes that didn't apply on this branch; they are in git stash (git stash list, git stash show -p): redo what still matters as fixes, then leave the stash alone.",
+};
+
+export function fixerPrompt(dir: string, branch: string, leftover: Leftover = 'none'): string {
   return [
     '/ezaa-fixer Started by the bridge because a ticket opened.',
     `You are already in the Fixer's worktree (${dir}, branch ${branch}): make every code fix here, never in another checkout, and don't make another worktree.`,
     'Use the Bash tool, one plain command per call, from where you are: never cd, never chain with && ; or |, never $(); those are refused and nobody is there to approve them.',
     `Run the checks exactly like this (they win over the skill's own wording): ${FIXER_CHECKS.join(' · ')}.`,
-    'Work every open ticket, then stop. Never commit or push. Reply with one line per ticket: its label and how you resolved it.',
-  ].join(' ');
+    // #101: the owner may stop the fleet at any moment and merge the PR as it stands.
+    `Every fix is its own commit, and every commit must leave the extension working, because the owner may stop the fleet at any moment and merge the PR as it is: commit only after npm --prefix extension run compile, npm --prefix extension test and npm --prefix extension run replay all pass with that fix in, and never commit half a fix.`,
+    `Then git add extension, git commit -m "Fixer: <ATS> '<label>' <what changed> (ticket <key>)", and git push -u origin ${branch} at once.`,
+    `After the first push, if gh pr view says the branch has no PR, open one: gh pr create --base main --head ${branch} --title "Fixer: fixes from the fleet's tickets" --body "<what it fixes, one line per ticket>". Later fixes only need the push; gh pr comment the PR with one line per fix.`,
+    'The repo is public: commit messages and the PR name the ATS, the kind and the label only, never an applicant, a recruiter, an answer or the owner.',
+    'Never commit to or push main, never merge, never force-push, never amend or rebase a pushed commit. A fix still red after two honest tries: git stash push -m "<ticket key>" so the tree is clean before the next ticket.',
+    LEFTOVER_TEXT[leftover],
+    'Work every open ticket, then stop. Reply with one line per ticket: its label, how you resolved it, and the commit.',
+  ].filter(Boolean).join(' ');
 }
 
-export function fixerArgs(dir: string, branch: string): string[] {
-  return ['-p', fixerPrompt(dir, branch), '--model', 'opus', ...STREAM, '--disallowedTools', 'PowerShell', '--allowedTools', ...FIXER_TOOLS];
+export function fixerArgs(dir: string, branch: string, leftover: Leftover = 'none'): string[] {
+  return ['-p', fixerPrompt(dir, branch, leftover), '--model', 'opus', ...STREAM, '--disallowedTools', 'PowerShell', '--allowedTools', ...FIXER_TOOLS];
 }
 
 /** Runs git; the tests pass a stand-in. */
@@ -371,6 +446,36 @@ export class Launcher {
     return true;
   }
 
+  /** Whether a Reporter can start: it needs the owner's EzAutoApply checkout. */
+  canReport(): boolean {
+    return !!this.repo && existsSync(this.repo);
+  }
+
+  reporterRunning(): boolean {
+    return this.procs.has('reporter');
+  }
+
+  /** The Reporter (#115): one `/ezaa-field-report` run in the owner's checkout. One at a time. */
+  launchReporter(): boolean {
+    if (!this.claude) throw new Error('Claude Code not found: set EZAA_CLAUDE to the claude executable');
+    if (!this.repo) throw new Error('No EzAutoApply checkout for the Reporter to run in');
+    if (this.reporterRunning()) return false;
+    this.start('reporter', 'sonnet', reporterArgs(), this.repo);
+    return true;
+  }
+
+  answererRunning(): boolean {
+    return this.procs.has('answerer');
+  }
+
+  /** The Answerer (#103): one `/answer --ask` run, which answers every waiting ask. One at a time. */
+  launchAnswerer(): boolean {
+    if (!this.claude) throw new Error('Claude Code not found: set EZAA_CLAUDE to the claude executable');
+    if (this.answererRunning()) return false;
+    this.start('answerer', 'sonnet', answererArgs());
+    return true;
+  }
+
   /** The Scout's last run, while none runs now: how it ended. */
   lastScout(): Applier | null {
     return this.scoutRunning() ? null : ([...this.ended].reverse().find((a) => a.worker === 'scout') ?? null);
@@ -409,31 +514,54 @@ export class Launcher {
   }
 
   /**
-   * The Fixer (#69), in its worktree beside the owner's checkout, made from origin/main the first
-   * time. One at a time; false when one already runs.
+   * The Fixer (#69), in its worktree beside the owner's checkout. One at a time; false when one
+   * already runs.
    */
   launchFixer(): boolean {
     if (!this.claude) throw new Error('Claude Code not found: set EZAA_CLAUDE to the claude executable');
     if (!this.repo) throw new Error("No EzAutoApply checkout to make the Fixer's worktree from");
     if (this.fixerRunning()) return false;
-    const { dir, branch } = this.fixWorktree(this.repo);
-    this.start('fixer', 'opus', fixerArgs(dir, branch), dir);
+    const { dir, branch, leftover } = this.fixWorktree(this.repo);
+    this.start('fixer', 'opus', fixerArgs(dir, branch, leftover), dir);
     return true;
   }
 
-  private fixWorktree(repo: string): { dir: string; branch: string } {
+  /**
+   * The Fixer's worktree and branch for this start (#101). Made from origin/main the first time.
+   * After that: while its branch has commits main doesn't (the owner hasn't merged its PR yet) it
+   * carries on there, so the PR keeps growing. Once main has them all (merged, or it never
+   * committed), it starts a fresh branch from origin/main, bringing any uncommitted changes along;
+   * those that don't apply stay in `git stash`.
+   */
+  private fixWorktree(repo: string): { dir: string; branch: string; leftover: Leftover } {
     const dir = join(dirname(repo), FIX_DIR);
-    if (existsSync(dir)) {
-      const head = this.git(['rev-parse', '--abbrev-ref', 'HEAD'], dir);
-      return { dir, branch: head.ok ? head.out : 'unknown' };
-    }
     this.git(['fetch', 'origin', 'main'], repo);
     const stamp = new Date(this.now()).toISOString();
     const day = stamp.slice(0, 10);
-    for (const branch of [`fix/${day}-fleet`, `fix/${day}-fleet-${stamp.slice(11, 16).replace(':', '')}`]) {
-      if (this.git(['worktree', 'add', '-b', branch, dir, 'origin/main'], repo).ok) return { dir, branch };
+    const names = [`fix/${day}-fleet`, `fix/${day}-fleet-${stamp.slice(11, 16).replace(':', '')}`];
+    if (!existsSync(dir)) {
+      for (const branch of names) {
+        if (this.git(['worktree', 'add', '-b', branch, dir, 'origin/main'], repo).ok) return { dir, branch, leftover: 'none' };
+      }
+      throw new Error(`Couldn't make the Fixer's worktree at ${dir}`);
     }
-    throw new Error(`Couldn't make the Fixer's worktree at ${dir}`);
+    const head = this.git(['rev-parse', '--abbrev-ref', 'HEAD'], dir);
+    const current = head.ok ? head.out.trim() : 'unknown';
+    const dirty = this.git(['status', '--porcelain'], dir).out.trim() !== '';
+    if (!this.git(['merge-base', '--is-ancestor', 'HEAD', 'origin/main'], dir).ok) {
+      return { dir, branch: current, leftover: dirty ? 'kept' : 'none' };
+    }
+    const stashed = dirty && this.git(['stash', 'push', '-u', '-m', `fixer: left on ${current}`], dir).ok;
+    for (const branch of names) {
+      if (branch === current || !this.git(['switch', '-c', branch, 'origin/main'], dir).ok) continue;
+      if (!stashed) return { dir, branch, leftover: 'none' };
+      if (this.git(['stash', 'pop'], dir).ok) return { dir, branch, leftover: 'kept' };
+      // It didn't apply: back to the clean branch; `stash pop` keeps the stash when it fails.
+      this.git(['reset', '--hard', 'HEAD'], dir);
+      return { dir, branch, leftover: 'stashed' };
+    }
+    if (stashed) this.git(['stash', 'pop'], dir);
+    return { dir, branch: current, leftover: dirty ? 'kept' : 'none' };
   }
 
   private start(worker: string, model: AgentModel, args: string[], cwd = this.cwd): void {

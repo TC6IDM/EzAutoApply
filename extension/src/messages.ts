@@ -57,7 +57,8 @@ export type PanelToBackground =
   /** The top frame says the application went through ("Thank you for applying"), or null. */
   | { type: 'confirmation'; tabId: number }
   /** Run to Submit (#9): start on this tab, stop it, or read its RunState (null: never run). */
-  | { type: 'startRun'; tabId: number }
+  /** ai: Run with AI (#113), which hands what Run can't answer to the bridge's Answerer. */
+  | { type: 'startRun'; tabId: number; ai?: boolean }
   | { type: 'cancelRun'; tabId: number }
   | { type: 'getRun'; tabId: number }
   | { type: 'classifierHealth' }
@@ -65,6 +66,10 @@ export type PanelToBackground =
   | { type: 'bridgeHealth' }
   /** Queue the posting this tab shows for the fleet's appliers (#79). */
   | { type: 'sendToFleet'; tabId: number }
+  /** "Ask an agent" on one field (#103): the bridge's Answerer answers it from the owner's records. */
+  | { type: 'askAgent'; tabId: number; frameId: number; fieldId: string }
+  /** "Report a field" (#114): the owner's note and the page, redacted, to the bridge for the Reporter. */
+  | { type: 'reportField'; tabId: number; note: string }
   | { type: 'settingsChanged' };
 
 /** What "Send to the fleet" did (#79): queued now, or the job the queue already had for it. */
@@ -97,6 +102,8 @@ export type BackgroundToContent =
   | { type: 'siteErrors' }
   /** A field the scan missed, by its label (#98): its block's markup, values stripped (MissedField | null). */
   | { type: 'missedField'; label: string }
+  /** "Report a field" (#114): this frame's form, values stripped (string | null). */
+  | { type: 'formSnapshot' }
   | { type: 'settingsChanged'; settings: Settings }
   /** All of the tab's frames together, for the top frame's floating button; null when none is filling. */
   | { type: 'fillProgress'; progress: FillProgress | null }
@@ -142,7 +149,19 @@ export interface TabState {
   progress: FillProgress | null;
   /** The tab's last Run to Submit, running or stopped. */
   run: RunState | null;
+  /** "Ask an agent" questions on this tab (#103), by `askKey(frameId, fieldId)`. */
+  asks: Record<string, AskState>;
 }
+
+/** One "Ask an agent" question (#103): waiting, answered (it filled for review), or left to the owner with why. */
+export interface AskState {
+  id: string;
+  status: 'asking' | 'answered' | 'stopped';
+  why?: string;
+  at: number;
+}
+
+export const askKey = (frameId: number, fieldId: string) => `${frameId}:${fieldId}`;
 
 export type ClassifyResponse = SystemOneResponse | SystemOneResponse[];
 

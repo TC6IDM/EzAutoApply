@@ -66,7 +66,7 @@ names the issue it serves (`… (TC6IDM/EzAutoApply#N)`).
 |---|---|
 | Type | `type:epic` (parent), `type:feature`, `type:bug`, `type:task`, `type:research`, `type:decision` |
 | Part | `platform:extension` (`extension/`), `platform:classifier` (`classifier/`), `platform:bridge` (`bridge/`, the Fleet Office), `platform:agents` (fleet skills, ai-job-search side), `platform:tooling` (scripts, `.claude/`, CI), `platform:site` (TC6IDM.github.io). A parent carries its children's. |
-| Area | `area:scan` `rules` `fillers` `run` `answers` `panel` `parse` `documents` `classifier` `workday` `ats` `privacy` `queue` `fixer` `office` `outreach` `a11y` `store` `devx` `docs` `showcase` |
+| Area | `area:scan` `rules` `fillers` `run` `answers` `panel` `parse` `documents` `classifier` `workday` `ats` `privacy` `queue` `fixer` `field-report` `office` `outreach` `a11y` `store` `devx` `docs` `showcase` |
 | Priority | `P0` fills something wrong or broken now · `P1` next up · `P2` soon · `P3` nice to have |
 | Size | `size:S` ≈ one session · `size:M` two or three · `size:L` a week or more |
 | Who | `who:you` (the owner: accounts, decisions, money, a real application) · `who:claude` · `who:together` (a live job site, the owner's accounts) |

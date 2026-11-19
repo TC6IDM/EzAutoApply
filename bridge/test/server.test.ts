@@ -4,8 +4,8 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { after, before, test } from 'node:test';
-import { QueueStore } from '../src/queue.ts';
-import { createBridge } from '../src/server.ts';
+import { type QueueJob, QueueStore } from '../src/queue.ts';
+import { createBridge, workerDone } from '../src/server.ts';
 import { sampleProspects } from './sample-prospects.ts';
 import { sampleState } from './sample-sprint.ts';
 
@@ -385,4 +385,16 @@ test('bad requests say what is wrong', async () => {
   assert.equal((await call('POST', '/queue/missing/status', { status: 'stuck' })).status, 404);
   assert.equal((await call('POST', '/run', { jobId: 'missing' })).status, 404);
   assert.equal((await call('GET', '/nowhere')).status, 404);
+});
+
+test("an ended applier's tab groups close, but for the jobs still waiting on the owner or its restart (#102)", () => {
+  const job = (id: string, status: QueueJob['status'], worker = 'w1', tabUrl?: string) => ({ id, applyUrl: `https://x.test/${id}`, status, worker, ...(tabUrl && { tabUrl }) }) as QueueJob;
+  const jobs = [job('a', 'submitted'), job('b', 'needsYou', 'w1', 'https://x.test/b/apply'), job('c', 'skipped'), job('d', 'ready'), job('e', 'submitted', 'w2'), job('f', 'running')];
+  assert.deepEqual(workerDone('w1', jobs), {
+    type: 'workerDone',
+    worker: 'w1',
+    jobIds: ['a', 'b', 'c', 'd', 'f'],
+    keep: [{ jobId: 'b', urlPrefix: 'https://x.test/b/apply' }, { jobId: 'd' }, { jobId: 'f' }],
+  });
+  assert.equal(workerDone('w3', jobs), null, 'an applier that held nothing closes nothing');
 });

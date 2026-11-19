@@ -16,16 +16,27 @@ fleet runs, so the next application on that site already fills the field. Plan:
 opens a ticket, the bridge starts one headless Opus with this skill, in the Fixer's worktree
 (`../EzAutoApply-fix`, made from `origin/main` the first time), and starts it again when
 tickets came in while it worked. Started that way, work every open ticket, then stop. It can
-edit only `extension/` there, and can't commit or push. Run by hand, it does the same, or
-keeps polling under `/loop`.
+edit only `extension/` there. Run by hand, it does the same, or keeps polling under `/loop`.
+
+**Its own PR (#101, owner 2026-11-19).** Each working fix is one commit on the worktree's
+`fix/…` branch, pushed at once; the first push opens the PR. The owner may stop the fleet at
+any moment and merge that PR as it stands, so **every commit must leave the extension working**.
+At each start the bridge picks the branch: while the PR isn't merged it carries on there; once
+main has it, a fresh `fix/<date>-fleet` from `origin/main`, with any uncommitted leftovers brought
+along (or left in `git stash` when they don't apply, which the prompt says).
 
 ## Hard rules
 
 - **Never Submit, never advance a real application, never message a person.** The Fixer
   touches code, tests, saved answers and the fleet build, nothing else.
-- **Nothing is committed or pushed without the owner's yes** (CLAUDE.md). A fix lives on a
-  `fix/<date>-<slug>` branch in a worktree; the fleet runs on the uncommitted fleet build
-  until the owner reviews it. Never commit to `main`, never push to `main`.
+- **Only its own branch and PR** (CLAUDE.md's standing exception, #101). Commit and push the
+  worktree's `fix/…` branch and open or comment on its PR; nothing else. Never commit to or push
+  `main`, never merge, never force-push, never amend or rebase a pushed commit
+  (`guard.mjs` refuses those anyway). Run by hand outside the bridge, ask before committing.
+- **A commit is a working version.** One fix per commit, committed only when
+  `npm --prefix extension run compile`, `npm --prefix extension test` and
+  `npm --prefix extension run replay` all pass with it in. Never half a fix, never a red test
+  "to fix in the next commit".
 - **Only the fleet build reloads.** `npm run build:fleet` → `.output/fleet-chrome-mv3`, loaded
   in the fleet's profile. The owner's own copy never changes behind their back
   (`obeysReload` in `src/bridge/client.ts` ignores the command in any other build).
@@ -100,12 +111,17 @@ leading slash (Git Bash rewrites `/tickets` into a Windows path; the helper undo
       `npm --prefix extension run replay` (no case may get worse; never `EZAA_REPLAY_ACCEPT=1`
       on your own), `npm --prefix extension run build:fleet`. (`npx vitest` from the root
       fetches a vitest without the extension's packages.)
-   5. All green → `POST /fleet/reload`, resolve `fixed` with the note "branch, files, test
-      added, replay result". Two honest tries and still red → `git stash` the attempt on the
-      branch, resolve `cantFix` with what was tried; the applier fills that one field itself.
-6. **Report each fix** as an issue on the board (`ezaa-issues`), redacted as above: the
-   ticket's ATS, kind and label, the fix, the branch, and "waiting for the owner's review".
-   Then back to 1.
+   5. All green → commit and push, one plain command each:
+      `git add extension`, `git commit -m "Fixer: <ATS> '<label>' <what changed> (ticket <key>)"`,
+      `git push -u origin <branch>`. No PR yet (`gh pr view` says none) →
+      `gh pr create --base main --head <branch> --title "Fixer: fixes from the fleet's tickets" --body "…"`;
+      later fixes only push, plus `gh pr comment` with one line for the fix. Then
+      `POST /fleet/reload` and resolve `fixed` with the note "commit, PR, files, test added,
+      replay result". Two honest tries and still red → `git stash push -m "<ticket key>"` so the
+      tree is clean for the next ticket, resolve `cantFix` with what was tried; the applier
+      fills that one field itself.
+6. Back to 1. The PR is the record of the fixes; no separate issue per fix. The PR body and
+   comments follow the public-repo rules above.
 
 ## Budget
 
