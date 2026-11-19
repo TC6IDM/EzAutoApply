@@ -80,11 +80,10 @@ export const FIXER_TOOLS = [
   'Bash(gh issue list:*)',
   'Bash(gh issue create:*)',
   'Bash(gh issue comment:*)',
-  'Bash(cd:*)',
-  'Bash(npm ci:*)',
-  'Bash(npm run:*)',
-  'Bash(npm test:*)',
-  'Bash(npx vitest:*)',
+  // The checks run from the worktree's root, never after a `cd` (#89): see FIXER_CHECKS.
+  'Bash(npm ci --prefix extension:*)',
+  'Bash(npm --prefix extension test:*)',
+  'Bash(npm --prefix extension run:*)',
   'Bash(git status:*)',
   'Bash(git diff:*)',
   'Bash(git log:*)',
@@ -99,16 +98,32 @@ export const FIXER_TOOLS = [
 
 export const FIX_DIR = 'EzAutoApply-fix';
 
+/**
+ * How the Fixer runs its checks (#89): from the worktree's root, one command per call. A headless
+ * run refuses `cd`, `Set-Location`, pipes, `&&`, `;` and `$()`, and `npx vitest` from the root
+ * fetches a vitest without the extension's packages.
+ */
+export const FIXER_CHECKS = [
+  'npm ci --prefix extension --no-audit --no-fund',
+  'npm --prefix extension test -- tests/unit/<file>.test.ts [-t "<name>"]',
+  'npm --prefix extension run compile',
+  'npm --prefix extension test',
+  'npm --prefix extension run replay',
+  'npm --prefix extension run build:fleet',
+];
+
 export function fixerPrompt(dir: string, branch: string): string {
   return [
     '/ezaa-fixer Started by the bridge because a ticket opened.',
     `You are already in the Fixer's worktree (${dir}, branch ${branch}): make every code fix here, never in another checkout, and don't make another worktree.`,
+    'Use the Bash tool, one plain command per call, from where you are: never cd, never chain with && ; or |, never $(); those are refused and nobody is there to approve them.',
+    `Run the checks exactly like this (they win over the skill's own wording): ${FIXER_CHECKS.join(' · ')}.`,
     'Work every open ticket, then stop. Never commit or push. Reply with one line per ticket: its label and how you resolved it.',
   ].join(' ');
 }
 
 export function fixerArgs(dir: string, branch: string): string[] {
-  return ['-p', fixerPrompt(dir, branch), '--model', 'opus', ...STREAM, '--allowedTools', ...FIXER_TOOLS];
+  return ['-p', fixerPrompt(dir, branch), '--model', 'opus', ...STREAM, '--disallowedTools', 'PowerShell', '--allowedTools', ...FIXER_TOOLS];
 }
 
 /** Runs git; the tests pass a stand-in. */
