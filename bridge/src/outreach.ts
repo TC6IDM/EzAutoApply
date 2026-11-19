@@ -30,6 +30,9 @@ export interface Prospect {
   why?: string;
   messages?: { note: string; follow_up: string; reason: string; reason_source: string; email_subject?: string; email_body?: string };
   drafted_at?: string;
+  /** /outreach (#119): the id of the draft it put in the owner's Gmail; the owner sends it there. */
+  gmail_draft?: string;
+  gmail_drafted_at?: string;
   sent_at?: string;
   replied_at?: string;
   skip_at?: string;
