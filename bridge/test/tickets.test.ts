@@ -43,3 +43,13 @@ test('incident files are read from the day folders, without the bridge\'s and re
   assert.equal(readResolutions(join(dir, 'tickets.json'))['t-0000000000'].outcome, 'cantFix');
   assert.deepEqual(readResolutions(join(dir, 'missing.json')), {});
 });
+
+test('an applier’s label-only incident gives way to the extension’s with the page’s markup (#98)', () => {
+  const applier = { id: 'a1', at: '2026-11-19T05:00:00Z', kind: 'handFilled', jobId: 'j1', source: 'applier', field: { label: 'Preferred pronouns' } };
+  const ext = { id: 'e1', at: '2026-11-19T05:00:02Z', ats: 'workday', kind: 'handFilled', jobId: 'j1', field: { label: 'Preferred pronouns' }, replaces: 'a1' };
+  const tickets = groupTickets([applier, ext], {});
+  assert.equal(tickets.length, 1);
+  assert.deepEqual([tickets[0].ats, tickets[0].incidents], ['workday', ['e1']]);
+  // Until the extension answers, the applier's own stands.
+  assert.deepEqual(groupTickets([applier], {}).map((t) => t.incidents), [['a1']]);
+});

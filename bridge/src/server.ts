@@ -54,6 +54,8 @@ const OFFICE_POLL_MS = 2000;
 const MAX_SCREENS = 16;
 
 export const MAX_READY_OPEN = 6;
+/** A job that turns one of these no longer needs its tab (#94). */
+const CLOSES_TAB = new Set<JobStatus>(['submitted', 'skipped', 'expired']);
 
 /** What the extension is asked to do. */
 export type Command =
@@ -66,6 +68,8 @@ export type Command =
   | { id: string; type: 'close'; jobId: string; urlPrefix?: string; at: number }
   /** An applier started again in a new tab group (#95): move the job's tab into that group. */
   | { id: string; type: 'adopt'; jobId: string; groupId: number; urlPrefix?: string; at: number }
+  /** An applier filled a field itself (#98): the extension finds it by its label and files its markup. */
+  | { id: string; type: 'snippet'; jobId: string; label: string; kind: 'handFilled' | 'unmatched'; incidentId: string; note?: string; urlPrefix?: string; at: number }
   /** The Fixer rebuilt the fleet build: reload it (only "EzAutoApply (fleet)" obeys; #32). */
   | { id: string; type: 'reload'; at: number };
 
@@ -188,6 +192,25 @@ export function createBridge(o: BridgeOptions) {
     if (startScout(10)) note('The queue ran dry: the Scout is finding more jobs', 'ok');
   };
 
+  /**
+   * Outreach (#97): its switch on starts `/prospects` at once, then once a day while it stays on
+   * (prospects.py keeps the daily cap). Never while the fleet is stopped.
+   */
+  const OUTREACH_EVERY_MS = 24 * 60 * 60_000;
+  let outreachAt = 0;
+  const wantOutreach = (force = false) => {
+    if (!o.launcher?.found || stopped || !settings.parts.outreach || o.launcher.outreachRunning()) return;
+    if (!force && outreachAt && now() - outreachAt < OUTREACH_EVERY_MS) return;
+    try {
+      if (o.launcher.launchOutreach()) {
+        outreachAt = now();
+        note('Outreach started: finding people at companies that fit and drafting messages for you', 'ok');
+      }
+    } catch (e) {
+      note(`Outreach couldn't start: ${e instanceof Error ? e.message : String(e)}`, 'warn');
+    }
+  };
+
   /** The Fixer (#69): starts by itself a little after a ticket opens, one at a time. */
   let fixerTimer: ReturnType<typeof setTimeout> | undefined;
   let fixerStartedAt = 0;
@@ -220,6 +243,7 @@ export function createBridge(o: BridgeOptions) {
         if (tickets().some((t) => t.open && Date.parse(t.last) > fixerStartedAt)) wantFixer();
         return;
       }
+      if (worker === 'outreach') return;
       if (worker === 'scout' && o.queue.all().length <= scoutJobsBefore) scoutFoundNothingAt = now();
       if (worker !== 'scout') return void setImmediate(topUp);
       if (!pending) return;
@@ -261,7 +285,8 @@ export function createBridge(o: BridgeOptions) {
   const setJobStatus = (id: string, status: JobStatus, more: { note?: string; page?: number; tabUrl?: string } = {}): QueueJob | null => {
     const was = o.queue.get(id)?.status;
     const job = o.queue.setStatus(id, status, more);
-    if (job && status === 'submitted' && was !== 'submitted') queueCommand({ type: 'close', jobId: id, ...(job.tabUrl && { urlPrefix: job.tabUrl }) });
+    // Skipped and expired jobs' tabs go too (owner: "closing tabs as routinely as possible").
+    if (job && CLOSES_TAB.has(status) && was !== status) queueCommand({ type: 'close', jobId: id, ...(job.tabUrl && { urlPrefix: job.tabUrl }) });
     return job;
   };
 
@@ -400,6 +425,12 @@ export function createBridge(o: BridgeOptions) {
       const day = at.toISOString().slice(0, 10);
       incidentsByDay.set(day, (incidentsByDay.get(day) ?? 0) + 1);
       ticketsCache = null;
+      // An applier filled a field itself and named it (#98): the extension adds the page's markup.
+      const label = (b.field as { label?: unknown } | undefined)?.label;
+      const job = typeof b.jobId === 'string' ? o.queue.get(b.jobId) : undefined;
+      if (b.source === 'applier' && job && typeof label === 'string' && label && (b.kind === 'handFilled' || b.kind === 'unmatched')) {
+        queueCommand({ type: 'snippet', jobId: job.id, label, kind: b.kind, incidentId: id, ...(typeof b.note === 'string' && { note: b.note }), ...(job.tabUrl && { urlPrefix: job.tabUrl }) });
+      }
       wantFixer();
       return [201, { id, file }];
     }
@@ -528,9 +559,11 @@ export function createBridge(o: BridgeOptions) {
       if (errors.length) throw new HttpError(400, errors.join('; '));
       switchLog.push(...switchEvents(settings, next, new Date(now()).toISOString()));
       switchLog.splice(0, Math.max(0, switchLog.length - 30));
+      const outreachTurnedOn = next.parts.outreach && !settings.parts.outreach;
       settings = next;
       if (o.settingsFile) saveSettings(o.settingsFile, settings);
       wantFixer();
+      if (outreachTurnedOn) wantOutreach(true);
       return [200, settings];
     }
     if (m === 'POST' && p === '/stop-all') {
@@ -598,6 +631,7 @@ export function createBridge(o: BridgeOptions) {
     appliers: o.launcher?.list() ?? [],
     scouting: o.launcher?.scoutRunning() ?? false,
     fixing: o.launcher?.fixerRunning() ?? false,
+    reaching: o.launcher?.outreachRunning() ?? false,
     waiting: pending?.appliers ?? 0,
   });
 
@@ -722,7 +756,8 @@ export function createBridge(o: BridgeOptions) {
   wantFixer();
 
   // The Scout writes the queue file itself, and the Office's buttons change jobs: look now and then (#80).
-  const topUpTimer = o.launcher ? setInterval(topUp, 15_000) : undefined;
+  // Outreach's daily run rides the same timer (#97).
+  const topUpTimer = o.launcher ? setInterval(() => { topUp(); wantOutreach(); }, 15_000) : undefined;
   topUpTimer?.unref?.();
 
   server.on('close', () => {

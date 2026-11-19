@@ -7,7 +7,8 @@ import { SystemOneClient } from '../src/classifier/systemone';
 import { uploadFileName } from '../src/core/documents';
 import { isAccountSite, isExternalRedirect } from '../src/core/sites';
 import type { SiteError } from '../src/fill/siteErrors';
-import { fieldIncidents, type Incident, incidentKey, type Redaction, redactionsFor, runIncidents } from '../src/incidents/incident';
+import { fieldIncidents, type Incident, incidentKey, missedIncident, type Redaction, redactionsFor, runIncidents } from '../src/incidents/incident';
+import type { MissedField } from '../src/content/missed';
 import { newRun, type PageCheck, type RunDeps, runPages } from '../src/run/loop';
 import type { RunState } from '../src/run/types';
 import type { AnswerValue, DocKind, DocSelection, SavedAnswer } from '../src/core/types';
@@ -355,6 +356,20 @@ async function onBridgeCommand(client: BridgeClient, cmd: BridgeCommand): Promis
     // Submitted (#94): its tab closes a few seconds later, like after the confirmation page.
     const tabId = await jobTabId(cmd.jobId, cmd.urlPrefix);
     if (tabId !== undefined) setTimeout(() => browser.tabs.remove(tabId).catch(() => {}), CLOSE_AFTER_SUBMIT_MS);
+    return;
+  }
+  if (cmd.type === 'snippet') {
+    // An applier filled a field itself (#98): the field's markup from whichever frame shows it, for the Fixer.
+    const tabId = await jobTabId(cmd.jobId, cmd.urlPrefix);
+    if (tabId === undefined) return;
+    for (const frameId of await frameIds(tabId)) {
+      const found = (await toTab(tabId, { type: 'missedField', label: cmd.label }, frameId).catch(() => null)) as MissedField | null;
+      if (!found?.html) continue;
+      const tab = await browser.tabs.get(tabId);
+      const ctx = { url: tab.url ?? cmd.urlPrefix ?? '', now: Date.now(), jobId: cmd.jobId };
+      await fileIncidents((r) => [missedIncident(ctx, { ...found, label: cmd.label, frameId, kind: cmd.kind, note: cmd.note, replaces: cmd.incidentId }, r)]);
+      return;
+    }
     return;
   }
   if (cmd.type === 'adopt') {

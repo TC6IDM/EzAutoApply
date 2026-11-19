@@ -426,7 +426,11 @@ table.src tr.skip td { color: var(--ink-3); }
     // The recruiter page (#41): people with messages to send (S.drafts), then those written to.
     S.recruiters = snap.recruiters ?? [];
     S.drafts = S.recruiters.filter((r) => r.status === 'found');
-    A.outreach.now = S.drafts.length ? `${S.drafts.length} message${S.drafts.length === 1 ? '' : 's'} for you to send` : 'Run /prospects in ai-job-search to find people and draft messages.';
+    // Outreach (#97): the bridge runs /prospects when its switch goes on, then once a day.
+    const reachLast = S.fleet.reaching ? launchedAs('outreach')?.activity.at(-1)?.text : null;
+    A.outreach.now = S.fleet.reaching ? (reachLast || 'Finding people at companies that fit')
+      : S.drafts.length ? `${S.drafts.length} message${S.drafts.length === 1 ? '' : 's'} for you to send`
+      : S.settings?.parts?.outreach ? 'Runs once a day while its switch is on' : 'Switch Outreach on to find people and draft messages';
     S.events = snap.events.map((e) => ({ t: hhmmss(e.at), who: deskName(e.who) || e.who, text: e.text, tone: e.tone }));
 
     APPLIERS.forEach((a, i) => {

@@ -95,6 +95,8 @@ export type BackgroundToContent =
   | { type: 'acceptTerms' }
   /** The site's validation messages, mapped to scanned fields (SiteError[]). */
   | { type: 'siteErrors' }
+  /** A field the scan missed, by its label (#98): its block's markup, values stripped (MissedField | null). */
+  | { type: 'missedField'; label: string }
   | { type: 'settingsChanged'; settings: Settings }
   /** All of the tab's frames together, for the top frame's floating button; null when none is filling. */
   | { type: 'fillProgress'; progress: FillProgress | null }

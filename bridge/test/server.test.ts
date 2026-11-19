@@ -94,6 +94,11 @@ test('a job marked submitted (the needs-you card’s "I submitted it", #94) free
     [['close', 'j9', 'https://jobs.lever.co/acme/9/apply']]);
   await call('POST', '/queue/j9/status', { status: 'submitted', note: 'again' });
   assert.deepEqual((await call('GET', '/ext/commands')).json, [], 'only when it becomes submitted');
+  // Skipping a job closes its tab too; asking the owner doesn't.
+  queue.add([{ id: 'j11', applyUrl: 'https://jobs.lever.co/acme/11', company: 'Acme' }]);
+  await call('POST', '/queue/j11/status', { status: 'needsYou', note: 'captcha' });
+  await call('POST', '/queue/j11/status', { status: 'skipped', note: 'skipped in the Office' });
+  assert.deepEqual((await call('GET', '/ext/commands')).json.map((c: { type: string; jobId: string }) => [c.type, c.jobId]), [['close', 'j11']]);
 });
 
 test('an applier that started again takes back its job’s tab into its new group (#95)', async () => {
@@ -105,6 +110,19 @@ test('an applier that started again takes back its job’s tab into its new grou
     [['adopt', 'j10', 1923492873, 'https://jobs.lever.co/acme/10/apply']]);
   assert.equal((await call('POST', '/queue/j10/adopt', { groupId: 'x' })).status, 400);
   assert.equal((await call('POST', '/queue/nope/adopt', { groupId: 1 })).status, 404);
+});
+
+test('an applier that filled a field itself asks the extension for its markup (#98)', async () => {
+  queue.add([{ id: 'j12', applyUrl: 'https://jobs.lever.co/acme/12', company: 'Acme' }]);
+  queue.setStatus('j12', 'running', { tabUrl: 'https://jobs.lever.co/acme/12/apply' });
+  await call('GET', '/ext/commands');
+  const r = await call('POST', '/incidents', { jobId: 'j12', kind: 'handFilled', field: { label: 'Preferred pronouns' }, source: 'applier', note: 'filled by hand' });
+  assert.equal(r.status, 201);
+  const [cmd] = (await call('GET', '/ext/commands')).json;
+  assert.deepEqual([cmd.type, cmd.jobId, cmd.label, cmd.kind, cmd.incidentId, cmd.urlPrefix], ['snippet', 'j12', 'Preferred pronouns', 'handFilled', r.json.id, 'https://jobs.lever.co/acme/12/apply']);
+  // The extension's own incidents ask for nothing.
+  await call('POST', '/incidents', { jobId: 'j12', kind: 'handFilled', field: { label: 'Preferred pronouns' }, replaces: r.json.id });
+  assert.deepEqual((await call('GET', '/ext/commands')).json, []);
 });
 
 test('a Run with no address goes to the job’s own', async () => {

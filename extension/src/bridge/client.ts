@@ -20,6 +20,8 @@ export type BridgeCommand =
   | { id: string; type: 'close'; jobId: string; urlPrefix?: string }
   /** An applier started again in a new tab group (#95): move the job's tab into that group. */
   | { id: string; type: 'adopt'; jobId: string; groupId: number; urlPrefix?: string }
+  /** An applier filled a field itself (#98): find it by its label in the job's tab and file its markup. */
+  | { id: string; type: 'snippet'; jobId: string; label: string; kind: 'handFilled' | 'unmatched'; incidentId: string; note?: string; urlPrefix?: string }
   /** The Fixer rebuilt the fleet build (#32): reload it so the fix takes effect. */
   | { id: string; type: 'reload' };
 

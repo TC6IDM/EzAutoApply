@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
-import { ACTIVITY_KEPT, activityOf, APPLIER_TOOLS, applierArgs, findClaude, FIXER_CHECKS, FIXER_TOOLS, fixerArgs, type Git, Launcher, SCOUT_TOOLS, scoutArgs } from '../src/launcher.ts';
+import { ACTIVITY_KEPT, activityOf, APPLIER_TOOLS, applierArgs, findClaude, FIXER_CHECKS, FIXER_TOOLS, fixerArgs, type Git, Launcher, OUTREACH_TOOLS, outreachArgs, SCOUT_TOOLS, scoutArgs } from '../src/launcher.ts';
 import { QueueStore } from '../src/queue.ts';
 import { createBridge } from '../src/server.ts';
 
@@ -509,6 +509,40 @@ test('Send back: a job you fixed goes back to the applier that waited on you, wh
     assert.equal((await call('GET', '/queue/next?worker=w1')).json.unfinished.id, 'j1');
     assert.equal((await call('POST', '/queue/j1/back')).status, 409, 'only a job that waits on you');
     assert.equal((await call('POST', '/queue/nope/back')).status, 404);
+  } finally {
+    bridge.server.close();
+  }
+});
+
+test('Outreach (#97): its switch on starts /prospects once, with no browser and nothing that sends; never while stopped', async () => {
+  const args = outreachArgs();
+  assert.deepEqual(args.slice(0, 4), ['-p', '/prospects', '--model', 'sonnet']);
+  assert.deepEqual(toolsOf(args), OUTREACH_TOOLS);
+  assert.ok(!OUTREACH_TOOLS.some((t) => /chrome|gmail|slack|send|curl|^Bash$|^Edit|^Write/i.test(t)), 'web search and prospects.py only');
+
+  const TOKEN = 'test-token-outreach-0123456789';
+  const dir = mkdtempSync(join(tmpdir(), 'ezaa-outreach-'));
+  const { spawn, started } = fakeSpawn();
+  const launcher = new Launcher({ claude: 'claude.exe', cwd: dir, logDir: join(dir, 'fleet'), spawn });
+  const bridge = createBridge({ token: TOKEN, queue: new QueueStore(join(dir, 'queue.jsonl')), incidentsDir: join(dir, 'incidents'), port: 0, launcher });
+  await new Promise<void>((r) => bridge.server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${(bridge.server.address() as AddressInfo).port}`;
+  const call = (method: string, path: string, body?: unknown) =>
+    fetch(base + path, { method, headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const outreachRuns = () => started.filter((s) => s.args[1] === '/prospects').length;
+  try {
+    await call('POST', '/stop-all');
+    await call('PUT', '/settings', { parts: { outreach: true } });
+    assert.equal(outreachRuns(), 0, 'not while the fleet is stopped');
+    await call('POST', '/resume');
+    await call('PUT', '/settings', { parts: { outreach: false } });
+    await call('PUT', '/settings', { parts: { outreach: true } });
+    assert.equal(outreachRuns(), 1);
+    assert.equal(launcher.outreachRunning(), true);
+    await call('PUT', '/settings', { parts: { outreach: false } });
+    await call('PUT', '/settings', { parts: { outreach: true } });
+    assert.equal(outreachRuns(), 1, 'one at a time');
+    assert.equal(launcher.appliers(), 0, 'Outreach is not an applier');
   } finally {
     bridge.server.close();
   }

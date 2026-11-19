@@ -23,6 +23,9 @@ export interface IncidentFile {
   stop?: { reason?: string };
   note?: string;
   siteMessage?: string;
+  /** The applier's label-only incident that this one (the extension's, with the page's markup) stands in for (#98). */
+  replaces?: string;
+  source?: string;
 }
 
 export const OUTCOMES = ['fixed', 'answered', 'cantFix', 'needsYou'] as const;
@@ -63,7 +66,9 @@ export function ticketOf(i: IncidentFile): { key: string; ats: string; kind: str
 
 export function groupTickets(incidents: IncidentFile[], resolutions: Record<string, Resolution>): Ticket[] {
   const byKey = new Map<string, Ticket>();
+  const replaced = new Set(incidents.map((i) => i.replaces).filter((id): id is string => !!id));
   for (const i of [...incidents].sort((a, b) => whenOf(a).localeCompare(whenOf(b)))) {
+    if (replaced.has(i.id)) continue;
     const t = ticketOf(i);
     const at = whenOf(i);
     const got = byKey.get(t.key) ?? { ...t, count: 0, first: at, last: at, incidents: [], jobIds: [], resolution: resolutions[t.key] ?? null, open: true };
