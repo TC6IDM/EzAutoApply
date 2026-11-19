@@ -31,7 +31,8 @@ export type ContentToBackground =
   | { type: 'classify'; op: 'predict'; req: SystemOneRequest }
   | { type: 'classify'; op: 'predictBatch'; req: SystemOneBatchRequest }
   | { type: 'getDocument'; kind: DocKind }
-  | { type: 'getSecret'; name: 'accountPassword' }
+  /** minLength: what the password box asks for; a longer one gets "!" added (#85). */
+  | { type: 'getSecret'; name: 'accountPassword'; minLength?: number }
   | { type: 'report'; report: FrameReport }
   /** How far this frame's run has got; null when it's done. */
   | { type: 'progress'; progress: FillProgress | null }

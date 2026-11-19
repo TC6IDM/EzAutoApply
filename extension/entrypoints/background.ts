@@ -2,6 +2,7 @@ import { type Browser, browser } from 'wxt/browser';
 import { defineBackground } from 'wxt/utils/define-background';
 import { type BridgeCommand, BridgeClient, bridgeFields, findJobTab, obeysReload, screenMoment } from '../src/bridge/client';
 import { ownJob } from '../src/bridge/ownJob';
+import { bangsFor, lengthen } from '../src/fill/password';
 import { SystemOneClient } from '../src/classifier/systemone';
 import { uploadFileName } from '../src/core/documents';
 import { isAccountSite, isExternalRedirect } from '../src/core/sites';
@@ -324,9 +325,17 @@ async function onBridgeCommand(client: BridgeClient, cmd: BridgeCommand): Promis
     return;
   }
   if (cmd.type === 'run') {
-    const tab = findJobTab(await browser.tabs.query({}), cmd.urlPrefix ?? '');
-    if (tab?.id !== undefined) {
-      await startRun(tab.id, cmd.jobId);
+    const asked = Date.now();
+    // By address; else the tab this job ran in before (a send-back, or an address spelt another way, #86).
+    let tabId = findJobTab(await browser.tabs.query({}), cmd.urlPrefix ?? '')?.id;
+    if (tabId === undefined) {
+      const before = await runForJob(cmd.jobId);
+      if (before && (await browser.tabs.get(before.tabId).catch(() => null))) tabId = before.tabId;
+    }
+    if (tabId !== undefined) {
+      const run = await startRun(tabId, cmd.jobId);
+      // Already running there: report it now, so the agent waiting on this command hears back.
+      if (run.startedAt < asked && run.jobId === cmd.jobId) await saveRun({ ...(await readRun(tabId) ?? run), updatedAt: Date.now() });
       return;
     }
     const run = newRun(-1, cmd.urlPrefix ?? '', Date.now(), cmd.jobId);
@@ -539,7 +548,21 @@ async function handleContent(msg: ContentToBackground, sender: Browser.runtime.M
       // sender.url is the frame's own URL, so an embedded iframe is judged by its own site.
       const settings = await getSettings();
       if (!settings.passwordOnAnySite && !isAccountSite(sender.url ?? '')) return null;
-      return (await getAccountPassword()) || null;
+      const saved = (await getAccountPassword()) || null;
+      if (!saved) return null;
+      // A site that asked for a longer password got "!" added (#85): every later fill there, sign-in too, types the same.
+      let host = '';
+      try {
+        host = new URL(sender.url ?? '').hostname;
+      } catch {
+        /* no site: the saved password as it is */
+      }
+      if (!host) return saved;
+      const key = `passwordBangs:${host}`;
+      const had = Number((await browser.storage.local.get(key))[key]) || 0;
+      const need = bangsFor(saved.length, msg.minLength ?? 0);
+      if (need > had) await browser.storage.local.set({ [key]: need });
+      return lengthen(saved, Math.max(had, need));
     }
     case 'report': {
       if (tabId === undefined) return null;
