@@ -64,6 +64,18 @@ describe('matchRules: labels', () => {
   it('does not treat a salary question about the current job as desired salary', () => {
     expect(keyOf({ label: 'What is your current salary?' })).toBeNull();
   });
+
+  it('"What school did you attend?" asks for the school; "Did you attend a university?" is a yes/no', () => {
+    expect(keyOf({ label: 'What school did you attend? *' })).toBe('school');
+    expect(keyOf({ label: '* Which university did you attend?' })).toBe('school');
+    expect(keyOf({ label: 'Did you attend a university?', kind: 'radio', options: opts('Yes', 'No') })).not.toBe('school');
+    expect(keyOf({ label: 'Do you currently attend school?', kind: 'radio', options: opts('Yes', 'No') })).not.toBe('school');
+  });
+
+  it('a long label that is still a graduation date matches; a yes/no about graduating does not', () => {
+    expect(keyOf({ label: 'Graduation Date or Anticipated Graduation Date For most recent or in progress degree.' })).toBe('graduationDate');
+    expect(keyOf({ label: 'Have you finished your graduation requirements for this degree and received a diploma?', kind: 'radio', options: opts('Yes', 'No') })).not.toBe('graduationDate');
+  });
 });
 
 describe('matchRules: choice questions', () => {

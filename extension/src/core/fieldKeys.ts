@@ -558,7 +558,8 @@ export const FIELD_KEYS: FieldKeyDef[] = [
     description: 'Name of a school, college or university attended',
     label: [/\b(school|university|college|institution)( name)?\b/, /\bname of (school|institution|university|college)\b/, /\balma mater\b/],
     attr: [/\bschool\b/, /\buniversity\b/, /\bcollege\b/, /\binstitution\b/],
-    exclude: [/\b(graduat|diploma|did you|have you|are you|attend|high school)/], maxWords: 6,
+    // "What school did you attend?" asks for the name; "Did you attend a university?" is a yes/no.
+    exclude: [/\b(graduat|diploma|have you|are you|high school)/, /^\W*(did|do|will|would|were) you\b/, /^(?!\W*(what|which)\b).*\battend/], maxWords: 6,
     resolve: (c) => text(edu(c)?.school),
   },
   {
@@ -604,7 +605,9 @@ export const FIELD_KEYS: FieldKeyDef[] = [
     key: 'graduationDate', category: 'education', title: 'Graduation date', valueType: 'date', repeat: true,
     description: 'Graduation date or expected graduation date',
     label: [/\b(expected |anticipated )?graduation( date| year| month)?\b/, /\bgrad (date|year)\b/],
-    maxWords: 8,
+    // Long but still a date: "Graduation Date or Anticipated Graduation Date For most recent or in progress degree."
+    exclude: [/\b(have you|are you|did you|do you|will you)\b/],
+    maxWords: 16,
     resolve: (c) => text(edu(c)?.end),
   },
 
