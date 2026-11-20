@@ -14,6 +14,10 @@ const ALLOWED = [
   ['POST', /^\/answers$/],
   ['GET', /^\/tabs\/[A-Za-z0-9._-]+\/status$/],
   ['POST', /^\/fleet\/reload$/],
+  // The Reporter (#116): field reports, read and marked logged.
+  ['GET', /^\/reports(\?open=1)?$/],
+  ['GET', /^\/reports\/[A-Za-z0-9._-]+$/],
+  ['POST', /^\/reports\/[A-Za-z0-9._-]+\/issue$/],
 ];
 
 const [method = '', raw = '', ...rest] = process.argv.slice(2);

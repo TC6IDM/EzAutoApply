@@ -10,7 +10,7 @@ import type { Settings } from '../src/core/types';
 import { type BackgroundToContent, call, type ContentToBackground, type RunCheckResponse } from '../src/messages';
 import { acceptAccountTerms, pageFingerprint } from '../src/run/page';
 import { quietAlerts } from '../src/content/quietAlerts';
-import { findMissed } from '../src/content/missed';
+import { findMissed, formSnapshot } from '../src/content/missed';
 
 /** How long after a fill or a Next the page's alerts still close themselves (sites answer an upload late). */
 const QUIET_AFTER_MS = 20_000;
@@ -124,6 +124,9 @@ export default defineContentScript({
           return false;
         case 'missedField':
           sendResponse(findMissed(document, msg.label));
+          return false;
+        case 'formSnapshot':
+          sendResponse(formSnapshot(document));
           return false;
         case 'settingsChanged':
           applySettings(msg.settings);

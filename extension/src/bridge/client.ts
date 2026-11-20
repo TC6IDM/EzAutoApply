@@ -12,7 +12,10 @@ export const BRIDGE_DEFAULT_URL = 'http://127.0.0.1:8100';
 /** What the bridge asks the extension to do (bridge/src/server.ts › Command). */
 export type BridgeCommand =
   | { id: string; type: 'run'; jobId: string; urlPrefix?: string }
-  | { id: string; type: 'answer'; jobId: string; fieldId: string; frameId?: number; answer: unknown; save?: unknown }
+  /** A fleet job's field (`jobId`), or one the owner asked about on their own tab (`askId`, `tabId`, #103). */
+  | { id: string; type: 'answer'; jobId?: string; askId?: string; tabId?: number; fieldId: string; frameId?: number; answer: unknown; save?: unknown }
+  /** The Answerer left the owner's question to them (#103): why, for the panel. */
+  | { id: string; type: 'askDone'; askId: string; tabId: number; frameId: number; fieldId: string; why: string }
   | { id: string; type: 'stopAll' }
   /** The ready list's "go to tab" (#29): bring the job's tab and window to the front. */
   | { id: string; type: 'focus'; jobId: string }
@@ -23,7 +26,25 @@ export type BridgeCommand =
   /** An applier filled a field itself (#98): find it by its label in the job's tab and file its markup. */
   | { id: string; type: 'snippet'; jobId: string; label: string; kind: 'handFilled' | 'unmatched'; incidentId: string; note?: string; urlPrefix?: string }
   /** The Fixer rebuilt the fleet build (#32): reload it so the fix takes effect. */
-  | { id: string; type: 'reload' };
+  | { id: string; type: 'reload' }
+  /** An applier ended (#102): close its jobs' tab groups, all but the tabs of the jobs in `keep`. */
+  | { id: string; type: 'workerDone'; worker: string; jobIds: string[]; keep: { jobId: string; urlPrefix?: string }[] };
+
+/** The bridge's agents that never open tabs (its /fleet list has them beside the appliers). */
+const NO_TABS = new Set(['scout', 'fixer', 'outreach', 'answerer', 'reporter']);
+
+/** Whether an applier (the agents that open tabs) is working now, from GET /fleet. */
+export function agentsAtWork(fleet: { appliers?: { worker?: string; status?: string }[] } | null): boolean {
+  return (fleet?.appliers ?? []).some((a) => a.status === 'running' && !NO_TABS.has(a.worker ?? ''));
+}
+
+/**
+ * Which tabs of an ended applier's groups close (#102): every tab in them but the ones still
+ * needed. Pure, so the choice is unit-tested.
+ */
+export function tabsToClose(tabs: { id?: number; groupId?: number }[], groups: Set<number>, keep: Set<number>): number[] {
+  return tabs.filter((t) => t.id !== undefined && t.groupId !== undefined && groups.has(t.groupId) && !keep.has(t.id)).map((t) => t.id!);
+}
 
 /**
  * Only the fleet's own copy reloads for the Fixer (#32, #33): the owner's copy keeps running
@@ -59,6 +80,45 @@ export function bridgeFields(fields: FieldReport[]): BridgeField[] {
     ...(f.note && { note: f.note }),
     ...(f.source !== 'none' && { source: f.source }),
   }));
+}
+
+/** What "Ask an agent" sends the bridge about a field (#103): its wording and the page, never its value. */
+export interface AskQuestion {
+  tabId: number;
+  frameId: number;
+  fieldId: string;
+  label: string;
+  kind: string;
+  options: string[];
+  required: boolean;
+  note?: string;
+  key?: string;
+  /** The page's address without its query or hash. */
+  url: string;
+  title?: string;
+}
+
+/** The question for a field, from its report: nothing the owner or the page typed into it. */
+export function askQuestion(tabId: number, f: FieldReport, page: { url: string; title?: string }): AskQuestion {
+  return {
+    tabId,
+    frameId: f.frameId,
+    fieldId: f.id,
+    label: f.label,
+    kind: f.kind,
+    options: f.options,
+    required: f.required,
+    ...(f.key && { key: f.key }),
+    // Only the site's own error message: other notes can quote a value ("the site had …").
+    ...(f.note && /^The site says:/.test(f.note) && { note: f.note }),
+    url: page.url.replace(/[?#].*$/, ''),
+    ...(page.title && { title: page.title }),
+  };
+}
+
+/** Which fields the panel offers "Ask an agent" on: unanswered or guessed, and never a password or a file. */
+export function canAsk(f: Pick<FieldReport, 'status' | 'kind'>): boolean {
+  return (f.status === 'needs' || f.status === 'review') && f.kind !== 'password' && f.kind !== 'file';
 }
 
 type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
@@ -110,6 +170,21 @@ export class BridgeClient {
   /** Postings the owner sent (#79): `already` lists those the queue had, with their status. */
   queueJobs(jobs: unknown[]): Promise<{ added: string[]; already?: { id: string; status: string; company?: string; title?: string }[] }> {
     return this.call('POST', '/queue', { jobs });
+  }
+
+  /** The fleet's state (appliers and helpers), for knowing whether a new tab group is an agent's (#102). */
+  fleet(): Promise<{ appliers?: { worker?: string; status?: string }[] }> {
+    return this.call('GET', '/fleet');
+  }
+
+  /** "Ask an agent" (#103): the question, never a value; the Answerer's reply comes back as a command. */
+  ask(question: AskQuestion): Promise<{ id: string }> {
+    return this.call('POST', '/asks', question);
+  }
+
+  /** "Report a field" (#114): already redacted by the caller; the bridge may start its Reporter. */
+  report(body: unknown): Promise<{ id: string; reporter: boolean }> {
+    return this.call('POST', '/reports', body);
   }
 
   /** For #18: an incident (already redacted by the caller). */

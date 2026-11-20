@@ -705,7 +705,7 @@ table.src tr.skip td { color: var(--ink-3); }
   function outreachHTML(a) {
     const sent = S.recruiters.filter((r) => r.status !== 'found').length;
     return `<div class="now-row">${pill(statusOf(a.id))}<p class="now">${esc(a.now)}</p></div>
-      <div class="callout info"><strong>You send every message</strong><p>Outreach runs as /prospects in ai-job-search: it finds a few people a day at companies that fit, through web search only, and drafts a connection note and a follow-up for each. It never sends anything.</p><button type="button" class="link" data-act="openTab" data-arg="recruiters">Open the recruiter page</button></div>
+      <div class="callout info"><strong>You send every message</strong><p>Outreach runs as /prospects in ai-job-search: it finds a few people a day at companies that fit, through web search only, and drafts a connection note and a follow-up for each. /outreach there does the same and puts each email in your Gmail drafts. It never sends anything.</p><button type="button" class="link" data-act="openTab" data-arg="recruiters">Open the recruiter page</button></div>
       <div class="sect"><div class="sect-h"><span>Messages</span><span class="num">${S.drafts.length} to send · ${sent} sent</span></div></div>`;
   }
 
@@ -716,14 +716,14 @@ table.src tr.skip td { color: var(--ink-3); }
   function recruiterCard(r) {
     const m = r.messages, waiting = r.status === 'found', btn = (act, arg, label) => `<button type="button" class="btn small" data-act="${act}" data-arg="${esc(arg)}">${label}</button>`;
     const links = [webLink(r.profile_url, 'Profile'), webLink(r.source_url, 'Where they were found'), webLink(r.role_url, 'The role')].filter(Boolean).join(' · ');
-    const tag = waiting ? (m.email_subject ? 'LinkedIn or email' : 'LinkedIn') : r.status === 'replied' ? 'Replied' : 'Sent';
+    const tag = waiting ? (r.gmail_draft ? 'In your Gmail drafts' : m.email_subject ? 'LinkedIn or email' : 'LinkedIn') : r.status === 'replied' ? 'Replied' : 'Sent';
     let h = `<article class="card"><div class="card-top"><strong>${esc(r.name)}</strong><span class="tier">${tag}</span></div>
       <div class="card-meta">${meta(r.title, r.company, r.role)}${links ? '<br>' + links : ''}</div>`;
     if (!waiting) h += `<p class="card-meta">${r.status === 'replied' ? `Replied, marked ${when(r.replied_at)}` : `Sent ${when(r.sent_at)}${r.channel ? ' by ' + esc(r.channel === 'email' ? 'email' : 'LinkedIn') : ''}`}</p>`;
     h += `<div class="msg-h"><span>Why them</span><span></span></div><p class="msg">${esc(m.reason)}</p>`;
     h += `<div class="msg-h"><span>Connection note</span><span>${m.note.length} / 200</span></div><p class="msg">${esc(m.note)}</p>`;
     h += `<div class="msg-h"><span>Message after they accept</span><span>${m.follow_up.length} chars</span></div><p class="msg">${esc(m.follow_up)}</p>`;
-    if (m.email_subject) h += `<div class="msg-h"><span>Email to ${esc(r.email)}</span><span>listed publicly</span></div><p class="msg"><b>${esc(m.email_subject)}</b>\n\n${esc(m.email_body)}</p>`;
+    if (m.email_subject) h += `<div class="msg-h"><span>Email to ${esc(r.email)}</span><span>${r.gmail_draft && waiting ? 'in your Gmail drafts: send it there' : 'listed publicly'}</span></div><p class="msg"><b>${esc(m.email_subject)}</b>\n\n${esc(m.email_body)}</p>`;
     const acts = [btn('copy', `${r.id}:note`, 'Copy note'), btn('copy', `${r.id}:follow`, 'Copy message')];
     if (m.email_subject) acts.push(btn('copy', `${r.id}:subject`, 'Copy subject'), btn('copy', `${r.id}:email`, 'Copy email'));
     if (waiting) {
@@ -756,7 +756,7 @@ table.src tr.skip td { color: var(--ink-3); }
       h += `<p class="empty" style="font-size:12px">Saved agent answers wait for your approval in the side panel’s Answers view. Until then they fill as “check this”.</p>`;
     }
     if (tab === 'recruiters') {
-      h += S.recruiters.length ? S.recruiters.map(recruiterCard).join('') : '<p class="empty">No messages waiting. Run /prospects in ai-job-search to find people at companies that fit and draft their messages.</p>';
+      h += S.recruiters.length ? S.recruiters.map(recruiterCard).join('') : '<p class="empty">No messages waiting. Run /outreach in ai-job-search (or /prospects, without Gmail) to find people at companies that fit and draft their messages.</p>';
       h += `<p class="empty" style="font-size:12px">Nothing here sends anything. Send each message yourself: LinkedIn by hand, email from your own mail client. Then mark it, so nobody is written to twice.</p>`;
     }
     return h;

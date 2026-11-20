@@ -302,6 +302,14 @@ export function SettingsView(props: { active: boolean; onSaved(): void; health: 
             <BridgeStatus key={`${s.bridgeUrl}|${s.bridgeToken}`} />
           </div>
         )}
+        {s.bridgeEnabled && (
+          <Toggle
+            label="Keep Claude’s tabs in their own window"
+            hint="While agents run, each new Claude tab group moves to a separate window and your own window keeps the tab you were on. A finished applier’s group closes, except tabs still waiting for you."
+            checked={s.fleetWindow}
+            onChange={(v) => change((x) => (x.fleetWindow = v))}
+          />
+        )}
       </Section>
 
       <Section title="Backup" defaultOpen={false}>

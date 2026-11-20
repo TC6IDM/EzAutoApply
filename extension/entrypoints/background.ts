@@ -1,6 +1,6 @@
 import { type Browser, browser } from 'wxt/browser';
 import { defineBackground } from 'wxt/utils/define-background';
-import { type BridgeCommand, BridgeClient, bridgeFields, findJobTab, obeysReload, screenMoment } from '../src/bridge/client';
+import { agentsAtWork, askQuestion, type BridgeCommand, BridgeClient, bridgeFields, canAsk, findJobTab, obeysReload, screenMoment, tabsToClose } from '../src/bridge/client';
 import { ownJob } from '../src/bridge/ownJob';
 import { bangsFor, lengthen } from '../src/fill/password';
 import { SystemOneClient } from '../src/classifier/systemone';
@@ -9,6 +9,7 @@ import { isAccountSite, isExternalRedirect } from '../src/core/sites';
 import type { SiteError } from '../src/fill/siteErrors';
 import { fieldIncidents, type Incident, incidentKey, missedIncident, type Redaction, redactionsFor, runIncidents } from '../src/incidents/incident';
 import type { MissedField } from '../src/content/missed';
+import { reportBody } from '../src/incidents/report';
 import { newRun, type PageCheck, type RunDeps, runPages } from '../src/run/loop';
 import type { RunState } from '../src/run/types';
 import type { AnswerValue, DocKind, DocSelection, SavedAnswer } from '../src/core/types';
@@ -23,9 +24,10 @@ import {
   markAnswersUsed,
   saveAnswer,
 } from '../src/db';
-import type { FillProgress, FrameReport } from '../src/fill/types';
+import type { FieldReport, FillProgress, FrameReport } from '../src/fill/types';
 import type {
   AdvanceTarget,
+  AskState,
   BackgroundBroadcast,
   BackgroundToContent,
   ContentContext,
@@ -36,7 +38,7 @@ import type {
   SendToFleetResult,
   TabState,
 } from '../src/messages';
-import { isError } from '../src/messages';
+import { askKey, isError } from '../src/messages';
 
 /**
  * The background worker owns the database and the classifier connection.
@@ -49,6 +51,7 @@ const tabKey = (tabId: number) => `tab:${tabId}`;
 interface StoredTabState {
   reports: Record<string, FrameReport>;
   selection: DocSelection;
+  asks?: Record<string, AskState>;
 }
 
 async function readTab(tabId: number): Promise<StoredTabState> {
@@ -297,6 +300,158 @@ async function checkSubmitted(tabId: number): Promise<void> {
 /** How long a submitted fleet job's confirmation page stays before its tab closes. */
 const CLOSE_AFTER_SUBMIT_MS = 5000;
 
+// ---- "Ask an agent" (#103) --------------------------------------------------------------------
+// The panel's button sends one field's question (never its value) to the bridge, whose Answerer
+// answers from the owner's records. The answer comes back as an `answer` command for this tab and
+// fills for review, saved unapproved; a refusal comes back as `askDone` with the reason.
+
+async function askAgent(tabId: number, frameId: number, fieldId: string): Promise<AskState> {
+  const s = await getSettings();
+  if (!s.bridgeEnabled || !s.bridgeToken) throw new Error('Turn on the agent fleet bridge in Settings first.');
+  const field = Object.values((await readTab(tabId)).reports)
+    .flatMap((r) => r.fields)
+    .find((f) => f.id === fieldId && f.frameId === frameId);
+  if (!field) throw new Error('That field isn’t on the page any more: fill again first.');
+  if (!canAsk(field)) throw new Error('An agent never answers this kind of field.');
+  const tab = await browser.tabs.get(tabId);
+  let id: string;
+  try {
+    ({ id } = await new BridgeClient(s.bridgeUrl, s.bridgeToken).ask(askQuestion(tabId, field, { url: tab.url ?? '', title: tab.title })));
+  } catch (e) {
+    const why = String((e as Error).message);
+    if (/\b423\b/.test(why)) throw new Error('The Answerer is switched off in the Fleet Office.');
+    if (/\b503\b/.test(why)) throw new Error('The bridge can’t find Claude Code to start the Answerer.');
+    throw new Error('The bridge didn’t answer: is it running?');
+  }
+  const ask: AskState = { id, status: 'asking', at: Date.now() };
+  await updateTab(tabId, (st) => {
+    st.asks = { ...st.asks, [askKey(frameId, fieldId)]: ask };
+  });
+  return ask;
+}
+
+// ---- "Report a field" (#114) ------------------------------------------------------------------
+// The owner says what went wrong on this page. Its form (values stripped in the page, profile
+// values swapped for placeholders here), what the scan found (no values) and a screenshot go
+// to the bridge, which keeps them on this computer and starts the Reporter to log an issue.
+
+async function reportField(tabId: number, note: string): Promise<{ id: string; reporter: boolean }> {
+  const s = await getSettings();
+  if (!s.bridgeEnabled || !s.bridgeToken) throw new Error('Turn on the agent fleet bridge in Settings first.');
+  if (!note.trim()) throw new Error('Say what went wrong first.');
+  const tab = await browser.tabs.get(tabId);
+  const frames: { frameId: number; html: string }[] = [];
+  for (const frameId of await frameIds(tabId)) {
+    const html = (await toTab(tabId, { type: 'formSnapshot' }, frameId).catch(() => null)) as string | null;
+    if (html) frames.push({ frameId, html });
+  }
+  const fields = Object.values((await readTab(tabId)).reports).flatMap((r) => r.fields);
+  // Only the tab showing in its window can be pictured.
+  const screen =
+    tab.active && tab.windowId !== undefined
+      ? await browser.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 60 }).catch(() => undefined)
+      : undefined;
+  const body = reportBody({ url: tab.url ?? '', title: tab.title, frames, screen }, note, fields, redactionsFor(await getProfile()));
+  try {
+    return await new BridgeClient(s.bridgeUrl, s.bridgeToken).report(body);
+  } catch {
+    throw new Error('The bridge didn’t take the report: is it running?');
+  }
+}
+
+/** Updates the field's ask, if it is still this one (a newer ask on the same field wins). */
+async function setAsk(tabId: number, key: string, id: string, patch: Partial<AskState>): Promise<void> {
+  await updateTab(tabId, (st) => {
+    const was = st.asks?.[key];
+    if (was?.id === id) st.asks = { ...st.asks, [key]: { ...was, ...patch } };
+  }).catch(() => {});
+}
+
+// ---- The fleet's tabs (#102) ------------------------------------------------------------------
+// Claude in Chrome puts each new session's tab group in the last-focused window, which is the
+// owner's. While settings.fleetWindow is on, the fleet's groups move to one window of their own
+// (the owner's window gets back the tab it showed), and an ended applier's groups close.
+
+const FLEET_GROUPS = 'fleetGroups';
+const FLEET_WINDOW = 'fleetWindow';
+/** Per window: the tab shown before the current one, to give the owner's window back its tab. */
+const shownBefore = new Map<number, { before?: number; now?: number }>();
+
+async function fleetGroups(): Promise<Record<string, number>> {
+  return ((await browser.storage.session.get(FLEET_GROUPS))[FLEET_GROUPS] as Record<string, number> | undefined) ?? {};
+}
+
+/** A job's Run (or an adopt) is in this tab: its group is the fleet's. Remember it, and move it. */
+async function noteFleetTab(jobId: string, tabId: number): Promise<void> {
+  const tab = await browser.tabs.get(tabId).catch(() => null);
+  const groupId = tab?.groupId ?? -1;
+  if (groupId < 0) return;
+  const groups = await fleetGroups();
+  if (groups[jobId] !== groupId) await browser.storage.session.set({ [FLEET_GROUPS]: { ...groups, [jobId]: groupId } });
+  await toFleetWindow(groupId);
+}
+
+async function fleetWindowId(): Promise<number | undefined> {
+  const id = (await browser.storage.session.get(FLEET_WINDOW))[FLEET_WINDOW] as number | undefined;
+  return id !== undefined && (await browser.windows.get(id).catch(() => null)) ? id : undefined;
+}
+
+/** Moves a tab group into the fleet's window (made, unfocused, when there is none). */
+async function toFleetWindow(groupId: number): Promise<void> {
+  const s = await getSettings();
+  if (!s.bridgeEnabled || !s.fleetWindow) return;
+  const group = await browser.tabGroups.get(groupId).catch(() => null);
+  if (!group) return;
+  let win = await fleetWindowId();
+  if (win === group.windowId) return;
+  const from = group.windowId;
+  const [shown] = await browser.tabs.query({ windowId: from, active: true });
+  // Read before the move: moving the group out makes Chrome show another tab there.
+  const back = shownBefore.get(from)?.before;
+  let placeholder: number | undefined;
+  if (win === undefined) {
+    const made = await browser.windows.create({ focused: false, type: 'normal' });
+    win = made?.id;
+    placeholder = made?.tabs?.[0]?.id;
+    if (win === undefined) return;
+    await browser.storage.session.set({ [FLEET_WINDOW]: win });
+  }
+  await browser.tabGroups.move(groupId, { windowId: win, index: -1 });
+  if (placeholder !== undefined) browser.tabs.remove(placeholder).catch(() => {});
+  // The group's tab was the one showing: the owner's window shows what it showed before.
+  if (shown?.groupId === groupId && back !== undefined) browser.tabs.update(back, { active: true }).catch(() => {});
+}
+
+/** A new tab group while an applier works and the group got a title at once (Claude's do; one the owner makes starts untitled). */
+async function onGroupCreated(group: { id: number; windowId: number }): Promise<void> {
+  const s = await getSettings();
+  if (!s.bridgeEnabled || !s.bridgeToken || !s.fleetWindow) return;
+  if (group.windowId === (await fleetWindowId())) return;
+  await sleep(400);
+  const now = await browser.tabGroups.get(group.id).catch(() => null);
+  if (!now?.title) return;
+  const fleet = await new BridgeClient(s.bridgeUrl, s.bridgeToken).fleet().catch(() => null);
+  if (agentsAtWork(fleet)) await toFleetWindow(group.id);
+}
+
+/** An applier ended (#102): close its jobs' groups, all but the tabs still needed. */
+async function closeWorkerGroups(cmd: Extract<BridgeCommand, { type: 'workerDone' }>): Promise<void> {
+  if (!(await getSettings()).fleetWindow) return;
+  const known = await fleetGroups();
+  const groups = new Set(cmd.jobIds.map((j) => known[j]).filter((g): g is number => typeof g === 'number'));
+  if (!groups.size) return;
+  const keep = new Set<number>();
+  for (const k of cmd.keep) {
+    const tabId = await jobTabId(k.jobId, k.urlPrefix);
+    if (tabId !== undefined) keep.add(tabId);
+  }
+  const close = tabsToClose(await browser.tabs.query({}), groups, keep);
+  if (close.length) await browser.tabs.remove(close).catch(() => {});
+  const kept = new Set(cmd.keep.map((k) => k.jobId));
+  const left = Object.fromEntries(Object.entries(known).filter(([j]) => kept.has(j) || !cmd.jobIds.includes(j)));
+  await browser.storage.session.set({ [FLEET_GROUPS]: left });
+}
+
 /** The owner sends a posting to the fleet (#79): the panel's button or the right-click item. */
 async function sendToFleet(url: string, title: string): Promise<SendToFleetResult> {
   const s = await getSettings();
@@ -341,6 +496,7 @@ async function onBridgeCommand(client: BridgeClient, cmd: BridgeCommand): Promis
       if (before && (await browser.tabs.get(before.tabId).catch(() => null))) tabId = before.tabId;
     }
     if (tabId !== undefined) {
+      noteFleetTab(cmd.jobId, tabId).catch(() => {});
       const run = await startRun(tabId, cmd.jobId);
       // Already running there: report it now, so the agent waiting on this command hears back.
       if (run.startedAt < asked && run.jobId === cmd.jobId) await saveRun({ ...(await readRun(tabId) ?? run), updatedAt: Date.now() });
@@ -375,22 +531,33 @@ async function onBridgeCommand(client: BridgeClient, cmd: BridgeCommand): Promis
   if (cmd.type === 'adopt') {
     // The applier started again in a new tab group (#95): the job's tab joins it, and the emptied old group goes.
     const tabId = await jobTabId(cmd.jobId, cmd.urlPrefix);
-    if (tabId !== undefined) await browser.tabs.group({ tabIds: [tabId], groupId: cmd.groupId }).catch(() => {});
+    if (tabId !== undefined) {
+      await browser.tabs.group({ tabIds: [tabId], groupId: cmd.groupId }).catch(() => {});
+      await noteFleetTab(cmd.jobId, tabId);
+    }
     return;
   }
-  const run = await runForJob(cmd.jobId);
-  if (!run) return;
+  if (cmd.type === 'workerDone') return closeWorkerGroups(cmd);
+  if (cmd.type === 'askDone') {
+    await setAsk(cmd.tabId, askKey(cmd.frameId, cmd.fieldId), cmd.askId, { status: 'stopped', why: cmd.why });
+    return;
+  }
+  // The owner's own tab for an ask (#103); a fleet job's tab, the one its Run is on, otherwise.
+  const asked = cmd.type === 'answer' && cmd.askId !== undefined && cmd.tabId !== undefined;
+  const tabId = asked ? cmd.tabId! : (await runForJob(cmd.jobId ?? ''))?.tabId;
+  if (tabId === undefined) return;
   if (cmd.type === 'focus') {
-    const tab = await browser.tabs.update(run.tabId, { active: true }).catch(() => null);
+    const tab = await browser.tabs.update(tabId, { active: true }).catch(() => null);
     if (tab?.windowId !== undefined) await browser.windows.update(tab.windowId, { focused: true }).catch(() => {});
     return;
   }
-  // An answer for a field on the job's tab. With `save`, it also goes into the answer bank as an
+  // An answer for a field on the tab. With `save`, it also goes into the answer bank as an
   // agent's answer, which fills for review until the owner approves it in Answers (#21).
-  const fields = Object.values((await readTab(run.tabId)).reports).flatMap((r) => r.fields);
+  const fields = Object.values((await readTab(tabId)).reports).flatMap((r) => r.fields);
   const field = fields.find((f) => f.id === cmd.fieldId && (cmd.frameId === undefined || f.frameId === cmd.frameId));
   const frameId = cmd.frameId ?? field?.frameId ?? 0;
-  await toTab(run.tabId, { type: 'applyAnswer', fieldId: cmd.fieldId, answer: cmd.answer as AnswerValue }, frameId);
+  await toTab(tabId, { type: 'applyAnswer', fieldId: cmd.fieldId, answer: cmd.answer as AnswerValue }, frameId);
+  if (asked) await setAsk(tabId, askKey(frameId, cmd.fieldId), cmd.askId!, { status: 'answered' });
   const save = cmd.save as { scope?: unknown; sourceRefs?: unknown; createdBy?: unknown } | null | undefined;
   const a = cmd.answer;
   const storable = typeof a === 'string' || typeof a === 'boolean' || (Array.isArray(a) && a.every((x) => typeof x === 'string'));
@@ -484,6 +651,7 @@ function runDeps(tabId: number): RunDeps {
     },
     waitForChange: (before) => waitForChange(tabId, before),
     siteErrors: () => fromFrames<SiteError>(tabId, { type: 'siteErrors' }),
+    askAgents: (fields) => askAndWait(tabId, fields),
     save: saveRun,
     cancelled: () => cancelled.has(tabId),
     now: () => Date.now(),
@@ -505,6 +673,41 @@ async function ensureContentScript(tabId: number): Promise<void> {
   await browser.scripting.executeScript({ target: { tabId, allFrames: true }, files: ['/content-scripts/content.js'] }).catch(() => {});
 }
 
+/** How long Run with AI waits for the Answerer on one page before going on without it (#113). */
+const ASK_WAIT_MS = 6 * 60_000;
+
+/**
+ * Run with AI (#113): asks the Answerer about each field (as the panel's "Ask an agent" does) and
+ * waits until none is still being answered. What it left, or couldn't be asked, with why.
+ */
+async function askAndWait(tabId: number, fields: FieldReport[]): Promise<{ id: string; why: string }[]> {
+  const left: { id: string; why: string }[] = [];
+  const asked: { field: FieldReport; id: string }[] = [];
+  for (const f of fields) {
+    try {
+      asked.push({ field: f, id: (await askAgent(tabId, f.frameId, f.id)).id });
+    } catch (e) {
+      left.push({ id: f.id, why: (e as Error).message });
+    }
+  }
+  const until = Date.now() + ASK_WAIT_MS;
+  for (;;) {
+    const asks = (await readTab(tabId)).asks ?? {};
+    const now = asked.map((a) => ({ ...a, state: asks[askKey(a.field.frameId, a.field.id)] }));
+    const waiting = now.filter((a) => a.state?.id === a.id && a.state.status === 'asking');
+    if (!waiting.length || cancelled.has(tabId) || Date.now() > until) {
+      for (const a of now) {
+        if (a.state?.status === 'stopped') left.push({ id: a.field.id, why: a.state.why ?? 'left for you' });
+        else if (a.state?.status === 'asking') left.push({ id: a.field.id, why: 'no answer in time' });
+      }
+      // The filled fields report back a moment after their answers land.
+      if (now.some((a) => a.state?.status === 'answered')) await sleep(1500);
+      return left;
+    }
+    await sleep(1500);
+  }
+}
+
 /** Carry on with a Run (a new one, or one a restarted worker found still running). */
 function launchRun(run: RunState): Promise<RunState> {
   const going = runs.get(run.tabId);
@@ -518,11 +721,15 @@ function launchRun(run: RunState): Promise<RunState> {
   return p;
 }
 
-async function startRun(tabId: number, jobId?: string): Promise<RunState> {
+async function startRun(tabId: number, jobId?: string, ai = false): Promise<RunState> {
   const current = await readRun(tabId);
   if (current?.status === 'running' && runs.has(tabId)) return current;
+  if (ai) {
+    const s = await getSettings();
+    if (!s.bridgeEnabled || !s.bridgeToken) throw new Error('Run with AI needs the agent fleet bridge: turn it on in Settings.');
+  }
   const tab = await browser.tabs.get(tabId);
-  const run = newRun(tabId, tab.url ?? '', Date.now(), jobId);
+  const run = newRun(tabId, tab.url ?? '', Date.now(), jobId, ai);
   await saveRun(run);
   launchRun(run).catch(() => {});
   return run;
@@ -665,11 +872,16 @@ async function handlePanel(msg: PanelToBackground): Promise<unknown> {
         selection: s.selection,
         progress: tabProgress(msg.tabId),
         run: await readRun(msg.tabId),
+        asks: s.asks ?? {},
       };
       return state;
     }
+    case 'askAgent':
+      return askAgent(msg.tabId, msg.frameId, msg.fieldId);
+    case 'reportField':
+      return reportField(msg.tabId, msg.note);
     case 'startRun':
-      return startRun(msg.tabId);
+      return startRun(msg.tabId, undefined, !!msg.ai);
     case 'cancelRun':
       cancelled.add(msg.tabId);
       return readRun(msg.tabId);
@@ -772,6 +984,15 @@ export default defineBackground(() => {
   syncBridge().catch(() => {});
   browser.alarms?.onAlarm.addListener((alarm) => {
     if (alarm.name === BRIDGE_ALARM && !bridge) syncBridge().catch(() => {});
+  });
+
+  // The fleet's tabs (#102): what each window showed, and new groups that may be an applier's.
+  browser.tabs.onActivated.addListener(({ tabId, windowId }) => {
+    const was = shownBefore.get(windowId);
+    shownBefore.set(windowId, { before: was?.now, now: tabId });
+  });
+  browser.tabGroups?.onCreated.addListener((g) => {
+    onGroupCreated(g).catch(() => {});
   });
 
   browser.tabs.onRemoved.addListener((tabId) => {

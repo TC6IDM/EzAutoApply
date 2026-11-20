@@ -32,6 +32,20 @@ export function cleanHtml(container: Element, max: number): string {
   return clone.outerHTML.replace(/\s+/g, ' ').slice(0, max);
 }
 
+/**
+ * "Report a field" (#114): this frame's form, values stripped. The block with the most things to
+ * answer (a `form`, else `main`, else the body); null when the frame has nothing to answer.
+ */
+export function formSnapshot(root: Document, max = 120_000): string | null {
+  const count = (el: Element) => el.querySelectorAll(CONTROL).length;
+  if (!root.body || !count(root.body)) return null;
+  const forms = Array.from(root.querySelectorAll('form')).filter((f) => count(f) > 0);
+  const best = forms.sort((a, b) => count(b) - count(a))[0];
+  // A form holding most of the page's controls; otherwise the page's main part, or all of it.
+  const container = best && count(best) * 2 >= count(root.body) ? best : (root.querySelector('main, [role="main"]') ?? root.body);
+  return cleanHtml(container, max);
+}
+
 /** The element whose own text best matches the label: the shortest text that holds it. */
 function labelElement(root: Document, label: string): Element | null {
   const want = norm(label);

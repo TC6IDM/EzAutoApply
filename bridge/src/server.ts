@@ -3,13 +3,14 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { RunState, StopReason } from '../../extension/src/run/types.ts';
 import { type OfficeEvent, officeSnapshot, switchEvents } from './office.ts';
 import { readSprint } from './sprint.ts';
 import { CHANNELS, markProspect, PROSPECT_STATUSES, type ProspectStatus, readProspects, recruiterView } from './outreach.ts';
 import { groupTickets, OUTCOMES, type Outcome, readIncidentFiles, readResolutions, type Ticket, writeResolutions } from './tickets.ts';
+import { markFiled, readReport, readReports, ReportError, writeReport } from './reports.ts';
 import { DEFAULT_SETTINGS, type FleetSettings, loadSettings, mergeSettings, saveSettings, switchedOff } from './settings.ts';
 import { JOB_STATUSES, type JobStatus, type QueueJob, type QueueStore } from './queue.ts';
 import { type LaunchOptions, type Launcher, MAX_APPLIERS, type Model } from './launcher.ts';
@@ -45,6 +46,8 @@ export interface BridgeOptions {
   launcher?: Launcher;
   /** How long after a ticket opens the Fixer starts (#69), so a burst of incidents is one start. */
   fixerDelayMs?: number;
+  /** Where field reports are kept (#115), outside git; default `reports` beside the incidents folder. */
+  reportsDir?: string;
 }
 
 export const OFFICE_FILE = fileURLToPath(new URL('../office/index.html', import.meta.url));
@@ -60,7 +63,10 @@ const CLOSES_TAB = new Set<JobStatus>(['submitted', 'skipped', 'expired']);
 /** What the extension is asked to do. */
 export type Command =
   | { id: string; type: 'run'; jobId: string; urlPrefix?: string; at: number }
-  | { id: string; type: 'answer'; jobId: string; fieldId: string; frameId?: number; answer: unknown; save?: unknown; at: number }
+  /** A fleet job's field (`jobId`), or the field the owner asked about on their own tab (`askId`, `tabId`, #103). */
+  | { id: string; type: 'answer'; jobId?: string; askId?: string; tabId?: number; fieldId: string; frameId?: number; answer: unknown; save?: unknown; at: number }
+  /** The Answerer won't answer the owner's question (an attestation, nothing on record): why, for the panel (#103). */
+  | { id: string; type: 'askDone'; askId: string; tabId: number; frameId: number; fieldId: string; why: string; at: number }
   | { id: string; type: 'stopAll'; at: number }
   /** Bring the job's tab and window to the front (the ready list's "go to tab", #29). */
   | { id: string; type: 'focus'; jobId: string; at: number }
@@ -71,7 +77,79 @@ export type Command =
   /** An applier filled a field itself (#98): the extension finds it by its label and files its markup. */
   | { id: string; type: 'snippet'; jobId: string; label: string; kind: 'handFilled' | 'unmatched'; incidentId: string; note?: string; urlPrefix?: string; at: number }
   /** The Fixer rebuilt the fleet build: reload it (only "EzAutoApply (fleet)" obeys; #32). */
-  | { id: string; type: 'reload'; at: number };
+  | { id: string; type: 'reload'; at: number }
+  /**
+   * An applier ended (#102): its tab groups (the ones its jobs' Runs used) close, all but the tabs
+   * of the jobs in `keep` (waiting on the owner, or held for a restart that takes the tab back).
+   */
+  | { id: string; type: 'workerDone'; worker: string; jobIds: string[]; keep: { jobId: string; urlPrefix?: string }[]; at: number };
+
+/**
+ * "Ask an agent" (#103): a field on one of the owner's tabs, sent from the side panel for the
+ * Answerer. Held in memory only: the question's wording and the page, never a value.
+ */
+export interface Ask {
+  id: string;
+  at: string;
+  status: 'waiting' | 'answered' | 'stopped';
+  tabId: number;
+  frameId: number;
+  fieldId: string;
+  label: string;
+  kind: string;
+  options: string[];
+  required: boolean;
+  note?: string;
+  key?: string;
+  page: { url: string; host: string; title?: string };
+  why?: string;
+}
+
+/** An ask from the extension's request body, or a 400 saying what is wrong. */
+export function askFrom(b: Record<string, unknown>, id: string, at: string): Ask {
+  const int = (v: unknown, name: string) => {
+    if (!Number.isInteger(v) || (v as number) < 0) throw new HttpError(400, `${name} must be a whole number`);
+    return v as number;
+  };
+  const text = (v: unknown, name: string, max = 2000) => {
+    if (typeof v !== 'string' || !v.trim()) throw new HttpError(400, `${name} is required`);
+    return v.trim().slice(0, max);
+  };
+  const options = Array.isArray(b.options) ? b.options.filter((x): x is string => typeof x === 'string').slice(0, 200) : [];
+  const url = text(b.url, 'url').replace(/[?#].*$/, '');
+  let host = '';
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    throw new HttpError(400, 'url must be an address');
+  }
+  return {
+    id,
+    at,
+    status: 'waiting',
+    tabId: int(b.tabId, 'tabId'),
+    frameId: int(b.frameId, 'frameId'),
+    fieldId: text(b.fieldId, 'fieldId', 200),
+    label: text(b.label, 'label'),
+    kind: text(b.kind, 'kind', 40),
+    options,
+    required: b.required === true,
+    ...(typeof b.note === 'string' && b.note && { note: b.note.slice(0, 500) }),
+    ...(typeof b.key === 'string' && b.key && { key: b.key.slice(0, 60) }),
+    page: { url, host, ...(typeof b.title === 'string' && b.title && { title: b.title.slice(0, 200) }) },
+  };
+}
+
+/** A job in one of these keeps its tab when its applier ends (#102): the owner, or the applier's restart, still needs it. */
+const KEEPS_TAB = new Set<JobStatus>(['claimed', 'running', 'ready', 'needsYou', 'stuck']);
+
+/** What the extension closes when an applier ends: the groups of the jobs it held, minus the tabs still needed. */
+export function workerDone(worker: string, jobs: QueueJob[]): NewCommand | null {
+  const held = jobs.filter((j) => j.worker === worker);
+  if (!held.length) return null;
+  const keep = held.filter((j) => KEEPS_TAB.has(j.status)).map((j) => ({ jobId: j.id, ...(j.tabUrl && { urlPrefix: j.tabUrl }) }));
+  return { type: 'workerDone', worker, jobIds: held.map((j) => j.id), keep };
+}
 
 /** A command before it gets its id and time (Omit over each member of the union). */
 type NewCommand = Command extends infer C ? (C extends Command ? Omit<C, 'id' | 'at'> : never) : never;
@@ -211,6 +289,51 @@ export function createBridge(o: BridgeOptions) {
     }
   };
 
+  /**
+   * "Ask an agent" (#103): the owner's questions, newest last, in memory only. One Answerer at a
+   * time answers every waiting one; asks that come in while it works get the next run.
+   */
+  const asks = new Map<string, Ask>();
+  const MAX_ASKS = 50;
+  let answererStartedAt = 0;
+  const waitingAsks = () => [...asks.values()].filter((a) => a.status === 'waiting');
+  const wantAnswerer = () => {
+    if (!o.launcher?.found || !settings.parts.answerer || o.launcher.answererRunning() || !waitingAsks().length) return;
+    try {
+      if (o.launcher.launchAnswerer()) {
+        answererStartedAt = now();
+        note('The Answerer started on your question', 'ok');
+      }
+    } catch (e) {
+      note(`The Answerer couldn't start: ${e instanceof Error ? e.message : String(e)}`, 'warn');
+    }
+  };
+  /** The Answerer says no (or ended without a word): the panel shows why. */
+  const stopAsk = (ask: Ask, why: string) => {
+    ask.status = 'stopped';
+    ask.why = why;
+    queueCommand({ type: 'askDone', askId: ask.id, tabId: ask.tabId, frameId: ask.frameId, fieldId: ask.fieldId, why });
+  };
+
+  /**
+   * Field reports (#115): the owner's "Report a field". One Reporter at a time logs an issue for
+   * every report that has none; reports that come in while it works get the next run.
+   */
+  const reportsDir = o.reportsDir ?? join(dirname(o.incidentsDir), 'reports');
+  let reporterStartedAt = 0;
+  const openReports = () => readReports(reportsDir).filter((r) => !r.issue);
+  const wantReporter = () => {
+    if (!o.launcher?.found || !o.launcher.canReport() || o.launcher.reporterRunning() || !openReports().length) return;
+    try {
+      if (o.launcher.launchReporter()) {
+        reporterStartedAt = now();
+        note('The Reporter started: it turns your field report into an issue', 'ok');
+      }
+    } catch (e) {
+      note(`The Reporter couldn't start: ${e instanceof Error ? e.message : String(e)}`, 'warn');
+    }
+  };
+
   /** The Fixer (#69): starts by itself a little after a ticket opens, one at a time. */
   let fixerTimer: ReturnType<typeof setTimeout> | undefined;
   let fixerStartedAt = 0;
@@ -244,8 +367,24 @@ export function createBridge(o: BridgeOptions) {
         return;
       }
       if (worker === 'outreach') return;
+      if (worker === 'reporter') {
+        // Reports that came in while it worked get a fresh run; the ones it left wait for the next report.
+        if (openReports().some((r) => Date.parse(r.at) > reporterStartedAt)) wantReporter();
+        return;
+      }
+      if (worker === 'answerer') {
+        // What it was started for and left: the owner hears so instead of waiting forever. Newer asks get a fresh run.
+        for (const a of waitingAsks()) if (Date.parse(a.at) <= answererStartedAt) stopAsk(a, 'The Answerer ended without answering it: answer it yourself, or ask again.');
+        wantAnswerer();
+        return;
+      }
       if (worker === 'scout' && o.queue.all().length <= scoutJobsBefore) scoutFoundNothingAt = now();
-      if (worker !== 'scout') return void setImmediate(topUp);
+      if (worker !== 'scout') {
+        // Its tab groups go, but for the tabs still waiting on the owner (#102).
+        const done = workerDone(worker, o.queue.all());
+        if (done) queueCommand(done);
+        return void setImmediate(topUp);
+      }
       if (!pending) return;
       if (hasQueued()) startPending();
       else {
@@ -412,6 +551,75 @@ export function createBridge(o: BridgeOptions) {
       });
       o.queue.noteAgentAnswer(str(b.jobId, 'jobId'), str(b.fieldId, 'fieldId'));
       return [202, { commandId: cmd.id }];
+    }
+    // ---- Field reports (#115): the owner's "Report a field", for the Reporter ----
+    if (m === 'POST' && p === '/reports') {
+      const at = new Date(now()).toISOString();
+      const id = `${at.replace(/[:.]/g, '-')}-${randomUUID().slice(0, 6)}`;
+      let report;
+      try {
+        report = writeReport(reportsDir, await body(req), id, at);
+      } catch (e) {
+        if (e instanceof ReportError) throw new HttpError(400, e.message);
+        throw e;
+      }
+      note(`You reported a field on ${report.host}: "${report.note.slice(0, 80)}"`);
+      wantReporter();
+      return [202, { id, reporter: !!o.launcher?.found && o.launcher.canReport() }];
+    }
+    if (m === 'GET' && p === '/reports') {
+      return [200, url.searchParams.get('open') ? openReports() : readReports(reportsDir)];
+    }
+    hit = /^\/reports\/([A-Za-z0-9._-]+)$/.exec(p);
+    if (m === 'GET' && hit) {
+      const r = readReport(reportsDir, hit[1]);
+      if (!r) throw new HttpError(404, 'No such report');
+      // The markup inline, for the Reporter's helper; the screenshot by its path, to look at locally.
+      const html = r.files.find((f) => f.endsWith('page.html'));
+      return [200, { ...r, ...(html && { html: readFileSync(html, 'utf8') }) }];
+    }
+    hit = /^\/reports\/([A-Za-z0-9._-]+)\/issue$/.exec(p);
+    if (m === 'POST' && hit) {
+      const b = await body(req);
+      const issue = str(b.url, 'url');
+      if (!/^https:\/\/github\.com\/TC6IDM\/EzAutoApply\/issues\/\d+$/.test(issue)) throw new HttpError(400, 'url must be an EzAutoApply issue');
+      const r = markFiled(reportsDir, hit[1], issue);
+      if (!r) throw new HttpError(404, 'No such report');
+      note(`Your field report is logged: ${issue.replace(/^.*\/issues\//, '#')}`, 'ok');
+      return [200, r];
+    }
+    // ---- "Ask an agent" (#103): the side panel asks, the Answerer answers ----
+    if (m === 'POST' && p === '/asks') {
+      if (!settings.parts.answerer) throw new HttpError(423, 'The Answerer is switched off in the Fleet Office');
+      if (!o.launcher?.found) throw new HttpError(503, 'The bridge found no Claude Code to start the Answerer with');
+      const ask = askFrom(await body(req), randomUUID(), new Date(now()).toISOString());
+      // The same field asked again replaces the earlier question.
+      for (const a of asks.values()) if (a.status === 'waiting' && a.tabId === ask.tabId && a.frameId === ask.frameId && a.fieldId === ask.fieldId) asks.delete(a.id);
+      asks.set(ask.id, ask);
+      while (asks.size > MAX_ASKS) asks.delete(asks.keys().next().value!);
+      note(`You asked the Answerer: "${ask.label.slice(0, 80)}"`);
+      wantAnswerer();
+      return [202, { id: ask.id }];
+    }
+    if (m === 'GET' && p === '/asks') {
+      const list = url.searchParams.get('waiting') ? waitingAsks() : [...asks.values()];
+      return [200, list];
+    }
+    hit = /^\/asks\/([^/]+)\/(answer|stop)$/.exec(p);
+    if (m === 'POST' && hit) {
+      const ask = asks.get(decodeURIComponent(hit[1]));
+      if (!ask) throw new HttpError(404, 'No such ask');
+      if (ask.status !== 'waiting') throw new HttpError(409, `That ask is already ${ask.status}`);
+      const b = await body(req);
+      if (hit[2] === 'stop') {
+        stopAsk(ask, typeof b.why === 'string' && b.why.trim() ? b.why.trim().slice(0, 500) : 'The Answerer left it for you.');
+        return [200, ask];
+      }
+      if (b.answer === undefined) throw new HttpError(400, 'answer is required');
+      ask.status = 'answered';
+      queueCommand({ type: 'answer', askId: ask.id, tabId: ask.tabId, frameId: ask.frameId, fieldId: ask.fieldId, answer: b.answer, ...(b.save !== undefined && { save: b.save }) });
+      note(`The Answerer answered "${ask.label.slice(0, 80)}": it fills for you to check`, 'ok');
+      return [200, ask];
     }
     if (m === 'POST' && p === '/incidents') {
       const b = await body(req);
