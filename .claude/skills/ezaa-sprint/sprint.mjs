@@ -39,6 +39,10 @@
 //   ... statusline        The status line command: saves the 5-hour and weekly figures Claude Code
 //                         hands it, so usage() rarely needs the endpoint (and its 429s).
 //   ... skip N --why "…"  Note an issue passed over (needs a phone, a decision, too big…).
+//   ... unskip 12,34      Put passed-over issues back among the candidates (their blocker was answered).
+//   ... take-from LOGIN[,LOGIN] [--undo]  The person said the sprint may also take issues assigned to
+//                         these developers (e.g. "and Andrew's"): they count as the person's own for
+//                         `next`, `begin` and the parent rule. Only on the person's word, never on a guess.
 //   ... precompact        PreCompact hook: tells the summary what to keep (silent without a sprint).
 //   ... aftercompact      SessionStart "compact" hook: puts the sprint back in Claude's context.
 //   ... status            Where the sprint stands, its PR and the questions waiting.
@@ -417,11 +421,12 @@ function openTree() {
 
 // Why an issue is someone else's or off limits, or null. An issue is off limits when it, or any
 // issue above it, is assigned to someone else and not to me, or is on the avoid list.
-function offLimits(n, tree, me, avoid) {
+function offLimits(n, tree, me, avoid, also = []) {
+  const ours = new Set([me, ...also]);
   for (let at = n, depth = 0; at && depth < 10; at = tree.get(at)?.parent, depth++) {
     if (avoid.has(at)) return at === n ? 'on the avoid list' : `under #${at} (avoid list)`;
     const who = tree.get(at)?.assignees || [];
-    if (who.length && !who.includes(me)) return at === n ? `assigned to ${who.join(', ')}` : `under #${at}, assigned to ${who.join(', ')}`;
+    if (who.length && !who.some(w => ours.has(w))) return at === n ? `assigned to ${who.join(', ')}` : `under #${at}, assigned to ${who.join(', ')}`;
   }
   return null;
 }
@@ -462,8 +467,8 @@ function candidates(s, mine, tree, avoid) {
     .filter(i => !passed.has(i.number))
     .filter(i => !has(i, 'type:epic') && !has(i, 'type:decision') && !has(i, 'inbox'))
     .filter(i => !i.labels.some(l => l.name.startsWith('status:')))
-    .filter(i => i.assignees.some(a => a.login === me) || ((!mine || thenOpen) && i.assignees.length === 0))
-    .filter(i => !offLimits(i.number, tree, me, avoid))
+    .filter(i => i.assignees.some(a => a.login === me || (s?.takeFrom || []).includes(a.login)) || ((!mine || thenOpen) && i.assignees.length === 0))
+    .filter(i => !offLimits(i.number, tree, me, avoid, s?.takeFrom))
     .map(i => ({
       ...i,
       key: [thenOpen && !i.assignees.some(a => a.login === me) ? 1 : 0, MILESTONES.indexOf(i.milestone?.title) < 0 ? MILESTONES.length : MILESTONES.indexOf(i.milestone?.title),
@@ -640,7 +645,7 @@ if (action === 'precompact') {
   writeState(s);
   console.log([
     `A /${PREFIX}-sprint is running. In the summary, keep exactly:`,
-    `- the sprint: branch ${s.branch}; issues done ${s.done.map(d => `#${d.n}`).join(' ') || 'none'}; skipped ${s.skipped.map(d => `#${d.n}`).join(' ') || 'none'}${s.queue?.length ? `; named first ${s.queue.map(n => `#${n}`).join(' ')}${s.only ? ' (only these)' : ''}` : ''}${s.mine ? '; --mine' : ''}${s.keepGoing ? '; keep going' : ''}`,
+    `- the sprint: branch ${s.branch}; issues done ${s.done.map(d => `#${d.n}`).join(' ') || 'none'}; skipped ${s.skipped.map(d => `#${d.n}`).join(' ') || 'none'}${s.queue?.length ? `; named first ${s.queue.map(n => `#${n}`).join(' ')}${s.only ? ' (only these)' : ''}` : ''}${s.mine ? '; --mine' : ''}${s.takeFrom?.length ? `; also taking ${s.takeFrom.join(', ')}'s issues` : ''}${s.keepGoing ? '; keep going' : ''}`,
     `- the issue in progress${s.current ? ` (#${s.current.n})` : ''}: which of its boxes are done, every file changed and why, what was tried and failed, the checks still to run, and the next step`,
     '- any decision or instruction the person gave during the sprint, word for word',
     'Drop: tool output and file contents from issues already committed, and budget readings (sprint.mjs status has them).',
@@ -858,7 +863,7 @@ if (action === 'begin' || action === 'finish' || action === 'skip') {
     // Asked again at the moment of taking it: another developer may have taken it since `next`.
     const me = whoAmI();
     const tree = openTree();
-    const off = tree.has(n) ? offLimits(n, tree, me, new Set(s.avoid || [])) : null;
+    const off = tree.has(n) ? offLimits(n, tree, me, new Set(s.avoid || []), s.takeFrom) : null;
     const assignees = tree.get(n)?.assignees || [];
     // mine + keep-going may take an unassigned issue once the person's own are done.
     const notMine = s.mine && !(s.queue || []).includes(n) && !assignees.includes(me) && !(mineThenOpen(s) && assignees.length === 0);
@@ -931,6 +936,22 @@ if (action === 'begin' || action === 'finish' || action === 'skip') {
   }
   writeState(s);
   console.log(judge(u, s).line);
+  process.exit(0);
+}
+
+if (action === 'unskip' || action === 'take-from') {
+  const s = readState();
+  if (!s) { console.log('no sprint running'); process.exit(1); }
+  if (action === 'unskip') {
+    const back = new Set(parseIssues(process.argv[3]));
+    s.skipped = s.skipped.filter(d => !back.has(d.n));
+    console.log(`back among the candidates: ${[...back].map(n => `#${n}`).join(' ') || 'none'}`);
+  } else {
+    const logins = (process.argv[3] || '').split(',').map(v => v.trim()).filter(v => /^[A-Za-z0-9-]+$/.test(v));
+    s.takeFrom = flag('undo') ? (s.takeFrom || []).filter(l => !logins.includes(l)) : [...new Set([...(s.takeFrom || []), ...logins])];
+    console.log(`also taking issues assigned to: ${s.takeFrom.join(', ') || 'nobody else'}`);
+  }
+  writeState(s);
   process.exit(0);
 }
 

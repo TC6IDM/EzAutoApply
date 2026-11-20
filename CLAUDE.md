@@ -23,7 +23,7 @@ Ground rules:
 
 ## Shared workflow library (claude-workflow)
 
-The issue, Inbox and sprint scripts, the commit guard hook, their tests are **not written in this repo**: they come from the owner's `claude-workflow` repo (a private repo on the owner's account; this repo is public, so nothing in this repo may link or quote private details from it) and are copied in by its `sync.mjs`. `.claude/workflow.lock.json` says which version this repo has.
+The issue, Inbox and sprint scripts, the commit guard hook, their tests are **not written in this repo**: they come from the owner's `claude-workflow` repo (https://github.com/TC6IDM/claude-workflow, public) and are copied in by its `sync.mjs`. `.claude/workflow.lock.json` says which version this repo has.
 
 - **Synced files (never edit them here):** `.claude/skills/ezaa-issues/*.mjs` except `config.mjs`, `.claude/skills/ezaa-sprint/*.mjs`, both `SKILL.md` files (generated), `.claude/hooks/guard*.mjs`, `.claude/hooks/repo.mjs`, `.claude/tests/*.test.mjs`. A hand edit is overwritten by the next sync, and `node <claude-workflow>/sync.mjs . --check` fails on it.
 - **This repo's own files (edit freely, a sync never touches them):** `.claude/skills/ezaa-issues/config.mjs` (repo, board, milestones, labels, names), `.claude/skills/ezaa-issues/SKILL.repo.md` and `.claude/skills/ezaa-sprint/SKILL.repo.md` (the repo-specific half of each SKILL.md: change these, then sync to regenerate `SKILL.md`).
@@ -31,7 +31,7 @@ The issue, Inbox and sprint scripts, the commit guard hook, their tests are **no
 - **To change only what is specific to this repo** (a label, a milestone, the Project number, the checks a sprint runs, the repo's rules in the SKILL text): edit `config.mjs` or the `SKILL.repo.md` file here. No library change.
 - **Found a problem in the shared part from here?** Say so to the owner (or log it as an issue in `claude-workflow`) with the repo, the command and the output. Do not patch the synced copy to get unstuck except as a throwaway test, and revert it.
 - **Behind?** `node <path to claude-workflow>/sync.mjs . --check` says whether this repo's synced files match the library. Run it before starting a sprint on a long-idle repo, and after pulling the library.
-- **This repo is public: the library is private, so never paste its contents, issues or another repo's private details into an issue, comment, PR or file here (config.mjs and SKILL.repo.md hold only this repo's own values).**
+- **Both repos are public.** Never put a secret, personal data, or another repo's private details (PTrainr's, Ride The Bus's) into either one: not in files, issues, PRs, comments or commit messages. `config.mjs` and the `SKILL.repo.md` files hold only this repo's own values.
 - The first-time setup of another repo is in `claude-workflow`'s README ("Adding a repo").
 
 ## Commands

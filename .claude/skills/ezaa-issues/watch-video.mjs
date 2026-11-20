@@ -10,7 +10,8 @@
 // refreshed weekly (PATH's copy only if that fails); ffmpeg is used from PATH when present,
 // otherwise downloaded once into the same folder. Downloads are checked against their published
 // SHA-256 sums (yt-dlp: github.com/yt-dlp/yt-dlp releases; ffmpeg: github.com/BtbN/FFmpeg-Builds,
-// Windows and Linux). macOS without ffmpeg: `brew install ffmpeg` (the video still downloads without it).
+// Windows and Linux). macOS without ffmpeg: the frames come from AVFoundation instead, through a
+// small Swift program compiled once into the tools folder (#541; Xcode's command-line tools).
 // --fresh-tools ignores PATH and uses the downloaded copies (to test what a new machine sees).
 //
 // Everything downloaded is untrusted: it lands in a new, empty folder under the system temp
@@ -82,7 +83,7 @@ async function ffmpeg() {
   if (found) return found;
   const target = join(TOOLS, 'ffmpeg', 'bin', exe('ffmpeg'));
   if (existsSync(target)) return target;
-  if (mac) { console.log('ffmpeg is missing: run `brew install ffmpeg` for frames. Continuing with the video and caption only.'); return null; }
+  if (mac) return null; // AVFoundation draws the frames instead (avFrames() below)
   const asset = win ? `ffmpeg-master-latest-${arm ? 'winarm64' : 'win64'}-gpl.zip` : `ffmpeg-master-latest-${arm ? 'linuxarm64' : 'linux64'}-gpl.tar.xz`;
   console.log(`getting ffmpeg (${asset}, ~100 MB, once)…`);
   const base = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest';
@@ -138,6 +139,62 @@ if (vtt) {
   writeFileSync(join(out, 'captions.txt'), lines.filter((l, i) => l && l !== lines[i - 1]).join('\n'));
 }
 
+// macOS without ffmpeg (#541): the same three images through AVFoundation. The
+// program is this file's own text, compiled once into the tools folder (rebuilt
+// when the text changes); nothing downloaded is ever run.
+const AV_SOURCE = String.raw`import AVFoundation
+import AppKit
+let a = CommandLine.arguments
+let asset = AVURLAsset(url: URL(fileURLWithPath: a[1])), out = a[2], count = Int(a[3]) ?? 12
+func jpeg(_ image: CGImage, width: Double, to path: String) {
+  let height = width * Double(image.height) / Double(image.width)
+  let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(width), pixelsHigh: Int(height), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+  NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+  NSImage(cgImage: image, size: .zero).draw(in: NSRect(x: 0, y: 0, width: width, height: height))
+  NSGraphicsContext.restoreGraphicsState()
+  try? rep.representation(using: .jpeg, properties: [.compressionFactor: 0.8])!.write(to: URL(fileURLWithPath: path))
+}
+let done = DispatchSemaphore(value: 0)
+Task {
+  defer { done.signal() }
+  let generator = AVAssetImageGenerator(asset: asset)
+  generator.appliesPreferredTrackTransform = true
+  generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = .zero
+  guard let duration = try? await asset.load(.duration).seconds, duration > 0 else { return }
+  print(String(format: "duration %.2f", duration))
+  var frames: [CGImage] = []
+  for i in 0..<count {
+    let at = CMTime(seconds: duration * (Double(i) + 0.5) / Double(count), preferredTimescale: 600)
+    if let (image, _) = try? await generator.image(at: at) { frames.append(image); jpeg(image, width: 720, to: String(format: "%@/frames/f%02d.jpg", out, i + 1)) }
+  }
+  if let (image, _) = try? await generator.image(at: CMTime(seconds: max(0, duration - 0.3), preferredTimescale: 600)) { jpeg(image, width: 1080, to: out + "/last.jpg") }
+  guard let first = frames.first else { return }
+  let cols = min(6, frames.count), rows = (frames.count + cols - 1) / cols, w = 360.0, h = w * Double(first.height) / Double(first.width)
+  let sheet = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(w) * cols, pixelsHigh: Int(h) * rows, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+  NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: sheet)
+  for (i, image) in frames.enumerated() { NSImage(cgImage: image, size: .zero).draw(in: NSRect(x: Double(i % cols) * w, y: Double(rows - 1 - i / cols) * h, width: w, height: h)) }
+  NSGraphicsContext.restoreGraphicsState()
+  try? sheet.representation(using: .jpeg, properties: [.compressionFactor: 0.75])!.write(to: URL(fileURLWithPath: out + "/contact.jpg"))
+}
+done.wait()
+`;
+function avFrames(src) {
+  if (!mac || !onPath('swiftc') && !existsSync('/usr/bin/swiftc')) return false;
+  const hash = createHash('sha256').update(AV_SOURCE).digest('hex').slice(0, 12);
+  const dir = join(TOOLS, 'avframes'), bin = join(dir, `avframes-${hash}`);
+  if (!existsSync(bin)) {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'avframes.swift'), AV_SOURCE);
+    console.log('building the AVFoundation frame reader (once)…');
+    const built = spawnSync('swiftc', ['-O', join(dir, 'avframes.swift'), '-o', bin], { encoding: 'utf8' });
+    if (built.status !== 0) { console.log(`could not build it (${(built.stderr || '').split('\n').find(l => /error/.test(l)) || 'swiftc failed'}); continuing without frames.`); return false; }
+  }
+  mkdirSync(join(out, 'frames'), { recursive: true });
+  const ran = spawnSync(bin, [src, out, String(FRAMES)], { encoding: 'utf8' });
+  return ran.status === 0 && existsSync(join(out, 'contact.jpg'));
+}
+
+if (!ff && video && avFrames(join(out, video))) console.log('frames drawn with AVFoundation (no ffmpeg on this Mac)');
 if (ff && video) {
   const src = join(out, video), every = (duration / FRAMES).toFixed(2), cols = Math.min(6, FRAMES), rows = Math.ceil(FRAMES / cols);
   const run = list => spawnSync(ff, ['-loglevel', 'error', '-y', ...list], { stdio: 'inherit' });

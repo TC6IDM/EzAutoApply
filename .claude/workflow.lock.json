@@ -1,6 +1,6 @@
 {
-  "version": "0.3.0",
-  "commit": "eaa3230",
+  "version": "0.3.3",
+  "commit": "c726612",
   "prefix": "ezaa",
   "design": false,
   "syncedAt": "2026-11-20",
@@ -11,9 +11,9 @@
     ".claude/skills/ezaa-issues/inbox-rules.mjs": "7224aa39bc0ed416",
     ".claude/skills/ezaa-issues/inbox.mjs": "e48369070e8ac9f6",
     ".claude/skills/ezaa-issues/sync-board.mjs": "34d5248c7b84e96c",
-    ".claude/skills/ezaa-issues/watch-video.mjs": "67c7e7ecdb5be32b",
+    ".claude/skills/ezaa-issues/watch-video.mjs": "64e01f6bf06a347d",
     ".claude/skills/ezaa-issues/work.mjs": "e193d8c0bfe52210",
-    ".claude/skills/ezaa-sprint/sprint.mjs": "5b4b8e07f507e2e9",
+    ".claude/skills/ezaa-sprint/sprint.mjs": "1d744eccbf9492b8",
     ".claude/skills/ezaa-sprint/verdict.mjs": "853ca48289e9212e",
     ".claude/hooks/guard-rules.mjs": "a252bc6a2921ccba",
     ".claude/hooks/guard.mjs": "2f9da3f1c93df585",
@@ -23,7 +23,7 @@
     ".claude/tests/sprint.test.mjs": "a3a0b4ba6182079f",
     ".claude/skills/ezaa-sprint/repo.mjs": "47ac34a692ca3420",
     ".claude/hooks/repo.mjs": "5c47592db3c79247",
-    ".claude/skills/ezaa-issues/SKILL.md": "77940bf89b324859",
-    ".claude/skills/ezaa-sprint/SKILL.md": "5ba67cad72e4832b"
+    ".claude/skills/ezaa-issues/SKILL.md": "dd7314b074a58a0a",
+    ".claude/skills/ezaa-sprint/SKILL.md": "1c7c5e0d663de961"
   }
 }
