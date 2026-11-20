@@ -1,4 +1,4 @@
-// Creates EzAutoApply issues from a text file (format in SKILL.md), plus any missing labels and milestones.
+// Creates issues for this repo (config.mjs) from a text file (format in SKILL.md), plus any missing labels and milestones.
 // Resumable: created numbers are kept in <file>.created.json and skipped on the next run.
 // Usage: node create-issues.mjs <issues.txt> [more.txt …] [--dry]
 import { readFileSync, writeFileSync, existsSync, mkdtempSync } from 'node:fs';
@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 
-import { REPO, MILESTONES, LABELS } from './config.mjs';
+import { REPO, MILESTONES, LABELS, PREFIX } from './config.mjs';
 const files = process.argv.slice(2).filter(a => !a.startsWith('--')).map(f => resolve(f));
 if (!files.length) { console.error('usage: node create-issues.mjs <issues.txt> [--dry]'); process.exit(1); }
 const dry = process.argv.includes('--dry');
@@ -64,7 +64,7 @@ for (const [title, desc] of Object.values(MILESTONES)) {
 // ---- issues ----
 const statePath = files[0] + '.created.json';
 const created = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : {};
-const tmp = mkdtempSync(join(tmpdir(), 'ezaa-issue-'));
+const tmp = mkdtempSync(join(tmpdir(), `${PREFIX}-issue-`));
 for (const it of issues) {
   if (created[it.key]) continue;
   const bodyPath = join(tmp, `${it.key}.md`);
@@ -87,7 +87,7 @@ for (const it of issues) {
   console.log(`#${created[it.key]} ${it.key}${it.parent ? ` (under #${created[it.parent] ?? it.parent})` : ''}`);
   await sleep(2500);
 }
-// ---- cross-references (added for EzAutoApply, 2026-11-15) ----
+// ---- cross-references ----
 // A body may name another issue in the same file by its key (`#upload`,
 // `Blocked by #site-host`) before either exists. Once every issue has a number,
 // rewrite those keys into numbers. A key must contain a letter, so `#307` is

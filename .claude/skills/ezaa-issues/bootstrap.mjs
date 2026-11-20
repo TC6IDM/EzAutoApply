@@ -3,7 +3,7 @@
 // BOARD, retuned), the repo linked to it, PROJECT written into config.mjs, and the
 // pinned Inbox issue. Safe to run again: it only changes what differs.
 //
-//   node .claude/skills/ezaa-issues/bootstrap.mjs [--dry] [--new-board]
+//   node .claude/skills/<prefix>-issues/bootstrap.mjs [--dry] [--new-board]
 //     --dry        print every change without making it
 //     --new-board  copy the template even if config.mjs's PROJECT already names a board
 //
@@ -12,7 +12,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { OWNER, REPO, PROJECT, LABELS, MILESTONES, BOARD } from './config.mjs';
+import { OWNER, REPO, PROJECT, LABELS, MILESTONES, BOARD, PREFIX } from './config.mjs';
 import { planBoard, withProjectNumber, describe } from './board-plan.mjs';
 
 const args = process.argv.slice(2);
@@ -96,4 +96,4 @@ else {
 }
 
 console.log(`\nBy hand, once: the board's ⋯ → Workflows → "Auto-add to project" → repo ${REPO}, filter is:issue is:open → Save and turn on.`);
-console.log('Then: node .claude/skills/ezaa-issues/sync-board.mjs (adds the open issues and fills the fields from labels).');
+console.log(`Then: node .claude/skills/${PREFIX}-issues/sync-board.mjs (adds the open issues and fills the fields from labels).`);

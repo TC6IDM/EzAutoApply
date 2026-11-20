@@ -3,12 +3,30 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { planBoard, withProjectNumber, describe } from '../skills/ezaa-issues/board-plan.mjs';
-import { BOARD, MILESTONE_ORDER } from '../skills/ezaa-issues/config.mjs';
+import * as config from '../skills/ezaa-issues/config.mjs';
+
+// The plan is tested against a fixed spec, so these tests do not depend on this repo's own board.
+// A last test checks that this repo's config.mjs BOARD is well-formed.
+const MILESTONE_ORDER = ['Now: demo', 'Later'];
+const BOARD = {
+  title: 'Demo',
+  template: { owner: 'x', number: 2 },
+  status: ['Todo', 'In Progress', 'In Review', 'Done'],
+  options: {
+    Priority: ['P0', 'P1', 'P2', 'P3'],
+    Size: ['S', 'M', 'L'],
+    Who: ['you', 'claude', 'together'],
+    Platform: ['Extension', 'Classifier', 'Bridge', 'Agents', 'Tooling', 'Site', 'Several', 'None'],
+    Kind: ['Epic', 'Feature', 'Bug', 'Task', 'Research', 'Decision'],
+  },
+  views: { Now: `milestone:"${MILESTONE_ORDER[0]}" -kind:Epic`, 'Needs you': 'who:you,together -kind:Epic is:open' },
+  dropViews: ['Pre-business'],
+};
 
 const opts = names => names.map(name => ({ name, color: 'GRAY' }));
 // PTrainr's board as copyProjectV2 brings it (the template).
 const ptrainr = () => ({
-  title: 'EzAutoApply',
+  title: 'Demo',
   fields: [
     { id: 'st', name: 'Status', options: opts(['Todo', 'In Progress', 'In Review', 'Done']) },
     { id: 'pr', name: 'Priority', options: opts(['P0', 'P1', 'P2', 'P3']) },
@@ -58,11 +76,11 @@ test('surviving options keep their colour; new ones get one', () => {
 
 test('a rename, a missing field and a missing view are reported', () => {
   const board = ptrainr();
-  board.title = 'EzAutoApply (copy)';
+  board.title = 'Demo (copy)';
   board.fields = board.fields.filter(f => f.name !== 'Kind');
   board.views = board.views.filter(v => v.name !== 'Now');
   const kinds = planBoard(BOARD, board).map(s => `${s.kind}:${s.name ?? s.to}`);
-  assert.ok(kinds.includes('title:EzAutoApply'));
+  assert.ok(kinds.includes('title:Demo'));
   assert.ok(kinds.includes('missingField:Kind'));
   assert.ok(kinds.includes('missingView:Now'));
   for (const s of planBoard(BOARD, board)) assert.equal(typeof describe(s), 'string');
@@ -75,12 +93,19 @@ test('withProjectNumber rewrites only the PROJECT line', () => {
   assert.throws(() => withProjectNumber('no project here', 1));
 });
 
-test('an issue labelled repo:ai-job-search goes to the linked worktree; others stay here (#57)', async () => {
-  const { LINKED_REPOS, LABELS, linkedRepoOf } = await import('../skills/ezaa-issues/config.mjs');
-  assert.equal(linkedRepoOf([{ name: 'platform:agents' }, { name: 'repo:ai-job-search' }]), 'ai-job-search');
-  assert.equal(linkedRepoOf(['platform:agents', 'area:queue']), null, 'platform:agents alone can be either repo');
+test('this repo\'s config.mjs BOARD and linked repos are well-formed', () => {
+  const { BOARD: own, LINKED_REPOS, LABELS, linkedRepoOf, MILESTONE_ORDER: order, PLATFORM } = config;
+  assert.equal(typeof own.title, 'string');
+  assert.ok(own.template && typeof own.template.number === 'number', 'a template board to copy');
+  for (const k of ['Priority', 'Size', 'Who', 'Platform', 'Kind']) assert.ok(Array.isArray(own.options[k]) && own.options[k].length, `options.${k}`);
+  assert.deepEqual(own.options.Platform.slice(0, Object.keys(PLATFORM).length), Object.values(PLATFORM));
+  assert.ok(order.length >= 1);
+  assert.match(own.views.Now, new RegExp(order[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'the Now view filters on the first milestone');
+  // A linked repo's label is a real label, never the project a fork came from, and its issues route there.
   for (const [name, l] of Object.entries(LINKED_REPOS)) {
     assert.ok(LABELS[l.label], `${name}'s label ${l.label} is in LABELS`);
     assert.notEqual(l.remote, 'upstream', 'never the project a fork came from');
+    assert.equal(linkedRepoOf([{ name: l.label }]), name);
   }
+  assert.equal(linkedRepoOf(['type:bug']), null);
 });

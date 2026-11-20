@@ -1,6 +1,6 @@
-// Puts every open issue on the "EzAutoApply" Project and fills its Priority, Size,
+// Puts every open issue on the repo's Project (config.mjs PROJECT) and fills its Priority, Size,
 // Who, Platform and Kind fields from its labels, for items where those are still empty.
-// Run after creating issues: node .claude/skills/ezaa-issues/sync-board.mjs
+// Run after creating issues: node .claude/skills/<prefix>-issues/sync-board.mjs
 // Needs the gh token's project scope (gh auth refresh -s project).
 import { execFileSync } from 'node:child_process';
 import { OWNER, REPO, PROJECT, boardFields } from './config.mjs';
