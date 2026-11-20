@@ -1,5 +1,5 @@
 /**
- * PreToolUse guard for EzAutoApply (ported from Ride The Bus, 2026-11-17).
+ * PreToolUse guard shared by the repos that use claude-workflow (names come from config.mjs).
  *
  * WHY THIS EXISTS. CLAUDE.md's first ground rule is "never git commit or git
  * push without the owner's explicit approval for that specific commit or push".
@@ -15,6 +15,7 @@ import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { decide, gitDirs, isCommit, isPush, isMerge } from './guard-rules.mjs';
+import { NAME, PREFIX } from './repo.mjs';
 
 const read = async () => {
   const chunks = [];
@@ -31,7 +32,7 @@ if (!isCommit(cmd) && !isPush(cmd) && !isMerge(cmd)) process.exit(0);
 
 const git = (args, cwd) => { try { return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
 let state = null;
-try { state = JSON.parse(readFileSync(join(tmpdir(), 'ezaa-sprint', 'state.json'), 'utf8')); } catch { /* no sprint */ }
+try { state = JSON.parse(readFileSync(join(tmpdir(), `${PREFIX}-sprint`, 'state.json'), 'utf8')); } catch { /* no sprint */ }
 
 // Every checkout the command reaches (`cd <dir> &&`, `git -C <dir>`), with its branch (#57).
 let cwd = process.cwd();
@@ -44,7 +45,7 @@ const places = gitDirs(cmd, cwd).map(dir => {
   return { toplevel: git(['rev-parse', '--show-toplevel'], at) || at, branch: git(['rev-parse', '--abbrev-ref', 'HEAD'], at) };
 });
 
-const result = decide(cmd, { state, places, home });
+const result = decide(cmd, { state, places, home, name: NAME, prefix: PREFIX });
 if (result) {
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: result.decision, permissionDecisionReason: result.reason },

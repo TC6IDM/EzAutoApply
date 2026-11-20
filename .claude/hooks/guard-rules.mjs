@@ -28,7 +28,7 @@ export const isMerge = cmd => /\bgh\b[^|;&]*\bpr\b\s+merge\b/.test(cmd);
 export const namesMain = cmd => /\b(?:main|master)\b/.test(cmd.replace(/\borigin\/main\b/g, ''));
 
 /**
- * The branch a live sprint may commit on, or null. Invoking /ezaa-sprint is the
+ * The branch a live sprint may commit on, or null. Invoking the repo's sprint command is the
  * owner's yes for THAT sprint only: its own sprint/<stamp> branch and wip/issue-N
  * backups, while its state file is fresh.
  */
@@ -95,9 +95,9 @@ export function sprintPlace(state, place, home, now = Date.now()) {
  *        places: [{ toplevel, branch }] for every checkout the command touches
  *        (guard.mjs fills it in; without it, `branch` in this repo), home: this repo's toplevel }.
  */
-export function decide(cmd, { branch = '', state = null, now = Date.now(), places = null, home = '' } = {}) {
+export function decide(cmd, { branch = '', state = null, now = Date.now(), places = null, home = '', name = 'this repo', prefix = 'sprint' } = {}) {
   if (typeof cmd !== 'string' || !cmd.trim()) return null;
-  if (isForcePush(cmd)) return { decision: 'deny', reason: 'Force-push is blocked in EzAutoApply. Ask the owner, and do it by hand if they agree.' };
+  if (isForcePush(cmd)) return { decision: 'deny', reason: `Force-push is blocked in ${name}. Ask the owner, and do it by hand if they agree.` };
   const where = places?.length ? places : [{ toplevel: home, branch }];
   if (isPush(cmd) && !hasRefspec(cmd) && where.some(p => p.branch === 'main')) {
     return { decision: 'deny', reason: 'Bare `git push` from main is blocked. Name the branch (`git push origin main:main`), after asking.' };
@@ -105,11 +105,11 @@ export function decide(cmd, { branch = '', state = null, now = Date.now(), place
   // Every checkout the command touches must be the sprint's, or none of it is.
   const allowed = where.map(p => sprintPlace(state, p, home, now));
   const onSprint = allowed.every(Boolean) ? [...new Set(allowed)].join(', ') : null;
-  if (isMerge(cmd) && allowed.some(Boolean)) return { decision: 'deny', reason: 'A sprint never merges (ezaa-sprint SKILL.md). The owner merges the sprint PR.' };
+  if (isMerge(cmd) && allowed.some(Boolean)) return { decision: 'deny', reason: `A sprint never merges (${prefix}-sprint SKILL.md). The owner merges the sprint PR.` };
   if (isCommit(cmd) || isPush(cmd)) {
     const toMain = isPush(cmd) && (namesMain(cmd) || pushesUpstream(cmd));
     if (onSprint && !toMain) {
-      return { decision: 'allow', reason: `ezaa-sprint is running on ${onSprint}: the sprint exception to the commit rule (its own branches only).` };
+      return { decision: 'allow', reason: `${prefix}-sprint is running on ${onSprint}: the sprint exception to the commit rule (its own branches only).` };
     }
     // The owner's yes is given in chat (2026-11-18: "dont pop open this allow this bash command thing").
     // On a branch, with no sprint running, the permission rules decide (settings.local.json allows it).

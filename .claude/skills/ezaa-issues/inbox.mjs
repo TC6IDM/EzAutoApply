@@ -3,22 +3,22 @@
 // Ported from PTrainr (the newest copy: count, and log refusing a comment already logged) with
 // Ride The Bus's SessionStart hook mode.
 //
-//   node .claude/skills/ezaa-issues/inbox.mjs pending
+//   node .claude/skills/<prefix>-issues/inbox.mjs pending
 //     Comments not yet logged (with id, author, date, text), and stand-in replies waiting to be folded.
-//   node .claude/skills/ezaa-issues/inbox.mjs count [--json | --hook]
+//   node .claude/skills/<prefix>-issues/inbox.mjs count [--json | --hook]
 //     One line when something waits, nothing otherwise (sprint.mjs prints it on every loop).
 //     --json: {"waiting":N,"standIns":N}. --hook: the SessionStart hook's output; silent on any failure.
-//   node .claude/skills/ezaa-issues/inbox.mjs log <commentId> --text "#31 Extension: … (Bridge #32)"
+//   node .claude/skills/<prefix>-issues/inbox.mjs log <commentId> --text "#31 Extension: … (Bridge #32)"
 //     Appends "✅ Logged: <text>" under the comment. If GitHub refuses the edit, it posts a stand-in
 //     reply that points at the comment instead; `fold` merges it later. It reads the comment again
 //     first and refuses one already logged (PTrainr #518: two passes at once logged twelve comments
 //     twice). --add appends to a logged comment on purpose (a later follow-up).
-//   node .claude/skills/ezaa-issues/inbox.mjs fold
+//   node .claude/skills/<prefix>-issues/inbox.mjs fold
 //     Moves every stand-in reply's text under the comment it answers and deletes the stand-in.
 //     Run it at the start of every Inbox pass.
 //   Add --dry to print what would happen without changing anything.
 import { execFileSync } from 'node:child_process';
-import { REPO } from './config.mjs';
+import { REPO, PREFIX } from './config.mjs';
 import { LOGGED, withLog, sortInbox, refuseLog, standInBody, foldPlan } from './inbox-rules.mjs';
 export { LOGGED };
 
@@ -51,7 +51,7 @@ if (action === 'count') {
     if (args.includes('--json')) { console.log(JSON.stringify({ waiting: waiting.length, standIns: standIns.length })); process.exit(0); }
     if (!waiting.length && !standIns.length) process.exit(0);
     const line = `Inbox: ${waiting.length} comment${waiting.length === 1 ? '' : 's'} waiting on #${n}${standIns.length ? ` and ${standIns.length} stand-in repl${standIns.length === 1 ? 'y' : 'ies'} to fold` : ''}.`;
-    if (hook) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: `[ezaa-issues] ${line} Mention it to the owner; "go through the inbox" runs the ezaa-issues Inbox pass.` } }));
+    if (hook) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: `[${PREFIX}-issues] ${line} Mention it to the owner; "go through the inbox" runs the ${PREFIX}-issues Inbox pass.` } }));
     else console.log(line);
   } catch (error) {
     if (!hook) { console.error(`Inbox could not be read: ${String(error.message).split(/\r?\n/)[0]}`); process.exit(1); }

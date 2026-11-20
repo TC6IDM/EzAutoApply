@@ -2,9 +2,9 @@
 // a contact sheet of frames, sharper single frames, the last frame (lists usually end complete),
 // the platform's captions as text, and (if a speech-to-text tool is installed) a transcript.
 //
-//   node .claude/skills/ezaa-issues/watch-video.mjs <url> [--frames 12] [--cookies-from-browser firefox]
+//   node .claude/skills/<prefix>-issues/watch-video.mjs <url> [--frames 12] [--cookies-from-browser firefox]
 //                                                       [--out <dir>] [--fresh-tools]
-//   node .claude/skills/ezaa-issues/watch-video.mjs --file <saved-video.mp4>   (no download)
+//   node .claude/skills/<prefix>-issues/watch-video.mjs --file <saved-video.mp4>   (no download)
 //
 // Needs only Node. yt-dlp is the official build, downloaded into a per-user tools folder and
 // refreshed weekly (PATH's copy only if that fails); ffmpeg is used from PATH when present,
@@ -31,7 +31,7 @@ const FRAMES = Math.min(30, Math.max(4, Number(opt('frames')) || 12));
 const fresh = args.includes('--fresh-tools');
 const win = process.platform === 'win32', mac = process.platform === 'darwin', arm = process.arch === 'arm64';
 const exe = name => win ? `${name}.exe` : name;
-const TOOLS = join(win ? (process.env.LOCALAPPDATA || homedir()) : join(homedir(), '.cache'), 'ezaa-tools');
+const TOOLS = join(win ? (process.env.LOCALAPPDATA || homedir()) : join(homedir(), '.cache'), 'claude-workflow-tools');
 mkdirSync(TOOLS, { recursive: true });
 
 function onPath(name) {
@@ -99,7 +99,7 @@ async function ffmpeg() {
   return target;
 }
 
-const out = opt('out') || mkdtempSync(join(tmpdir(), 'ezaa-video-'));
+const out = opt('out') || mkdtempSync(join(tmpdir(), 'claude-workflow-video-'));
 mkdirSync(out, { recursive: true });
 const ff = await ffmpeg().catch(error => { console.log(`ffmpeg unavailable (${error.message}); continuing without frames.`); return null; });
 

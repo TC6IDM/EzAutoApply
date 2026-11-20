@@ -1,22 +1,22 @@
-// Start and finish work on a EzAutoApply issue, the same way every time.
+// Start and finish work on a issue of this repo (config.mjs NAME), the same way every time.
 //
-//   node .claude/skills/ezaa-issues/work.mjs start 65 [--to <login>]
+//   node .claude/skills/<prefix>-issues/work.mjs start 65 [--to <login>]
 //     Assigns the issue to the person (default: whoever this machine's gh is signed in as),
 //     moves its board card to In Progress, and comments who started it.
-//   node .claude/skills/ezaa-issues/work.mjs review 65 --note "What changed, where; PR #N"
+//   node .claude/skills/<prefix>-issues/work.mjs review 65 --note "What changed, where; PR #N"
 //     The work is finished and pushed, waiting for its PR to merge: comments the note,
 //     keeps the issue open and moves the card to In Review. The merge closes it (the PR
 //     says `Fixes #65`) and the board's "Item closed" workflow moves it to Done.
-//   node .claude/skills/ezaa-issues/work.mjs done 65 --note "What changed, where"
+//   node .claude/skills/<prefix>-issues/work.mjs done 65 --note "What changed, where"
 //     For work with no PR to wait for (accounts, decisions, research), or to close by hand:
 //     comments the note, closes the issue as completed, moves the card to Done,
 //     and closes the parent too when this was its last open sub-issue.
-//   node .claude/skills/ezaa-issues/work.mjs tidy
+//   node .claude/skills/<prefix>-issues/work.mjs tidy
 //     Moves the card of every closed issue that is not on Done to Done, and closes every
 //     open parent whose sub-issues are all closed (a merge closes sub-issues, never their
 //     parent). Run it after opening a PR and after a merge.
 //     Also assigns sub-issues from their parent (assign-down, below).
-//   node .claude/skills/ezaa-issues/work.mjs assign-down [65]
+//   node .claude/skills/<prefix>-issues/work.mjs assign-down [65]
 //     Whoever a parent is assigned to owns its sub-issues: every open issue nobody is assigned to
 //     gets the assignees of the nearest assigned parent above it, at any depth (only under #65 if
 //     given). Never replaces an assignee. `start` on a parent and `tidy` run it too.

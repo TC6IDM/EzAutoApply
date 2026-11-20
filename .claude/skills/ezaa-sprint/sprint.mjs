@@ -1,7 +1,7 @@
-// A EzAutoApply sprint: Claude works GitHub issues one after another and checkpoints
+// A sprint (config.mjs NAME): Claude works GitHub issues one after another and checkpoints
 // (push, the PR brought up to date, issue notes) before the 5-hour or weekly usage limit runs out. See SKILL.md.
 //
-//   node .claude/skills/ezaa-sprint/sprint.mjs start [--mine] [--small-at 80] [--new-at 94] [--stop-at 96] [--keep-going] [--autocompact [tokens]]   (on Fable the three default to 70 / 82 / 88)
+//   node .claude/skills/<prefix>-sprint/sprint.mjs start [--mine] [--small-at 80] [--new-at 94] [--stop-at 96] [--keep-going] [--autocompact [tokens]]   (on Fable the three default to 70 / 82 / 88)
 //       --autocompact: compact at ~200k tokens (or the number given) for this sprint only
 //       (.claude/settings.local.json), put back by `end` (or by the hook if the sprint died).
 //       Without it, compaction is left alone. `compact-window <tokens>|off` by hand.
@@ -47,7 +47,7 @@
 //   ... wind-down [--undo] Shut the sprint down gently: no new issue; the one in progress is
 //                         finished and committed, then the checkpoint. Run it from any terminal
 //                         while the sprint runs (the hook tells Claude on its next step), or say
-//                         "wind down" / "/ezaa-sprint wind down". --undo carries on as before.
+//                         "wind down" / "/<prefix>-sprint wind down". --undo carries on as before.
 //   ... end               Forget the sprint (after the checkpoint).
 //
 // The usage figures come from the endpoint Claude Code's /usage reads, with this machine's own
@@ -59,9 +59,9 @@ import { homedir, tmpdir, platform } from 'node:os';
 import { join, resolve } from 'node:path';
 import https from 'node:https';
 
-import { REPO, REPO_NAME, OWNER, PROJECT, MILESTONE_ORDER as MILESTONES, LINKED_REPOS, linkedRepoOf } from '../ezaa-issues/config.mjs';
+import { REPO, REPO_NAME, OWNER, PROJECT, MILESTONE_ORDER as MILESTONES, LINKED_REPOS, linkedRepoOf, NAME, PREFIX, NEEDS_LIVE_TEXT } from './repo.mjs';
 import { STALE_HOURS, KEEP_GOING_STALE_HOURS, DEFAULT_SMALL_AT, DEFAULT_NEW_AT, DEFAULT_STOP_AT, FABLE_LINES, LARGE_SESSION_AT, LARGE_WEEKLY_UNDER, DEFAULT_ISSUE_COST, defaultLines, until, judge, isLarge, largeAllowed, averageCost, finishRefusal, USAGE_FIELD, MEASURED_AFTER, issueUsage, usageNote, sizeAverages, expectedCost, misSized } from './verdict.mjs';
-const DIR = join(tmpdir(), 'ezaa-sprint');
+const DIR = join(tmpdir(), `${PREFIX}-sprint`);
 const STATE = join(DIR, 'state.json');
 const CACHE = join(DIR, 'usage.json');
 const RESTORE = join(DIR, 'compact-restore.json'); // what settings.local.json had before a sprint
@@ -229,7 +229,7 @@ function prBody(s, pr, running) {
   lines.push(...(done.length ? ['## Done',
     // Every finished issue closes on merge (maintainer, 2026-11-12), including one
     // nobody has seen on a phone yet; the line says so instead of keeping it open.
-    ...done.map(d => `- ${d.title ? `${d.title}: ` : ''}Fixes #${d.n}${d.device ? ' (not yet checked on a live job site)' : ''}${d.cost != null ? ` · ${d.cost}% of the 5-hour window` : ''}${d.weeklyCost != null ? `, ${d.weeklyCost}% of the week` : ''}`)]
+    ...done.map(d => `- ${d.title ? `${d.title}: ` : ''}Fixes #${d.n}${d.device ? ` (${NEEDS_LIVE_TEXT})` : ''}${d.cost != null ? ` · ${d.cost}% of the 5-hour window` : ''}${d.weeklyCost != null ? `, ${d.weeklyCost}% of the week` : ''}`)]
     : ['Nothing finished yet.']));
   // Commits on the branch from an earlier sprint on it (a restart, --here) are
   // not in s.done, and without their Fixes lines the merge left them open (#473,
@@ -338,7 +338,7 @@ function linkRepos(s, only) {
 function linkedPrBody(s, name, running) {
   const done = s.done.filter(d => d.repo === name);
   const lines = [];
-  // Titles and numbers only: the EzAutoApply board is public (no profile data in either PR).
+  // Titles and numbers only: when the board is public (config.mjs PUBLIC_BOARD) no private data goes in either PR.
   lines.push(...(done.length ? ['## Done', ...done.map(d => `- ${d.title ? `${d.title}: ` : ''}Fixes ${REPO}#${d.n}${d.cost != null ? ` · ${d.cost}% of the 5-hour window` : ''}`)] : ['Nothing finished yet.']));
   if (s.current?.repo === name) lines.push('', '## In progress', `- ${REPO}#${s.current.n}`);
   lines.push('', `The issues live on the ${REPO_NAME} board; this PR's merge closes them. ${s.pr ? `The same sprint's ${REPO_NAME} PR: ${REPO}#${s.pr}.` : ''}`.trim());
@@ -357,7 +357,7 @@ function publishLinked(s, name, running) {
   writeFileSync(file, linkedPrBody(s, name, running));
   let pr = JSON.parse(sh('gh', ['pr', 'list', '--repo', l.repo, '--head', l.branch, '--state', 'open', '--json', 'number,url', '--limit', '5']))[0] || null;
   // Its own title, from what is on it (the sprint's title describes this repo's PR, not that one).
-  const title = `EzAutoApply sprint ${l.branch.replace(/^sprint\//, '')}: ${done.length === 1 ? done[0].title : `${done.length} fleet issues`}`;
+  const title = `${NAME} sprint ${l.branch.replace(/^sprint\//, '')}: ${done.length === 1 ? done[0].title : `${done.length} fleet issues`}`;
   if (!pr) {
     const url = sh('gh', ['pr', 'create', '--repo', l.repo, '--base', l.base, '--head', l.branch, '--title', title, '--body-file', file]);
     pr = { number: Number(url.match(/\/pull\/(\d+)/)[1]), url };
@@ -453,7 +453,7 @@ function candidates(s, mine, tree, avoid) {
   const me = whoAmI();
   const thenOpen = mine && mineThenOpen(s);
   // --label <name>: only issues that also carry it. Several --label
-  // flags to gh are an AND. Added for EzAutoApply (2026-11-15).
+  // flags to gh are an AND.
   const only = s?.label ?? opt('label');
   const list = JSON.parse(sh('gh', ['issue', 'list', '--repo', REPO, '--state', 'open', '--label', 'who:claude', ...(only ? ['--label', only] : []), '--limit', '400',
     '--json', 'number,title,labels,milestone,assignees']));
@@ -515,7 +515,7 @@ if (action === 'budget') {
       const what = s.current
         ? `WIND DOWN (asked by the person): start no new issue. Finish #${s.current.n} properly (its checks, commit, sprint.mjs finish), then checkpoint (SKILL.md, "Checkpoint").`
         : 'WIND DOWN (asked by the person): start no new issue. Nothing is in progress, so checkpoint now (SKILL.md, "Checkpoint").';
-      process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: `[ezaa-sprint] ${what}` } }));
+      process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: `[${PREFIX}-sprint] ${what}` } }));
       process.exit(0);
     }
     const u = await usage(120);
@@ -528,13 +528,13 @@ if (action === 'budget') {
     record(s, u, `hook ${j.verdict}`);
     writeState(s);
     const what = j.verdict === 'STOP'
-      ? 'STOP: checkpoint NOW (ezaa-sprint SKILL.md, "Checkpoint"): unfinished work to a wip/ branch, merge main, sprint.mjs checkpoint, issue notes. Start nothing else.'
+      ? `STOP: checkpoint NOW (${PREFIX}-sprint SKILL.md, "Checkpoint"): unfinished work to a wip/ branch, merge main, sprint.mjs checkpoint, issue notes. Start nothing else.`
       : j.verdict === 'SMALL'
         ? 'SMALL: carry on with the current issue; a new one only if it is size:S.'
       : j.verdict === 'WRAP'
         ? 'WRAP: start no new issue. Finish the current one only if it is a step or two away, otherwise checkpoint now.'
         : 'UNKNOWN: usage cannot be read. Finish the current issue, then checkpoint.';
-    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: `[ezaa-sprint] ${what} (${j.line})` } }));
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: `[${PREFIX}-sprint] ${what} (${j.line})` } }));
     process.exit(0);
   }
   const u = await usage(30);
@@ -544,7 +544,7 @@ if (action === 'budget') {
   if (j.verdict !== 'GO' && j.verdict !== 'SMALL' && j.resumeInSeconds !== null) console.log(`the ${j.binding} limit resets in ${Math.round(j.resumeInSeconds / 60)} min (resumeInSeconds=${j.resumeInSeconds})`);
   // A keep-going wake that only reads the budget still sees the Inbox (PTrainr, 2026-11-16).
   try {
-    const inbox = sh('node', [new URL('../ezaa-issues/inbox.mjs', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'), 'count'], true);
+    const inbox = sh('node', [new URL(`../${PREFIX}-issues/inbox.mjs`, import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'), 'count'], true);
     console.log(inbox ? `${inbox} Do the Inbox pass before taking an issue (unless STOP).` : 'Inbox: nothing waiting.');
   } catch { console.log('Inbox: could not be read.'); }
   process.exit(0);
@@ -584,7 +584,7 @@ if (action === 'statusline') {
   if (s?.pr || Object.values(s?.linked || {}).some(l => l.pr)) {
     parts.push([s.pr ? `PR #${s.pr}` : '', ...Object.entries(s.linked || {}).filter(([, l]) => l.pr).map(([name, l]) => `${name} #${l.pr}`)].filter(Boolean).join(' + '));
   }
-  process.stdout.write(parts.join(' · ') || 'EzAutoApply');
+  process.stdout.write(parts.join(' · ') || NAME);
   process.exit(0);
 }
 
@@ -639,7 +639,7 @@ if (action === 'precompact') {
   s.compactions = [...(s.compactions || []), new Date().toISOString()].slice(-50);
   writeState(s);
   console.log([
-    'A /ezaa-sprint is running. In the summary, keep exactly:',
+    `A /${PREFIX}-sprint is running. In the summary, keep exactly:`,
     `- the sprint: branch ${s.branch}; issues done ${s.done.map(d => `#${d.n}`).join(' ') || 'none'}; skipped ${s.skipped.map(d => `#${d.n}`).join(' ') || 'none'}${s.queue?.length ? `; named first ${s.queue.map(n => `#${n}`).join(' ')}${s.only ? ' (only these)' : ''}` : ''}${s.mine ? '; --mine' : ''}${s.keepGoing ? '; keep going' : ''}`,
     `- the issue in progress${s.current ? ` (#${s.current.n})` : ''}: which of its boxes are done, every file changed and why, what was tried and failed, the checks still to run, and the next step`,
     '- any decision or instruction the person gave during the sprint, word for word',
@@ -652,9 +652,9 @@ if (action === 'precompact') {
 if (action === 'aftercompact') {
   if (!s) process.exit(0);
   const context = [
-    `[ezaa-sprint] The conversation was just compacted in the middle of a sprint on ${s.branch}. Before anything else:`,
-    '1. Re-read .claude/skills/ezaa-sprint/SKILL.md (the loop, the checkpoint, what the sprint may and may not do).',
-    '2. Run `node .claude/skills/ezaa-sprint/sprint.mjs status` and `sprint.mjs budget`, then `git status` and `git diff --stat` to see the work in progress.',
+    `[${PREFIX}-sprint] The conversation was just compacted in the middle of a sprint on ${s.branch}. Before anything else:`,
+    `1. Re-read .claude/skills/${PREFIX}-sprint/SKILL.md (the loop, the checkpoint, what the sprint may and may not do).`,
+    `2. Run \`node .claude/skills/${PREFIX}-sprint/sprint.mjs status\` and \`sprint.mjs budget\`, then \`git status\` and \`git diff --stat\` to see the work in progress.`,
     s.current ? `3. Issue #${s.current.n} is in progress: \`gh issue view ${s.current.n}\` (its ticked boxes say what landed), then carry on from the summary's next step.` : '3. No issue is in progress: carry on with `sprint.mjs next`.',
   ].join('\n');
   process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context } }));
@@ -724,7 +724,7 @@ if (action === 'start') {
     sh('git', ['switch', '-c', branch, 'origin/main']);
   }
   // Cards a merge closed since the last tidy leave the board before the sprint adds its own.
-  try { sh(process.execPath, [join(sh('git', ['rev-parse', '--show-toplevel']), '.claude', 'skills', 'ezaa-issues', 'work.mjs'), 'tidy'], true); }
+  try { sh(process.execPath, [join(sh('git', ['rev-parse', '--show-toplevel']), '.claude', 'skills', `${PREFIX}-issues`, 'work.mjs'), 'tidy'], true); }
   catch { console.log('(work.mjs tidy failed; the board may still show done cards)'); }
   const queue = expandNamed(parseIssues(opt('issues')));
   if (flag('only') && !queue.length) { console.log('--only needs --issues'); process.exit(1); }
@@ -790,7 +790,7 @@ if (action === 'next') {
   // Every pass of the loop starts with the Inbox (the owner, 2026-11-17): a
   // comment waiting there becomes issues before anything is chosen.
   try {
-    const inbox = sh('node', [new URL('../ezaa-issues/inbox.mjs', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'), 'count'], true);
+    const inbox = sh('node', [new URL(`../${PREFIX}-issues/inbox.mjs`, import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'), 'count'], true);
     console.log(inbox ? `${inbox} Log them first (inbox.mjs pending), then run next again.` : 'Inbox: nothing waiting.');
   } catch {
     console.log('Inbox: could not be read (offline or signed out); run inbox.mjs pending by hand.');
@@ -907,7 +907,7 @@ if (action === 'begin' || action === 'finish' || action === 'skip') {
     s.current = null;
     writeState(s);
     console.log(`#${n} done${cost !== null ? `, cost ${cost}% of the 5-hour window` : ''}`);
-    const work = join(sh('git', ['rev-parse', '--show-toplevel']), '.claude', 'skills', 'ezaa-issues', 'work.mjs');
+    const work = join(sh('git', ['rev-parse', '--show-toplevel']), '.claude', 'skills', `${PREFIX}-issues`, 'work.mjs');
     if (linked) {
       // That repo's branch and PR (#57); this repo's PR then lists it under "In <name>".
       const pr = publishLinked(s, where, true);

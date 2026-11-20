@@ -134,3 +134,9 @@ export function boardFields(labels) {
     Kind: kind && kind[0].toUpperCase() + kind.slice(1),
   };
 }
+
+// ---- used by the shared claude-workflow scripts (https://github.com/TC6IDM/claude-workflow) ----
+export const NAME = 'EzAutoApply';                               // PR titles, the status line
+export const PREFIX = 'ezaa';                                    // skill names: ezaa-issues, ezaa-sprint
+export const PUBLIC_BOARD = true;                                // public repo: nothing private in an issue, comment or PR
+export const NEEDS_LIVE_TEXT = 'not yet checked on a live job site';
