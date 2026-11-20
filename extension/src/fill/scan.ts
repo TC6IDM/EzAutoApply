@@ -125,8 +125,11 @@ function comboboxHasValue(el: Element): boolean {
 function groupKey(el: HTMLElement): string {
   const name = el.getAttribute('name');
   const scope = el.closest('form') ?? el.getRootNode();
-  if (name) return `${(scope as Node).nodeName}:${name}:${scopeIndex(scope as Node)}`;
   const container = el.closest('[role="radiogroup"], [role="group"], fieldset');
+  // Radios sharing a name are one group to the browser. Checkboxes aren't: Workday gives every
+  // work-experience entry's "I currently work here" box the same name, each in its entry's group.
+  const within = el.matches('input[type="checkbox"]') && container ? `:${fieldId(container)}` : '';
+  if (name) return `${(scope as Node).nodeName}:${name}:${scopeIndex(scope as Node)}${within}`;
   return container ? `c:${fieldId(container)}` : `self:${fieldId(el)}`;
 }
 

@@ -176,6 +176,24 @@ describe('Workday work experience', () => {
     // Already enough entries: nothing more is clicked.
     expect(await expandRepeatingSections(profile, document)).toBe(0);
   });
+
+  it('keeps each entry’s "I currently work here" box its own field, though all share one name', () => {
+    // Live Workday markup (Citi, November 2026): every entry's checkbox is name="currentlyWorkHere",
+    // and grouping by name made one "Work Experience 1" group of four boxes that nothing filled.
+    const job = (n: number) => `
+      <div role="group" aria-labelledby="we${n}"><h5 id="we${n}">Work Experience ${n}</h5>
+        <div data-automation-id="formField-jobTitle"><label for="workExperience-${n}--jobTitle">Job Title*</label><input type="text" id="workExperience-${n}--jobTitle" name="jobTitle"></div>
+        <div data-automation-id="formField-currentlyWorkHere"><label for="workExperience-${n}--currentlyWorkHere">I currently work here</label>
+          <input id="workExperience-${n}--currentlyWorkHere" type="checkbox" aria-checked="false" name="currentlyWorkHere" value=""></div>
+      </div>`;
+    document.body.innerHTML = `<div data-automation-id="applyFlowMyExpPage"><div role="group" aria-labelledby="wes"><h4 id="wes">Work Experience</h4>${job(1)}${job(2)}</div></div>`;
+    const boxes = scanFields(document).filter((f) => f.kind === 'checkbox' || f.kind === 'checkboxGroup');
+    expect(boxes.map((f) => [f.kind, f.label])).toEqual([
+      ['checkbox', 'I currently work here'],
+      ['checkbox', 'I currently work here'],
+    ]);
+    expect(boxes.map((f) => matchRules(f)?.key)).toEqual(['expCurrent', 'expCurrent']);
+  });
 });
 
 describe('Workday resume upload', () => {

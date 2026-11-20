@@ -1,4 +1,5 @@
 import { canonicalCountry, detectCountry } from './geo';
+import { normalize } from './normalize';
 import {
   DECLINE,
   educationByRecency,
@@ -130,6 +131,35 @@ const NOT_EMPLOYED = 'N/A';
 /** The job marked current; a past job isn't the current one, however recent. */
 function currentJob(ctx: ResolveContext) {
   return experienceByRecency(ctx.profile).find((e) => e.current) ?? null;
+}
+
+/** "Have you (ever / previously) worked at / been employed by X". */
+const WORKED_AT = /\bhave you (ever )?(previously |formerly )?(worked|been employed|been an? (employee|intern|contractor)) (at|for|by|with) /;
+const NOT_A_COMPANY = /^(us|here|this (company|organi[sz]ation|employer)|the company|our (company|organi[sz]ation))$/;
+
+/** The company a "have you worked at X" question names, or null ("here", "us"). */
+function workedAtCompany(label: string): string | null {
+  const n = normalize(label).replace(/[?*:.]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const m = WORKED_AT.exec(n);
+  if (!m) return null;
+  const company = n
+    .slice(m.index + m[0].length)
+    .replace(/\b(before|previously|in the past|ever|or (any|one) of .*|or its .*|as an? .*|in any capacity.*)$/, '')
+    .trim();
+  return company && !NOT_A_COMPANY.test(company) ? company : null;
+}
+
+const COMPANY_SUFFIX = /\b(inc|corp|corporation|co|company|ltd|llc|limited|plc|group)\b/g;
+
+/** "Acme Corp" and "Acme" are the same employer; "theScore / ESPN BET" is both. */
+function sameCompany(employer: string, named: string): boolean {
+  const clean = (s: string) => normalize(s).replace(COMPANY_SUFFIX, '').replace(/[^\p{L}\p{N} ]/gu, ' ').replace(/\s+/g, ' ').trim();
+  const want = clean(named);
+  if (!want) return false;
+  return employer
+    .split(/[/|,&]| and /)
+    .map(clean)
+    .some((e) => e && (e === want || ` ${e} `.includes(` ${want} `) || ` ${want} `.includes(` ${e} `)));
 }
 
 /** "Most recent employer" asks for the last job even when it has ended; "current employer" doesn't. */
@@ -509,6 +539,18 @@ export const FIELD_KEYS: FieldKeyDef[] = [
     exclude: [/\b(with|using)\b/], maxWords: 15,
     resolve: (c) => (c.profile.experience.length ? String(yearsOfExperience(c.profile)) : null),
   },
+  {
+    // The company is named in the question, so the work history answers it.
+    key: 'workedHereBefore', category: 'experience', title: 'Worked at this company before', valueType: 'bool', noClassify: true,
+    description: 'Whether the applicant has previously worked at the company named in the question',
+    label: [WORKED_AT],
+    exclude: [/\b(relative|related|family|friend|know|anyone|someone|spouse|referr)/], maxWords: 14,
+    resolve: (c) => {
+      const company = workedAtCompany(c.label);
+      if (!company) return null;
+      return c.profile.experience.some((e) => sameCompany(e.company, company));
+    },
+  },
 
   // ── education ──────────────────────────────────────────────────────────
   {
@@ -516,7 +558,8 @@ export const FIELD_KEYS: FieldKeyDef[] = [
     description: 'Name of a school, college or university attended',
     label: [/\b(school|university|college|institution)( name)?\b/, /\bname of (school|institution|university|college)\b/, /\balma mater\b/],
     attr: [/\bschool\b/, /\buniversity\b/, /\bcollege\b/, /\binstitution\b/],
-    exclude: [/\b(graduat|diploma|did you|have you|are you|attend|high school)/], maxWords: 6,
+    // "What school did you attend?" asks for the name; "Did you attend a university?" is a yes/no.
+    exclude: [/\b(graduat|diploma|have you|are you|high school)/, /^\W*(did|do|will|would|were) you\b/, /^(?!\W*(what|which)\b).*\battend/], maxWords: 6,
     resolve: (c) => text(edu(c)?.school),
   },
   {
@@ -524,7 +567,10 @@ export const FIELD_KEYS: FieldKeyDef[] = [
     description: 'Degree earned or pursued, such as a Bachelor’s or Master’s',
     label: [/\bdegree( type| level| name| obtained| earned)?\b/, /\b(level|type) of (degree|education)\b/, /\beducation level\b/, /\bhighest (level of )?(education|degree)\b/, /\bqualification\b/],
     attr: [/\bdegree\b/],
-    exclude: [/\b(field|major|area|discipline|subject|do you|have you|are you|pursuing|years)\b/], maxWords: 8,
+    // Long labels only when they ask for the highest one ("What is the highest level of education
+    // you have completed?", Cisco); otherwise a long label is a yes/no question about a degree.
+    exclude: [/\b(field|major|area|discipline|subject|do you|have you|are you|will you|years)\b/, /^(currently |still )?pursuing\b/, /^(?!.*\bhighest\b)(\S+ ){8,}\S/],
+    maxWords: 14,
     resolve: (c) => text(edu(c)?.degree),
   },
   {
@@ -559,7 +605,9 @@ export const FIELD_KEYS: FieldKeyDef[] = [
     key: 'graduationDate', category: 'education', title: 'Graduation date', valueType: 'date', repeat: true,
     description: 'Graduation date or expected graduation date',
     label: [/\b(expected |anticipated )?graduation( date| year| month)?\b/, /\bgrad (date|year)\b/],
-    maxWords: 8,
+    // Long but still a date: "Graduation Date or Anticipated Graduation Date For most recent or in progress degree."
+    exclude: [/\b(have you|are you|did you|do you|will you)\b/],
+    maxWords: 16,
     resolve: (c) => text(edu(c)?.end),
   },
 

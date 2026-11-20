@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { FIELD_KEYS } from '../../src/core/fieldKeys';
 import { matchRules } from '../../src/fill/match/rules';
 import type { FieldInfo } from '../../src/fill/types';
-import { field, opts } from './helpers';
+import { field, opts, sampleProfile } from './helpers';
 
 const keyOf = (f: Partial<FieldInfo>) => matchRules(field(f))?.key ?? null;
 
@@ -63,6 +64,18 @@ describe('matchRules: labels', () => {
   it('does not treat a salary question about the current job as desired salary', () => {
     expect(keyOf({ label: 'What is your current salary?' })).toBeNull();
   });
+
+  it('"What school did you attend?" asks for the school; "Did you attend a university?" is a yes/no', () => {
+    expect(keyOf({ label: 'What school did you attend? *' })).toBe('school');
+    expect(keyOf({ label: '* Which university did you attend?' })).toBe('school');
+    expect(keyOf({ label: 'Did you attend a university?', kind: 'radio', options: opts('Yes', 'No') })).not.toBe('school');
+    expect(keyOf({ label: 'Do you currently attend school?', kind: 'radio', options: opts('Yes', 'No') })).not.toBe('school');
+  });
+
+  it('a long label that is still a graduation date matches; a yes/no about graduating does not', () => {
+    expect(keyOf({ label: 'Graduation Date or Anticipated Graduation Date For most recent or in progress degree.' })).toBe('graduationDate');
+    expect(keyOf({ label: 'Have you finished your graduation requirements for this degree and received a diploma?', kind: 'radio', options: opts('Yes', 'No') })).not.toBe('graduationDate');
+  });
 });
 
 describe('matchRules: choice questions', () => {
@@ -85,6 +98,50 @@ describe('matchRules: choice questions', () => {
     ['Disability Status', 'disability'],
   ])('EEO %s → %s', (label, key) => {
     expect(keyOf({ label, kind: 'select', options: opts('A', 'B') })).toBe(key);
+  });
+
+  it.each([
+    'What is the highest level of education you have completed? *',
+    'Highest Degree Obtained or Pursuing',
+    'What is the highest degree you have completed or are currently pursuing? *',
+  ])('"%s" → degree (Cisco, Avature)', (label) => {
+    expect(keyOf({ label, kind: 'select', options: opts("Bachelor's Degree", "Master's Degree") })).toBe('degree');
+  });
+
+  it('keeps long yes/no questions about a degree away from the degree key', () => {
+    const yesNo = opts('Yes', 'No');
+    expect(keyOf({ label: 'Are you currently pursuing further education (e.g., post-secondary education)?', kind: 'select', options: yesNo })).not.toBe('degree');
+    expect(keyOf({ label: 'Will you have completed your degree by the start of the program?', kind: 'select', options: yesNo })).not.toBe('degree');
+    expect(keyOf({ label: 'Pursuing a degree?', kind: 'select', options: yesNo })).not.toBe('degree');
+  });
+
+  describe('"Have you worked at <company>?"', () => {
+    const yesNo = opts('Yes', 'No');
+    const def = FIELD_KEYS.find((d) => d.key === 'workedHereBefore')!;
+    const answer = (label: string) => def.resolve({ profile: sampleProfile(), index: 0, label, section: '', kind: 'radio' });
+
+    it.each([
+      'Have you previously worked at Hootsuite? *',
+      'Have you worked at DoorDash?*',
+      'Have you previously been employed at Intuit? *',
+      'Have you ever worked for Globex before?',
+    ])('%s → workedHereBefore', (label) => {
+      expect(keyOf({ label, kind: 'radio', options: yesNo })).toBe('workedHereBefore');
+    });
+
+    it('answers from the work history: Yes only for an employer in it', () => {
+      expect(answer('Have you worked at DoorDash?*')).toBe(false);
+      expect(answer('Have you previously been employed at Intuit? *')).toBe(false);
+      expect(answer('Have you ever worked for Globex before?')).toBe(true);
+      expect(answer('Have you previously worked at Acme?')).toBe(true);
+      // "Here" names no company: left for the owner.
+      expect(answer('Have you worked here before?')).toBeNull();
+    });
+
+    it('never answers whether someone they know works there', () => {
+      expect(keyOf({ label: 'Do you have a relative or friend who has worked at Intuit?', kind: 'radio', options: yesNo })).not.toBe('workedHereBefore');
+      expect(keyOf({ label: 'Have you worked at Intuit?', kind: 'text' })).not.toBe('workedHereBefore');
+    });
   });
 
   it('a bool key never matches a free-text field', () => {

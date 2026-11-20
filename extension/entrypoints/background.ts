@@ -658,6 +658,21 @@ function runDeps(tabId: number): RunDeps {
   };
 }
 
+/**
+ * Tabs opened before the extension (re)loaded have no content script: Chrome only injects the
+ * manifest's scripts into pages loaded afterwards. After the fleet build reloads (#32) a Run on such
+ * a tab found no button and stopped on `noButton`, so the script is injected again first.
+ */
+async function ensureContentScript(tabId: number): Promise<void> {
+  const alive = await toTab(tabId, { type: 'confirmation' }, 0).then(
+    () => true,
+    () => false,
+  );
+  if (alive) return;
+  frameCache.delete(tabId);
+  await browser.scripting.executeScript({ target: { tabId, allFrames: true }, files: ['/content-scripts/content.js'] }).catch(() => {});
+}
+
 /** How long Run with AI waits for the Answerer on one page before going on without it (#113). */
 const ASK_WAIT_MS = 6 * 60_000;
 
@@ -698,7 +713,8 @@ function launchRun(run: RunState): Promise<RunState> {
   const going = runs.get(run.tabId);
   if (going) return going;
   cancelled.delete(run.tabId);
-  const p = getSettings()
+  const p = ensureContentScript(run.tabId)
+    .then(getSettings)
     .then((s) => runPages(run, runDeps(run.tabId), { maxPages: s.runMaxPages, stopOnReview: s.runStopOnReview, isExternal: isExternalRedirect }))
     .finally(() => runs.delete(run.tabId));
   runs.set(run.tabId, p);
