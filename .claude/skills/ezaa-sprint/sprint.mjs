@@ -25,7 +25,7 @@
 //                         then the board best first, and the room left (flags only without a sprint).
 //   ... begin N           Re-checks the assignee on GitHub (exit 4 and skipped if someone else has
 //                         taken it since), then notes the issue and the usage when it started.
-//   ... finish N --note "…" [--needs-live]  After the issue's own commit (refused if the tree is
+//   ... finish N --note "…" [--needs-live | --needs-device]  After the issue's own commit (refused if the tree is
 //                         dirty or the last commit does not name #N): notes what it cost, pushes, opens
 //                         the PR on the first issue (labelled "sprint: running", so CI waits; a new one if the last was merged) or updates
 //                         it, and moves the issue to In Review (work.mjs review: the note + the PR).
@@ -903,7 +903,7 @@ if (action === 'begin' || action === 'finish' || action === 'skip') {
     // e2e fixtures), but nobody has run it on a real application site yet.
     let title = null;
     try { title = sh('gh', ['issue', 'view', String(n), '--repo', REPO, '--json', 'title', '--jq', '.title']); } catch { /* the PR line goes without it */ }
-    s.done.push({ n, title, at: new Date().toISOString(), cost, weeklyCost: took.weekly, ...(flag('needs-live') && { device: true }), ...(linked && { repo: where }) });
+    s.done.push({ n, title, at: new Date().toISOString(), cost, weeklyCost: took.weekly, ...((flag('needs-live') || flag('needs-device')) && { device: true }), ...(linked && { repo: where }) });
     s.current = null;
     writeState(s);
     console.log(`#${n} done${cost !== null ? `, cost ${cost}% of the 5-hour window` : ''}`);

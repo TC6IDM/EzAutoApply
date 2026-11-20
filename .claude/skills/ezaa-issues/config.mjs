@@ -140,3 +140,5 @@ export const NAME = 'EzAutoApply';                               // PR titles, t
 export const PREFIX = 'ezaa';                                    // skill names: ezaa-issues, ezaa-sprint
 export const PUBLIC_BOARD = true;                                // public repo: nothing private in an issue, comment or PR
 export const NEEDS_LIVE_TEXT = 'not yet checked on a live job site';
+export const GUARD_ASK_ALWAYS = false;                             // main and upstream ask; the owner's yes in chat plus allow rules cover the rest (CLAUDE.md, "Issues and sprints")
+export const GUARD_DENY = [];
