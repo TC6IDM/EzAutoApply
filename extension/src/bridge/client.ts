@@ -116,9 +116,12 @@ export function askQuestion(tabId: number, f: FieldReport, page: { url: string; 
   };
 }
 
-/** Which fields the panel offers "Ask an agent" on: unanswered or guessed, and never a password or a file. */
+/**
+ * Which fields the panel offers "Ask an agent" on: unanswered (including optional ones left
+ * blank, such as a "Why us?" essay, #123) or guessed, and never a password or a file.
+ */
 export function canAsk(f: Pick<FieldReport, 'status' | 'kind'>): boolean {
-  return (f.status === 'needs' || f.status === 'review') && f.kind !== 'password' && f.kind !== 'file';
+  return (f.status === 'needs' || f.status === 'review' || f.status === 'skipped') && f.kind !== 'password' && f.kind !== 'file';
 }
 
 type Fetch = (url: string, init?: RequestInit) => Promise<Response>;

@@ -128,7 +128,10 @@ describe('"Ask an agent" (#103)', () => {
   it('is offered on unanswered and guessed fields, never on a password or a file', () => {
     expect(canAsk(field())).toBe(true);
     expect(canAsk(field({ status: 'review' }))).toBe(true);
+    // An optional question left blank, e.g. a "Why us?" essay (#123).
+    expect(canAsk(field({ status: 'skipped', kind: 'textarea' }))).toBe(true);
     expect(canAsk(field({ status: 'filled' }))).toBe(false);
+    expect(canAsk(field({ status: 'prefilled' }))).toBe(false);
     expect(canAsk(field({ kind: 'password' }))).toBe(false);
     expect(canAsk(field({ kind: 'file' }))).toBe(false);
   });
