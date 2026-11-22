@@ -2,10 +2,10 @@
 // Who, Platform and Kind fields from its labels, for items where those are still empty.
 // Run after creating issues: node .claude/skills/<prefix>-issues/sync-board.mjs
 // Needs the gh token's project scope (gh auth refresh -s project).
-import { execFileSync } from 'node:child_process';
+import { gh as ghRun } from './gh.mjs';
 import { OWNER, REPO, PROJECT, boardFields } from './config.mjs';
 
-const gh = args => execFileSync('gh', args, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 64 << 20 }).trim();
+const gh = args => ghRun(args);
 const ghJson = args => JSON.parse(gh(args));
 
 const project = ghJson(['project', 'view', PROJECT, '--owner', OWNER, '--format', 'json']);
