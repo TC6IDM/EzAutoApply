@@ -9,7 +9,7 @@
 //
 // One step stays by hand (GitHub's API can't set it, and a copy doesn't bring it):
 // Workflows → "Auto-add to project", printed at the end.
-import { execFileSync } from 'node:child_process';
+import { gh } from './gh.mjs';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { OWNER, REPO, PROJECT, LABELS, MILESTONES, BOARD, PREFIX } from './config.mjs';
@@ -17,7 +17,7 @@ import { planBoard, withProjectNumber, describe } from './board-plan.mjs';
 
 const args = process.argv.slice(2);
 const dry = args.includes('--dry');
-const read = list => execFileSync('gh', list, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+const read = list => gh(list);
 const write = (what, list) => { if (dry) { console.log(`[dry] ${what}`); return ''; } console.log(what); return read(list); };
 const gql = (query, vars = {}) => JSON.parse(read(['api', 'graphql', '-f', `query=${query}`, ...Object.entries(vars).flatMap(([k, v]) => ['-F', `${k}=${v}`])])).data;
 const gqlWrite = (what, query) => { if (dry) { console.log(`[dry] ${what}`); return null; } console.log(what); return gql(query); };

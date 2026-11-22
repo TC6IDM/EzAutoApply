@@ -85,6 +85,17 @@ test('finish refuses a dirty tree, a commit that does not name #N, and no note',
   assert.equal(finishRefusal({ n: 48, dirty: '', subject: 'Tests for the guard (#48)', note: 'x' }), null);
 });
 
+import { takenAway } from '../skills/ezaa-sprint/verdict.mjs';
+
+test('an issue taken or closed while the sprint was paused is no longer its own', () => {
+  assert.equal(takenAway({ state: 'OPEN', assignees: ['me'], me: 'me' }), null);
+  assert.equal(takenAway({ state: 'OPEN', assignees: [], me: 'me' }), null, 'unassigned: still free to finish');
+  assert.equal(takenAway({ state: 'OPEN', assignees: ['me', 'other'], me: 'me' }), null);
+  assert.equal(takenAway({ state: 'OPEN', assignees: ['other'], me: 'me', also: ['other'] }), null, 'take-from');
+  assert.equal(takenAway({ state: 'OPEN', assignees: ['other'], me: 'me' }), 'assigned to other');
+  assert.equal(takenAway({ state: 'CLOSED', assignees: ['me'], me: 'me' }), 'closed', 'someone else built and merged it');
+});
+
 // ---------- usage per issue (#49) ----------
 import { issueUsage, usageNote, sizeAverages, expectedCost, misSized, MEASURED_AFTER, DEFAULT_ISSUE_COST } from '../skills/ezaa-sprint/verdict.mjs';
 
@@ -125,4 +136,204 @@ test('mis-sized issues sit nearer another size average', () => {
   const odd = misSized(rows, sizeAverages(rows));
   assert.deepEqual(odd.map(o => [o.n, o.looks]), [[20, 'M']], 'L has too few measured to judge');
   assert.deepEqual(misSized(rows.slice(0, 3), sizeAverages(rows.slice(0, 3))), [], 'one size alone says nothing');
+});
+
+// ---------- the checkpoint's decisions and the reset times ----------
+import { resetLabel, readingLine, usageLines, decisionsComment, answersSince, DECISIONS_MARK } from '../skills/ezaa-sprint/verdict.mjs';
+
+test('reset times: the time alone on the same day, the weekday on another', () => {
+  const now = new Date('2026-11-20T15:00:00Z');
+  assert.equal(resetLabel('2026-11-20T20:00:00Z', now, 'UTC'), '8:00 PM');
+  assert.equal(resetLabel('2026-11-22T09:00:00Z', now, 'UTC'), 'Sun 9:00 AM');
+  assert.equal(resetLabel(null, now, 'UTC'), null);
+  assert.equal(resetLabel('not a date', now, 'UTC'), null);
+});
+
+test('a reading says when each window resets, and leaves it out when unknown', () => {
+  const now = new Date('2026-11-20T15:00:00Z');
+  assert.equal(readingLine({ session: 77, sessionResets: '2026-11-20T20:00:00Z', weekly: 39, weeklyResets: '2026-11-22T09:00:00Z' }, now, 'UTC'),
+    '5-hour 77% (resets 8:00 PM), weekly 39% (resets Sun 9:00 AM)');
+  assert.equal(readingLine({ session: 5, weekly: null }, now, 'UTC'), '5-hour 5%, weekly ?%');
+});
+
+test('usage: the start, every checkpoint, then the latest reading unless it is the last checkpoint', () => {
+  const r = (at, session, step) => ({ at, session, weekly: 10, step });
+  const start = r('2026-11-20T06:00:00Z', 5, 'start');
+  const one = r('2026-11-20T09:00:00Z', 95, 'checkpoint');
+  const mid = r('2026-11-20T12:00:00Z', 30, 'finish');
+  const two = r('2026-11-20T14:00:00Z', 96, 'checkpoint');
+  const late = r('2026-11-20T15:00:00Z', 12, 'finish');
+  const labels = lines => lines.slice(1).map(l => l.match(/^- ([^(]+?) \(/)?.[1] ?? l);
+
+  assert.deepEqual(usageLines([]), []);
+  assert.deepEqual(labels(usageLines([start], 0, 'UTC')), ['At the start']);
+  assert.deepEqual(labels(usageLines([start, one, mid, two, late], 0, 'UTC')), ['At the start', 'Checkpoint 1', 'Checkpoint 2', 'Latest reading']);
+  assert.deepEqual(labels(usageLines([start, one, mid, two], 0, 'UTC')), ['At the start', 'Checkpoint 1', 'Checkpoint 2'], 'no repeat of the last checkpoint');
+  const lines = usageLines([start, one, late], 2, 'UTC');
+  assert.equal(lines[0], '## Usage');
+  assert.match(lines[2], /^- Checkpoint 1 \(.+\): 5-hour 95%, weekly 10%$/);
+  assert.equal(lines.at(-1), '- The 5-hour window reset 2× during the sprint');
+});
+
+test('the decisions comment: options lettered, the recommended one marked, the link, nothing when none are open', () => {
+  assert.equal(decisionsComment([]), null);
+  assert.equal(decisionsComment([{ text: 'old', posted: true }]), null);
+  const c = decisionsComment([
+    { issue: 12, text: 'Which header?', options: ['Compact', 'Large'], recommend: 'A', link: 'https://example.com/mock' },
+    { text: 'Merge conflict in x', recommend: 'keep main' },
+  ], 'attrib');
+  assert.ok(c.startsWith(DECISIONS_MARK));
+  assert.match(c, /1\. \*\*#12:\*\* Which header\?/);
+  assert.match(c, /A\. Compact \*\*\(recommended\)\*\*/);
+  assert.doesNotMatch(c, /B\. Large \*\*/);
+  assert.match(c, /Mock-ups: https:\/\/example\.com\/mock/);
+  assert.match(c, /2\. Merge conflict in x\n   - Recommended: keep main/);
+  assert.ok(c.endsWith('attrib'));
+});
+
+test('answers are the comments after the last decisions post, minus the ones seen', () => {
+  const list = [
+    { at: '2026-11-20T10:00:00Z', body: 'before' },
+    { at: '2026-11-20T11:00:00Z', body: `${DECISIONS_MARK} first` },
+    { at: '2026-11-20T12:00:00Z', body: 'stale answer' },
+    { at: '2026-11-20T13:00:00Z', body: `${DECISIONS_MARK} second` },
+    { at: '2026-11-20T14:00:00Z', body: '1 A' },
+    { at: '2026-11-20T15:00:00Z', body: '2 keep main' },
+  ];
+  assert.deepEqual(answersSince(list).map(c => c.body), ['1 A', '2 keep main']);
+  assert.deepEqual(answersSince(list, '2026-11-20T14:00:00Z').map(c => c.body), ['2 keep main']);
+  assert.deepEqual(answersSince(list.slice(0, 1)), []);
+});
+
+import { nowLine, withDone, findStalls, stallSummary, toolLabel } from '../skills/ezaa-sprint/verdict.mjs';
+
+test('the PR names the issue being built while the sprint runs, and drops the line at a checkpoint', () => {
+  const at = new Date(Date.now() - 42 * 60000).toISOString();
+  const s = { current: { n: 723, title: 'Android: TikTok in Follow us', at }, done: [] };
+  const line = nowLine(s, true);
+  assert.match(line, /^\*\*Now working on:\*\* #723 Android: TikTok in Follow us · since /);
+  assert.match(line, /\(42 min at the last update\)$/);
+  assert.match(nowLine({ current: null, done: [{ n: 1, at }] }, true), /^\*\*Now:\*\* between issues \(last one finished /);
+  assert.equal(nowLine({ current: null, done: [] }, true), '**Now:** between issues');
+  assert.equal(nowLine(s, false), null, 'a checkpointed PR has no Now line');
+  assert.match(nowLine({ current: { n: 5, at: new Date(Date.now() - 125 * 60000).toISOString() } }, true), /2 h 05 min/);
+});
+
+test('a finish run again replaces its own line and keeps what the first run knew', () => {
+  const first = withDone([{ n: 1, cost: 2 }], { n: 716, title: 'Android: Follow us', cost: 3, weeklyCost: 1 });
+  const marked = first.map(d => (d.n === 716 ? { ...d, reviewed: true } : d));
+  const again = withDone(marked, { n: 716, title: 'Android: Follow us', cost: null, weeklyCost: null, device: true });
+  assert.equal(again.length, 2, 'no second #716 line');
+  assert.deepEqual(again[1], { n: 716, title: 'Android: Follow us', cost: 3, weeklyCost: 1, reviewed: true, device: true });
+  assert.equal(withDone(again, { n: 716, repo: 'other' }).length, 3, 'the same number in a linked repo is another issue');
+});
+
+// Transcript lines as Claude Code writes them (only the fields the finder reads).
+const t0 = Date.parse('2026-11-22T06:00:00Z');
+const at = min => new Date(t0 + min * 60000).toISOString();
+const toolUse = (min, name, input) => ({ type: 'assistant', timestamp: at(min), message: { content: [{ type: 'tool_use', name, input }] } });
+const result = min => ({ type: 'user', timestamp: at(min), message: { content: [{ type: 'tool_result', content: 'x' }] } });
+const reply = min => ({ type: 'assistant', timestamp: at(min), message: { content: [{ type: 'text', text: 'done' }] } });
+const prompt = (min, text) => ({ type: 'user', timestamp: at(min), message: { content: text } });
+
+test('stalls: a hung tool, an ended turn and a slow reply are told apart', () => {
+  const entries = [
+    prompt(0, 'go'),
+    toolUse(1, 'Bash', { command: 'node .claude/skills/x-sprint/sprint.mjs finish 723 --note "Android: a TikTok row"' }),
+    result(25),                                         // the finish hung for 24 min
+    toolUse(26, 'Bash', { command: './gradlew :app:testDebugUnitTest', run_in_background: true }),
+    result(26),
+    toolUse(27, 'ScheduleWakeup', { delaySeconds: 3300 }),
+    result(27),
+    reply(27),                                          // the turn ends here
+    prompt(82, '<command-name>/x-sprint</command-name> keep going'),
+    reply(90),                                          // 8 min for a reply
+    { type: 'assistant', timestamp: at(60), isSidechain: true, message: { content: [{ type: 'text', text: 'a subagent' }] } },
+  ];
+  const stalls = findStalls(entries, { minMinutes: 5 });
+  assert.deepEqual(stalls.map(g => [g.minutes, g.cause]), [[24, 'tool'], [55, 'idle'], [8, 'model']]);
+  assert.match(stalls[0].what, /^Bash: node \.claude\/skills\/x-sprint\/sprint\.mjs finish 723/);
+  assert.match(stalls[1].what, /the turn ended with ScheduleWakeup 3300 s, leaving Bash: \.\/gradlew :app:testDebugUnitTest \(in the background\); woken by the loop prompt/);
+  const summary = stallSummary(stalls, 90).join('\n');
+  assert.match(summary, /^session span: 1 h 30 min\nidle, the turn had ended: 55 min\nwaiting on a tool: 24 min\nwaiting on Claude's reply: 8 min\nlongest:/);
+});
+
+test('stalls: labels say what ran, never what a file or message held', () => {
+  assert.equal(toolLabel({ name: 'Write', input: { file_path: 'C:/repo/app/secret-plan.md', content: 'private' } }), 'Write: secret-plan.md');
+  assert.equal(toolLabel({ name: 'ScheduleWakeup', input: { stop: true } }), 'ScheduleWakeup stop');
+  assert.ok(toolLabel({ name: 'Bash', input: { command: 'x'.repeat(500) } }).length < 80);
+  assert.deepEqual(findStalls([prompt(0, 'a'), reply(1)], { minMinutes: 5 }), []);
+});
+
+import { takeable, nothingLeft, HANDED_OFF } from '../skills/ezaa-sprint/verdict.mjs';
+
+const issue = (labels, assignees = []) => ({ labels, assignees });
+const greedy = { me: 'bora', keepGoing: true, greedy: true };
+const tierOf = (i, status, o = greedy) => takeable(i, status ?? null, o).tier;
+
+test('keep going takes, in order: yours, unassigned, another developer\'s, Claude\'s part of shared ones, the owner\'s', () => {
+  assert.equal(tierOf(issue(['who:claude'], ['bora'])), 0);
+  assert.equal(tierOf(issue(['who:claude'])), 1);
+  assert.equal(tierOf(issue(['who:claude'], ['tc'])), 2);
+  assert.equal(tierOf(issue(['who:together'], ['tc'])), 3);
+  assert.equal(tierOf(issue(['who:claude', 'type:decision'])), 3, 'a decision: Claude builds the options, then hands off');
+  assert.equal(tierOf(issue([])), 3, 'no who label: treated as shared');
+  assert.equal(tierOf(issue(['who:you'], ['tc'])), 4);
+  assert.equal(tierOf(issue(['who:lawyer'])), 4);
+});
+
+test('never someone else\'s In Progress, anything waiting on a person, in review, a parent or the Inbox', () => {
+  const left = (i, status) => takeable(i, status, greedy);
+  assert.deepEqual(left(issue(['who:claude'], ['tc']), 'In Progress'), { tier: null, why: 'in progress under tc' });
+  assert.equal(left(issue(['who:claude']), 'In Progress').why, 'in progress', 'unassigned but someone moved it: leave it');
+  assert.equal(left(issue(['who:claude'], ['bora']), 'In Progress').tier, 0, 'your own In Progress is yours to carry on');
+  assert.equal(left(issue(['who:together', 'status:needs-decision']), null).why, 'waiting on a person (status:needs-decision)');
+  assert.equal(left(issue(['who:you', HANDED_OFF]), null).why, `waiting on a person (${HANDED_OFF})`, 'a handed-off issue is not done twice');
+  assert.equal(left(issue(['who:claude']), 'In Review').why, 'in review');
+  assert.equal(left(issue(['type:epic', 'who:claude']), null).tier, null);
+  assert.equal(left(issue(['inbox']), null).tier, null);
+});
+
+test('without keep going (or with --no-greedy) a sprint stays with yours and unassigned who:claude issues', () => {
+  for (const o of [{ me: 'bora' }, { me: 'bora', keepGoing: true, greedy: false }]) {
+    assert.equal(tierOf(issue(['who:claude']), null, o), 1);
+    assert.equal(takeable(issue(['who:claude'], ['tc']), null, o).why, 'assigned to tc');
+    assert.equal(takeable(issue(['who:together']), null, o).why, 'who:together');
+    assert.equal(tierOf(issue(['who:claude', 'type:decision']), null, o), 3, 'a who:claude decision: Claude prepares the options in any sprint, then hands off');
+    assert.equal(takeable(issue(['who:claude', 'type:decision'], ['tc']), null, o).why, 'a decision', "someone else's decision waits for keep going");
+  }
+  assert.equal(takeable(issue(['who:claude']), null, { me: 'bora', mine: true }).why, 'unassigned (--mine)');
+  assert.equal(tierOf(issue(['who:claude'], ['tc']), null, { me: 'bora', also: ['tc'] }), 0, 'take-from still makes theirs yours');
+});
+
+test('the done line counts why every open issue was left', () => {
+  assert.equal(nothingLeft(['in review', 'in review', 'waiting on a person (status:needs-decision)', 'in progress under tc', 'in progress under bora', 'assigned to tc']),
+    'NOTHING LEFT on the board that this sprint can work on: 2 in review · 2 in progress · 1 waiting on a person (status:needs-decision) · 1 assigned to someone else.');
+  assert.equal(nothingLeft([]), 'NOTHING LEFT on the board that this sprint can work on.');
+});
+
+import { wakeAt, pauseLine } from '../skills/ezaa-sprint/verdict.mjs';
+import { readFileSync as readSource } from 'node:fs';
+
+test('a paused sprint PR names its next wake; an ended one says no wake follows (claude-workflow#4)', () => {
+  const now = Date.parse('2026-11-22T20:00:00Z');
+  assert.equal(wakeAt({ wakeIn: '3300' }, now), '2026-11-22T20:55:00.000Z');
+  assert.equal(wakeAt({ nextWake: '2026-11-23T04:50:00Z' }, now), '2026-11-23T04:50:00.000Z');
+  assert.equal(wakeAt({}, now), null, 'none given, none said');
+  assert.equal(wakeAt({ wakeIn: 'soon' }, now), null, 'an unreadable delay names no wake');
+  assert.equal(wakeAt({ wakeIn: '-5' }, now), null);
+  assert.equal(wakeAt({ nextWake: 'tomorrow-ish' }, now), null);
+  const paused = pauseLine({ nextWake: '2026-11-22T20:55:00.000Z' });
+  assert.match(paused, /^_The sprint is paused: next wake about .+\. Then it reads the answers under its questions and the Inbox, and carries on\._$/);
+  assert.match(pauseLine({ ended: true, nextWake: '2026-11-22T20:55:00.000Z' }), /^_The sprint has ended: no wake follows\./, 'ended wins over a stale wake');
+  assert.match(pauseLine({}), /^_The sprint has checkpointed:/);
+});
+
+test('work.mjs accepts every action it handles after the issue lookup, handoff included (claude-workflow#5)', () => {
+  const source = readSource(new URL('../skills/ezaa-issues/work.mjs', import.meta.url), 'utf8');
+  const accepted = JSON.parse(source.match(/export const ISSUE_ACTIONS = (\[[^\]]*\])/)[1].replace(/'/g, '"'));
+  const lookup = source.indexOf('const issue = ghJson(');
+  const handled = [...source.slice(lookup).matchAll(/action === '([a-z-]+)'/g)].map(m => m[1]);
+  assert.ok(handled.includes('handoff'));
+  for (const name of handled) assert.ok(accepted.includes(name), `work.mjs ${name} is handled but refused by the usage check`);
 });

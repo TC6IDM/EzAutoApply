@@ -17,7 +17,7 @@
 //     Moves every stand-in reply's text under the comment it answers and deletes the stand-in.
 //     Run it at the start of every Inbox pass.
 //   Add --dry to print what would happen without changing anything.
-import { execFileSync } from 'node:child_process';
+import { gh as ghRun } from './gh.mjs';
 import { REPO, PREFIX } from './config.mjs';
 import { LOGGED, withLog, sortInbox, refuseLog, standInBody, foldPlan } from './inbox-rules.mjs';
 export { LOGGED };
@@ -26,7 +26,7 @@ const args = process.argv.slice(2);
 const [action, idArg] = args;
 const dry = args.includes('--dry');
 const opt = name => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : undefined; };
-const gh = list => execFileSync('gh', list, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+const gh = list => ghRun(list);
 const ghJson = list => JSON.parse(gh(list));
 
 function inboxNumber() {

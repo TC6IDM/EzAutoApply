@@ -3,7 +3,7 @@
 // Usage: node create-issues.mjs <issues.txt> [more.txt …] [--dry]
 import { readFileSync, writeFileSync, existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { execFileSync } from 'node:child_process';
+import { gh as ghRun } from './gh.mjs';
 import { join, resolve } from 'node:path';
 
 import { REPO, MILESTONES, LABELS, PREFIX } from './config.mjs';
@@ -11,7 +11,7 @@ const files = process.argv.slice(2).filter(a => !a.startsWith('--')).map(f => re
 if (!files.length) { console.error('usage: node create-issues.mjs <issues.txt> [--dry]'); process.exit(1); }
 const dry = process.argv.includes('--dry');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const gh = (args, input) => execFileSync('gh', args, { encoding: 'utf8', input, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+const gh = (args, input) => ghRun(args, { input });
 
 
 // ---- parse ----

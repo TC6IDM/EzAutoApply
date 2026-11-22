@@ -26,13 +26,15 @@
 //   ... begin N           Re-checks the assignee on GitHub (exit 4 and skipped if someone else has
 //                         taken it since), then notes the issue and the usage when it started.
 //   ... finish N --note "…" [--needs-live | --needs-device]  After the issue's own commit (refused if the tree is
-//                         dirty or the last commit does not name #N): notes what it cost, pushes, opens
+//                         dirty or the last commit does not name #N; exit 4 if the issue was closed or
+//                         given to someone else since begin, as next and budget also check): notes what it cost, pushes, opens
 //                         the PR on the first issue (labelled "sprint: running", so CI waits; a new one if the last was merged) or updates
 //                         it, and moves the issue to In Review (work.mjs review: the note + the PR).
 //                         --needs-live: nobody has tried it on a live job site yet. The PR still says Fixes
 //                         (the merge closes it, maintainer 2026-11-12) and adds that it is not yet seen.
-//   ... checkpoint [--title "…"] [--intro-file f.md]  Rewrite the PR (title, Claude's description
-//                         above the generated part, usage) and take the running label off: CI runs once.
+//   ... checkpoint [--title "…"] [--intro-file f.md] [--wake-in <seconds> | --next-wake <time>]  Rewrite the PR (title,
+//                         Claude's description above the generated part, usage) and take the running label off: CI runs once.
+//                         --wake-in / --next-wake: when the paused sprint wakes next, which the PR's last line names.
 //   ... sizes             What each size has cost, measured on the board ("Usage %", set by finish
 //                         from the 5-hour reading at begin and finish), and issues whose size label
 //                         looks wrong. `next` shows each candidate's expected cost from the same figures.
@@ -46,7 +48,10 @@
 //   ... precompact        PreCompact hook: tells the summary what to keep (silent without a sprint).
 //   ... aftercompact      SessionStart "compact" hook: puts the sprint back in Claude's context.
 //   ... status            Where the sprint stands, its PR and the questions waiting.
-//   ... ask "…"           Note a question for the checkpoint instead of stopping to ask it.
+//   ... ask "…" [--options "A | B | C"] [--recommend B] [--link <mock-ups url>]
+//                         Note a question for the checkpoint instead of stopping to ask it. The
+//                         checkpoint posts every open one as one comment on the PR (options, the
+//                         recommended one, the link), and `next` prints the answers under it.
 //   ... summary [--final] The PR body as it stands: Fixes lines, in progress, passed over, usage.
 //   ... wind-down [--undo] Shut the sprint down gently: no new issue; the one in progress is
 //                         finished and committed, then the checkpoint. Run it from any terminal
@@ -58,13 +63,13 @@
 // Claude login. The token is read from ~/.claude/.credentials.json (or the macOS Keychain),
 // sent only to api.anthropic.com, and never printed or stored anywhere else.
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir, tmpdir, platform } from 'node:os';
 import { join, resolve } from 'node:path';
 import https from 'node:https';
 
 import { REPO, REPO_NAME, OWNER, PROJECT, MILESTONE_ORDER as MILESTONES, LINKED_REPOS, linkedRepoOf, NAME, PREFIX, NEEDS_LIVE_TEXT } from './repo.mjs';
-import { STALE_HOURS, KEEP_GOING_STALE_HOURS, DEFAULT_SMALL_AT, DEFAULT_NEW_AT, DEFAULT_STOP_AT, FABLE_LINES, LARGE_SESSION_AT, LARGE_WEEKLY_UNDER, DEFAULT_ISSUE_COST, defaultLines, until, judge, isLarge, largeAllowed, averageCost, finishRefusal, USAGE_FIELD, MEASURED_AFTER, issueUsage, usageNote, sizeAverages, expectedCost, misSized } from './verdict.mjs';
+import { STALE_HOURS, KEEP_GOING_STALE_HOURS, DEFAULT_SMALL_AT, DEFAULT_NEW_AT, DEFAULT_STOP_AT, FABLE_LINES, LARGE_SESSION_AT, LARGE_WEEKLY_UNDER, DEFAULT_ISSUE_COST, defaultLines, until, judge, isLarge, largeAllowed, averageCost, finishRefusal, takenAway, USAGE_FIELD, MEASURED_AFTER, issueUsage, usageNote, sizeAverages, expectedCost, misSized, readingLine, usageLines, decisionsComment, answersSince, nowLine, wakeAt, pauseLine, withDone, findStalls, stallSummary, takeable, nothingLeft, TIERS, HANDED_OFF } from './verdict.mjs';
 const DIR = join(tmpdir(), `${PREFIX}-sprint`);
 const STATE = join(DIR, 'state.json');
 const CACHE = join(DIR, 'usage.json');
@@ -77,9 +82,28 @@ const args = process.argv.slice(2);
 const action = args[0];
 const opt = name => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : undefined; };
 const flag = name => args.includes(`--${name}`);
-const sh = (cmd, list, quiet) => execFileSync(cmd, list, { encoding: 'utf8', stdio: ['ignore', 'pipe', quiet ? 'ignore' : 'pipe'] }).trim();
+// gh goes through the issues folder's gh.mjs: a time limit on every call, and
+// read-only calls tried again after a stall (claude-workflow#2). Everything else
+// (pushes, work.mjs) gets a limit too, so no step of a sprint can hang for good.
+const { gh: ghRun } = await import(new URL(`../${PREFIX}-issues/gh.mjs`, import.meta.url));
+const SH_TIMEOUT_MS = 5 * 60000;
+const sh = (cmd, list, quiet) => cmd === 'gh'
+  ? ghRun(list, { quiet })
+  : execFileSync(cmd, list, { encoding: 'utf8', timeout: SH_TIMEOUT_MS, killSignal: 'SIGKILL', maxBuffer: 64 << 20, stdio: ['ignore', 'pipe', quiet ? 'ignore' : 'pipe'] }).trim();
 
 // ---------- state ----------
+// The Inbox at every step between issues (the owner, 2026-11-21): a sprint's
+// start, each begin, finish and checkpoint, and every budget and next, so a
+// comment never waits there for a whole sprint. `then` says what to do about it.
+function inboxLine(then) {
+  try {
+    const inbox = sh('node', [new URL(`../${PREFIX}-issues/inbox.mjs`, import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'), 'count'], true);
+    return inbox ? `INBOX: ${inbox} ${then}` : 'Inbox: nothing waiting.';
+  } catch {
+    return 'Inbox: could not be read (offline or signed out); run inbox.mjs pending by hand.';
+  }
+}
+
 function readState() {
   try {
     const s = JSON.parse(readFileSync(STATE, 'utf8'));
@@ -183,7 +207,7 @@ function record(s, u, step) {
   // A 5-hour reading well below the last one: the window reset (keep-going carried on past it).
   const prev = s.readings?.at(-1);
   if (prev && typeof prev.session === 'number' && typeof u.session === 'number' && u.session < prev.session - 5) s.resets = (s.resets || 0) + 1;
-  s.readings = [...(s.readings || []), { at: new Date().toISOString(), session: u.session, weekly: u.weekly, step }].slice(-300);
+  s.readings = [...(s.readings || []), { at: new Date().toISOString(), session: u.session, sessionResets: u.sessionResets ?? null, weekly: u.weekly, weeklyResets: u.weeklyResets ?? null, step }].slice(-300);
 }
 
 
@@ -227,8 +251,12 @@ const percent = v => (v ?? '?') + '%';
 function prBody(s, pr, running) {
   // A linked repo's issues are on that repo's PR (#57), never Fixes lines here:
   // this PR's merge would close them with their code still unmerged there.
-  const done = s.done.filter(d => d.pr === pr && !d.repo);
+  // One line per issue, even from a state file written before finish could be run again safely.
+  const done = s.done.filter(d => d.pr === pr && !d.repo).reduce(withDone, []);
   const lines = [];
+  // What the sprint is on right now, first (claude-workflow#1): rewritten at begin as well as finish.
+  const now = nowLine(s, running);
+  if (now) lines.push(now, '');
   if (s.intro?.pr === pr) lines.push(s.intro.text.trim(), '');
   lines.push(...(done.length ? ['## Done',
     // Every finished issue closes on merge (maintainer, 2026-11-12), including one
@@ -238,7 +266,7 @@ function prBody(s, pr, running) {
   // Commits on the branch from an earlier sprint on it (a restart, --here) are
   // not in s.done, and without their Fixes lines the merge left them open (#473,
   // 2026-11-14: PR #428 closed only #424 of twelve).
-  const listed = new Set([...done.map(d => d.n), ...(s.current ? [s.current.n] : [])]);
+  const listed = new Set([...done.map(d => d.n), ...(s.current ? [s.current.n] : []), ...(s.handedOff || []).map(h => h.n)]);
   const earlier = [];
   let subjects = '';
   try { subjects = sh('git', ['log', '--no-merges', '--format=%s', 'origin/main..HEAD'], true); } catch {}
@@ -252,17 +280,16 @@ function prBody(s, pr, running) {
     const there = s.done.filter(d => d.repo === name);
     if (there.length) lines.push('', `## In ${name}`, `${l.pr ? `${l.repo}#${l.pr}` : l.repo} holds these; its merge closes them:`, ...there.map(d => `- ${d.title ? `${d.title}: ` : ''}#${d.n}`));
   }
-  if (s.current) lines.push('', '## In progress', `- #${s.current.n}${s.current.repo ? ` (in ${s.current.repo})` : ''}${running ? `: being built now; it joins ${s.current.repo ? 'that repo\'s sprint PR' : 'this PR'} as its own commit when its checks pass` : ': not finished, kept off this PR (see its "Next" comment)'}`);
+  if (s.current && !running) lines.push('', '## In progress', `- #${s.current.n}${s.current.repo ? ` (in ${s.current.repo})` : ''}: not finished, kept off this PR (see its "Next" comment)`);
   if (s.skipped.length) lines.push('', '## Passed over', ...s.skipped.map(d => `- #${d.n}: ${d.why}`));
-  const first = s.readings[0], last = s.readings.at(-1);
-  if (first && last) {
-    lines.push('', '## Usage', `- At the start (${new Date(first.at).toLocaleString()}): 5-hour ${percent(first.session)}, weekly ${percent(first.weekly)}`,
-      `- Last reading (${new Date(last.at).toLocaleString()}): 5-hour ${percent(last.session)}, weekly ${percent(last.weekly)}`);
-    if (s.resets) lines.push(`- The 5-hour window reset ${s.resets}× during the sprint`);
-  }
+  // Claude's part done, the rest waits on a person: listed without Fixes, so the merge leaves them open.
+  if (s.handedOff?.length) lines.push('', '## Prepared, waiting on a person (these stay open)', ...s.handedOff.map(h => `- #${h.n}${h.title ? ` ${h.title}` : ''}: ${h.why}`));
+  // Each reading says when its windows reset, measured from that reading's own time.
+  const usage = usageLines(s.readings, s.resets);
+  if (usage.length) lines.push('', ...usage);
   lines.push('', running
     ? `_The sprint is still running: each issue arrives as its own commit and its card moves to In Review. The "${RUNNING}" label holds CI back until the checkpoint takes it off (CI then runs once; take it off by hand to run CI sooner). It can be merged at any time; a later issue then opens a new PR._`
-    : '_The sprint has checkpointed: CI runs once on this state. Nothing more arrives unless it resumes after a usage reset._', '', ATTRIBUTION);
+    : pauseLine(s), '', ATTRIBUTION);
   return lines.join('\n');
 }
 
@@ -421,60 +448,87 @@ function openTree() {
 
 // Why an issue is someone else's or off limits, or null. An issue is off limits when it, or any
 // issue above it, is assigned to someone else and not to me, or is on the avoid list.
-function offLimits(n, tree, me, avoid, also = []) {
+function offLimits(n, tree, me, avoid, also = [], anyone = false) {
   const ours = new Set([me, ...also]);
   for (let at = n, depth = 0; at && depth < 10; at = tree.get(at)?.parent, depth++) {
     if (avoid.has(at)) return at === n ? 'on the avoid list' : `under #${at} (avoid list)`;
     const who = tree.get(at)?.assignees || [];
-    if (who.length && !who.some(w => ours.has(w))) return at === n ? `assigned to ${who.join(', ')}` : `under #${at}, assigned to ${who.join(', ')}`;
+    if (!anyone && who.length && !who.some(w => ours.has(w))) return at === n ? `assigned to ${who.join(', ')}` : `under #${at}, assigned to ${who.join(', ')}`;
   }
   return null;
 }
 
-// Issues whose board card is In Review: built and pushed, waiting for a merge
-// (an earlier sprint's, or anyone's). Not work to pick up again.
-function inReview() {
+// The issue in hand asked again on GitHub (takenAway): null while it is still this sprint's.
+function lostSince(n, s) {
+  const i = JSON.parse(sh('gh', ['issue', 'view', String(n), '--repo', REPO, '--json', 'state,assignees']));
+  return takenAway({ state: i.state, assignees: i.assignees.map(a => a.login), me: whoAmI(), also: s.takeFrom || [] });
+}
+
+// On a resume (`next`, `budget`): an issue in progress that was closed or taken since is
+// dropped from the sprint, and Claude is told to leave it alone. Never blocks on gh failing.
+function dropIfLost(s) {
+  if (!s?.current || s.external) return;
+  let why = null;
+  try { why = lostSince(s.current.n, s); } catch { return; }
+  if (!why) return;
+  const n = s.current.n;
+  s.skipped.push({ n, why: `${why} while the sprint was paused` });
+  s.current = null;
+  writeState(s);
+  console.log(`TAKEN: #${n} is ${why} since this sprint began it. It is not this sprint's any more: do not build, commit or finish it. Work on it not yet committed goes to wip/issue-${n} (git switch -c, commit, switch back); a commit of it already on this branch and not pushed comes off (git branch wip/issue-${n}, then git reset --hard HEAD~1). It is now skipped; carry on with \`sprint.mjs next\`.`);
+}
+
+// Each open issue's board column (Todo, In Progress, In Review…). In Review: built and
+// pushed, waiting for a merge; In Progress under someone else: they are on it now.
+function boardStatus() {
   const q = `query($after:String){ user(login:"${OWNER}"){ projectV2(number:${PROJECT}){ items(first:100, after:$after){
     pageInfo { hasNextPage endCursor } nodes { content { ... on Issue { number state } } fieldValueByName(name:"Status"){ ... on ProjectV2ItemFieldSingleSelectValue { name } } } } } } }`;
-  const numbers = new Set();
+  const columns = new Map();
   try {
     let after = null;
     do {
       const list = ['api', 'graphql', '-f', `query=${q}`];
       if (after) list.push('-f', `after=${after}`);
       const items = JSON.parse(sh('gh', list)).data.user.projectV2.items;
-      for (const item of items.nodes) if (item.content?.state === 'OPEN' && item.fieldValueByName?.name === 'In Review') numbers.add(item.content.number);
+      for (const item of items.nodes) if (item.content?.state === 'OPEN' && item.fieldValueByName?.name) columns.set(item.content.number, item.fieldValueByName.name);
       after = items.pageInfo.hasNextPage ? items.pageInfo.endCursor : null;
     } while (after);
   } catch { /* the board is a help here, not a must: without it, nothing is left out */ }
-  return numbers;
+  return columns;
 }
 
 // mine: issues already assigned to the person running the sprint. Otherwise also
 // unassigned ones (never someone else's). mine with keep-going: theirs first, then,
 // once those are done, unassigned ones (maintainer, 2026-11-13).
 const mineThenOpen = s => Boolean(s?.mine && s?.keepGoing);
+const greedyOn = s => Boolean(s?.keepGoing && s?.greedy !== false);
+// { list, left }: what may be taken, best first, and why every other open issue was left.
 function candidates(s, mine, tree, avoid) {
   const me = whoAmI();
-  const thenOpen = mine && mineThenOpen(s);
+  const greedy = greedyOn(s);
   // --label <name>: only issues that also carry it. Several --label
   // flags to gh are an AND.
   const only = s?.label ?? opt('label');
-  const list = JSON.parse(sh('gh', ['issue', 'list', '--repo', REPO, '--state', 'open', '--label', 'who:claude', ...(only ? ['--label', only] : []), '--limit', '400',
+  // A greedy sprint looks at every open issue (claude-workflow#3), not only who:claude ones.
+  const list = JSON.parse(sh('gh', ['issue', 'list', '--repo', REPO, '--state', 'open', ...(greedy ? [] : ['--label', 'who:claude']), ...(only ? ['--label', only] : []), '--limit', '400',
     '--json', 'number,title,labels,milestone,assignees']));
-  const passed = new Set([...(s?.done || []).map(d => d.n), ...(s?.skipped || []).map(d => d.n), ...inReview()]);
-  return list
-    .filter(i => !passed.has(i.number))
-    .filter(i => !has(i, 'type:epic') && !has(i, 'type:decision') && !has(i, 'inbox'))
-    .filter(i => !i.labels.some(l => l.name.startsWith('status:')))
-    .filter(i => i.assignees.some(a => a.login === me || (s?.takeFrom || []).includes(a.login)) || ((!mine || thenOpen) && i.assignees.length === 0))
-    .filter(i => !offLimits(i.number, tree, me, avoid, s?.takeFrom))
-    .map(i => ({
-      ...i,
-      key: [thenOpen && !i.assignees.some(a => a.login === me) ? 1 : 0, MILESTONES.indexOf(i.milestone?.title) < 0 ? MILESTONES.length : MILESTONES.indexOf(i.milestone?.title),
-        rank(i, 'P', ['0', '1', '2', '3']), rank(i, 'size:', ['S', 'M', 'L']), i.number],
-    }))
-    .sort((a, b) => { for (let k = 0; k < a.key.length; k++) if (a.key[k] !== b.key[k]) return a.key[k] - b.key[k]; return 0; });
+  const passed = new Set([...(s?.done || []).map(d => d.n), ...(s?.skipped || []).map(d => d.n), ...(s?.handedOff || []).map(d => d.n)]);
+  const columns = boardStatus();
+  const left = [];
+  const out = [];
+  for (const i of list) {
+    if (passed.has(i.number)) continue;
+    const t = takeable({ labels: i.labels.map(l => l.name), assignees: i.assignees.map(a => a.login) }, columns.get(i.number) ?? null,
+      { me, also: s?.takeFrom || [], mine, keepGoing: Boolean(s?.keepGoing), greedy });
+    if (t.tier === null) { left.push(t.why); continue; }
+    // Yours and unassigned: never under someone else's parent. Greedy tiers: only the avoid list.
+    const off = offLimits(i.number, tree, me, avoid, s?.takeFrom, t.tier >= 2);
+    if (off) { left.push(off.replace(/^under #\d+, /, '')); continue; }
+    out.push({ ...i, tier: t.tier, key: [t.tier, MILESTONES.indexOf(i.milestone?.title) < 0 ? MILESTONES.length : MILESTONES.indexOf(i.milestone?.title),
+      rank(i, 'P', ['0', '1', '2', '3']), rank(i, 'size:', ['S', 'M', 'L']), i.number] });
+  }
+  out.sort((a, b) => { for (let k = 0; k < a.key.length; k++) if (a.key[k] !== b.key[k]) return a.key[k] - b.key[k]; return 0; });
+  return { list: out, left };
 }
 
 // --issues 12,34,56: the issues the person named, in their order. A parent becomes its open
@@ -507,6 +561,42 @@ function named(s, queue, tree, avoid) {
 
 // ---------- commands ----------
 const s = readState();
+
+// Where a session's wall-clock time went (claude-workflow#2): every gap of
+// --min minutes (5) or more in this project's Claude Code transcripts from the
+// last --hours (12), with what it waited on, then the gh calls that were slow.
+// Tool names, command heads and times only; paste the output on the issue.
+if (action === 'stalls') {
+  const hours = Number(opt('hours')) || 12, minMinutes = Number(opt('min')) || 5;
+  const since = Date.now() - hours * 3600e3;
+  const projects = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects');
+  const slug = sh('git', ['rev-parse', '--show-toplevel']).replace(/[^A-Za-z0-9]/g, '-').toLowerCase();
+  let dir = null;
+  try { dir = readdirSync(projects).find(d => d.toLowerCase() === slug); } catch {}
+  if (!dir) { console.log(`no transcripts for this checkout under ${projects} (looked for ${slug})`); process.exit(1); }
+  const files = readdirSync(join(projects, dir)).filter(f => f.endsWith('.jsonl'))
+    .map(f => ({ f, at: statSync(join(projects, dir, f)).mtimeMs })).filter(x => x.at >= since).sort((a, b) => a.at - b.at);
+  if (!files.length) console.log(`no session in the last ${hours} h`);
+  for (const { f } of files) {
+    const entries = [];
+    for (const line of readFileSync(join(projects, dir, f), 'utf8').split('\n')) {
+      if (!line.includes('"timestamp"')) continue;
+      try { const e = JSON.parse(line); if (Date.parse(e.timestamp) >= since) entries.push(e); } catch {}
+    }
+    const steps = entries.filter(e => e.type === 'user' || e.type === 'assistant');
+    if (steps.length < 2) continue;
+    const spanMin = (Date.parse(steps.at(-1).timestamp) - Date.parse(steps[0].timestamp)) / 60000;
+    const stalls = findStalls(entries, { minMinutes });
+    console.log(`== session ${f.slice(0, 8)}: ${steps.length} steps, ${new Date(steps[0].timestamp).toLocaleString()} to ${new Date(steps.at(-1).timestamp).toLocaleTimeString()}`);
+    for (const g of stalls) console.log(`${new Date(g.at).toLocaleTimeString()}  ${String(g.minutes).padStart(4)} min  ${g.cause.padEnd(5)}  ${g.what}`);
+    for (const l of stallSummary(stalls, Math.round(spanMin))) console.log(l);
+  }
+  const GH_LOG = join(DIR, 'gh-slow.log');
+  let slow = [];
+  try { slow = readFileSync(GH_LOG, 'utf8').split('\n').filter(l => l && Date.parse(l.split(' ')[0]) >= since); } catch {}
+  console.log(slow.length ? `== gh calls over 5 s (${slow.length}):\n${slow.slice(-40).join('\n')}` : '== no gh call over 5 s logged');
+  process.exit(0);
+}
 
 if (action === 'budget') {
   if (flag('hook')) {
@@ -545,13 +635,11 @@ if (action === 'budget') {
   const u = await usage(30);
   const j = judge(u, s);
   if (s) { record(s, u, 'budget'); writeState(s); }
+  dropIfLost(s);
   console.log(j.line);
   if (j.verdict !== 'GO' && j.verdict !== 'SMALL' && j.resumeInSeconds !== null) console.log(`the ${j.binding} limit resets in ${Math.round(j.resumeInSeconds / 60)} min (resumeInSeconds=${j.resumeInSeconds})`);
   // A keep-going wake that only reads the budget still sees the Inbox (PTrainr, 2026-11-16).
-  try {
-    const inbox = sh('node', [new URL(`../${PREFIX}-issues/inbox.mjs`, import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'), 'count'], true);
-    console.log(inbox ? `${inbox} Do the Inbox pass before taking an issue (unless STOP).` : 'Inbox: nothing waiting.');
-  } catch { console.log('Inbox: could not be read.'); }
+  console.log(inboxLine('Do the Inbox pass before taking an issue (unless STOP).'));
   process.exit(0);
 }
 
@@ -734,7 +822,7 @@ if (action === 'start') {
   const queue = expandNamed(parseIssues(opt('issues')));
   if (flag('only') && !queue.length) { console.log('--only needs --issues'); process.exit(1); }
   const avoid = parseIssues(opt('avoid'));
-  const state = { startedAt: new Date().toISOString(), branch, smallAt, newAt, stopAt, keepGoing: flag('keep-going'), mine: flag('mine'), label: opt('label') || null, external, queue, only: flag('only'), avoid, done: [], skipped: [], current: null, readings: [] };
+  const state = { startedAt: new Date().toISOString(), branch, smallAt, newAt, stopAt, keepGoing: flag('keep-going'), greedy: !flag('no-greedy'), mine: flag('mine'), label: opt('label') || null, external, queue, only: flag('only'), avoid, done: [], skipped: [], current: null, readings: [] };
   record(state, u, 'start');
   writeState(state);
   // The linked repos' worktrees (#57); an --external sprint works one other checkout by hand instead.
@@ -757,6 +845,7 @@ if (action === 'start') {
     }
   }
   console.log(`sprint on: ${external ? `work lands in ${external} (this repo stays on ${branch}, no commits here)` : `branch ${branch} from origin/main`}${queue.length ? `, first ${queue.map(n => `#${n}`).join(' ')}${state.only ? ' and nothing else' : ''}` : ''}${state.mine ? ', only issues assigned to you' : ''}${state.label ? `, only issues labelled ${state.label}` : ''}${state.keepGoing ? ', keep going after resets' : ''}`);
+  console.log(inboxLine('Do the Inbox pass before the first issue.'));
   process.exit(0);
 }
 
@@ -776,6 +865,7 @@ if (action === 'next') {
     console.log(`WIND DOWN: asked ${new Date(s.windDown.at).toLocaleTimeString()}. Start no new issue${s.current ? `; finish #${s.current.n}, then checkpoint` : '; checkpoint now'}.`);
     process.exit(0);
   }
+  dropIfLost(s);
   const u = await usage(30);
   const j = judge(u, s);
   const mine = Boolean(s?.mine || flag('mine'));
@@ -785,7 +875,8 @@ if (action === 'next') {
   const tree = openTree();
   const first = named(s, queue, tree, avoid);
   const firstSet = new Set(first.map(i => i.number));
-  const rest = only ? [] : candidates(s, mine, tree, avoid).filter(i => !firstSet.has(i.number));
+  const found = only ? { list: [], left: [] } : candidates(s, mine, tree, avoid);
+  const rest = found.list.filter(i => !firstSet.has(i.number));
   if (avoid.size) console.log(`avoiding ${[...avoid].map(n => `#${n}`).join(' ')} and everything under them`);
   const small = i => i.labels.some(l => l.name === 'size:S' || l.name === 'size:XS');
   const large = largeAllowed(u, s);
@@ -794,14 +885,29 @@ if (action === 'next') {
   console.log(j.line);
   // Every pass of the loop starts with the Inbox (the owner, 2026-11-17): a
   // comment waiting there becomes issues before anything is chosen.
-  try {
-    const inbox = sh('node', [new URL(`../${PREFIX}-issues/inbox.mjs`, import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'), 'count'], true);
-    console.log(inbox ? `${inbox} Log them first (inbox.mjs pending), then run next again.` : 'Inbox: nothing waiting.');
-  } catch {
-    console.log('Inbox: could not be read (offline or signed out); run inbox.mjs pending by hand.');
+  console.log(inboxLine('Log them first (inbox.mjs pending), then run next again.'));
+  // Answers to the last checkpoint's questions: the comments under
+  // that post on the sprint's PR are the maintainer's decisions. Act on each
+  // (unskip and build, or record it on its issue) and say so in the next finish note.
+  if (s && !s.external) {
+    try {
+      const at = s.pr ?? openPr(s.branch)?.number;
+      if (at) {
+        const comments = JSON.parse(sh('gh', ['pr', 'view', String(at), '--repo', REPO, '--json', 'comments'], true)).comments
+          .map(c => ({ author: c.author?.login, at: c.createdAt, body: c.body, url: c.url }));
+        const answers = answersSince(comments, s.answersSeen ?? null);
+        if (answers.length) {
+          console.log(`ANSWERS on PR #${at} to the checkpoint's questions: act on them before choosing (unskip, build, or note them on the issue):`);
+          for (const a of answers) console.log(`  ${a.author} (${new Date(a.at).toLocaleString()}): ${a.body.trim().replace(/\s+/g, ' ').slice(0, 600)}  ${a.url}`);
+          s.answersSeen = answers.at(-1).at;
+          writeState(s);
+        }
+      }
+    } catch { console.log('(the PR\'s comments could not be read; look for answers with gh pr view <PR> --comments)'); }
   }
   console.log([queue.length ? `named first: ${queue.map(n => `#${n}`).join(' ')}${only ? ' (only these)' : ''}` : '',
-    only ? '' : mine ? (mineThenOpen(s) ? 'then issues assigned to you, then unassigned ones (never anyone else\'s)' : 'then only issues assigned to you') : 'then issues assigned to you and unassigned ones (never anyone else\'s)'].filter(Boolean).join('; '));
+    only ? '' : greedyOn(s) ? 'then yours, unassigned ones, other developers\' who:claude ones, then Claude\'s part of the shared and the owner\'s issues (keep going; never one In Progress under someone else)'
+      : mine ? (mineThenOpen(s) ? 'then issues assigned to you, then unassigned ones (never anyone else\'s)' : 'then only issues assigned to you') : 'then issues assigned to you and unassigned ones (never anyone else\'s)'].filter(Boolean).join('; '));
   if (j.used !== null) console.log(`room before checkpoint: ${j.stopAt - j.used}% · an issue has cost ${cost ? `${cost}% on average this sprint` : `~${DEFAULT_ISSUE_COST}% (a guess until one is measured)`}`);
   // What each size costs, measured on the board across sprints (#49); a guess until MEASURED_AFTER of a size.
   let averages = {};
@@ -816,9 +922,36 @@ if (action === 'next') {
   for (const i of list) {
     const labels = i.labels.map(l => l.name).filter(n => /^(P\d|size:|platform:|type:)/.test(n)).join(' ');
     const f = fits(i);
-    console.log(`#${i.number}  ${i.title}${i.named ? '  [named]' : ''}\n        ${labels} · ${i.milestone?.title || 'no milestone'} · ~${f.cost}%${f.measured ? ' (measured)' : ''}${f.ok ? '' : ` · does not fit the ${j.stopAt - j.used}% left`}`);
+    console.log(`#${i.number}  ${i.title}${i.named ? '  [named]' : ''}${i.tier >= 2 ? `  [${TIERS[i.tier]}]` : ''}\n        ${labels} · ${i.milestone?.title || 'no milestone'} · ~${f.cost}%${f.measured ? ' (measured)' : ''}${f.ok ? '' : ` · does not fit the ${j.stopAt - j.used}% left`}`);
   }
-  if (!list.length) console.log('Nothing left that Claude can take on its own.');
+  // Done only when nothing on the board can be worked on (the owner, 2026-11-22).
+  if (!list.length) console.log(rest.length || first.length ? 'Nothing that fits the room left now.' : nothingLeft(found.left));
+  process.exit(0);
+}
+
+// `handoff N --why "…"` (claude-workflow#3): Claude's part of a shared or owner's issue is
+// done and the rest needs a person. Pushes what was committed for it (no Fixes line: it stays
+// open), labels it so no sprint takes it again, comments, card back to Todo.
+if (action === 'handoff') {
+  const n = Number(String(args[1] || '').replace('#', ''));
+  const why = opt('why');
+  if (!s || !Number.isInteger(n) || !why) { console.log('usage (during a sprint): sprint.mjs handoff <issue> --why "<what is built; what is left, for whom>"'); process.exit(1); }
+  const dirty = sh('git', ['status', '--porcelain']);
+  if (dirty) { console.log(`Uncommitted changes: commit what was built for #${n} as "<title> (#${n})" (or stash what should not land), then hand off.\n${dirty}`); process.exit(2); }
+  let title = null;
+  try { title = sh('gh', ['issue', 'view', String(n), '--repo', REPO, '--json', 'title', '--jq', '.title']); } catch {}
+  const committed = new RegExp(`#${n}\\b`).test(sh('git', ['log', '-1', '--no-merges', '--format=%s']));
+  s.handedOff = [...(s.handedOff || []).filter(h => h.n !== n), { n, title, why, at: new Date().toISOString(), committed }];
+  // Someone else's issue: the sprint lets go of it again (begin had added its assignee).
+  if (s.current?.n === n && s.current.owners?.length) { try { sh('gh', ['issue', 'edit', String(n), '--repo', REPO, '--remove-assignee', '@me'], true); } catch {} }
+  if (s.current?.n === n) s.current = null;
+  writeState(s);
+  let pr = null;
+  if (committed && !s.external) { pr = publish(s, true); console.log(`pushed; PR #${pr} lists #${n} under "Prepared, waiting on a person" (no Fixes)`); }
+  const work = join(sh('git', ['rev-parse', '--show-toplevel']), '.claude', 'skills', `${PREFIX}-issues`, 'work.mjs');
+  console.log(sh(process.execPath, [work, 'handoff', String(n), '--note', `${why}${pr ? `; what Claude built is on PR #${pr}, which leaves this issue open` : ''}`]));
+  console.log(judge(await usage(30), s).line);
+  console.log(inboxLine('Do the Inbox pass before the next issue.'));
   process.exit(0);
 }
 
@@ -854,19 +987,47 @@ if (action === 'begin' || action === 'finish' || action === 'skip') {
     const subject = dirty ? '' : sh('git', [...at, 'log', '-1', '--no-merges', '--format=%s']); // a merge of main may sit on top
     const refused = finishRefusal({ n, dirty, subject, note: opt('note') });
     if (refused) { console.log(refused.why); process.exit(refused.code); }
+    // Still this sprint's? Someone may have taken, built and merged it while the sprint was
+    // paused; finishing would push a duplicate and reopen the closed issue (work.mjs review).
+    let lost = null;
+    try { lost = lostSince(n, s); } catch { /* gh unreadable: finish as before */ }
+    if (lost) {
+      s.skipped.push({ n, why: `${lost} before finish` });
+      if (s.current?.n === n) s.current = null;
+      writeState(s);
+      console.log(`#${n} is ${lost} since this sprint began it: not finishing it (nothing pushed, the issue untouched). Its commit comes off this branch: git branch wip/issue-${n}, then git reset --hard HEAD~1. Then \`sprint.mjs next\`.`);
+      process.exit(4);
+    }
   }
   if (action === 'begin' && s.windDown) {
     console.log(`winding down since ${new Date(s.windDown.at).toLocaleTimeString()}: no new issue. Checkpoint instead.`);
     process.exit(5);
   }
+  let beginTier = null, beginOwners = [];
   if (action === 'begin') {
     // Asked again at the moment of taking it: another developer may have taken it since `next`.
     const me = whoAmI();
     const tree = openTree();
-    const off = tree.has(n) ? offLimits(n, tree, me, new Set(s.avoid || []), s.takeFrom) : null;
+    let off = null, notMine = false;
     const assignees = tree.get(n)?.assignees || [];
-    // mine + keep-going may take an unassigned issue once the person's own are done.
-    const notMine = s.mine && !(s.queue || []).includes(n) && !assignees.includes(me) && !(mineThenOpen(s) && assignees.length === 0);
+    if (tree.has(n) && greedyOn(s)) {
+      // Keep going takes anything that isn't someone else's In Progress, waiting on a person, or avoided.
+      const i = JSON.parse(sh('gh', ['issue', 'view', String(n), '--repo', REPO, '--json', 'labels,assignees']));
+      const t = takeable({ labels: i.labels.map(l => l.name), assignees: i.assignees.map(a => a.login) }, boardStatus().get(n) ?? null,
+        { me, also: s.takeFrom || [], mine: s.mine, keepGoing: true, greedy: true });
+      off = offLimits(n, tree, me, new Set(s.avoid || []), s.takeFrom, true) || (t.tier === null ? t.why : null);
+      beginTier = t.tier;
+      beginOwners = i.assignees.map(a => a.login).filter(a => a !== me && !(s.takeFrom || []).includes(a));
+    } else {
+      // The tier only says how to work it (a decision: prepare, then handoff); the old rules decide.
+      try {
+        const i = JSON.parse(sh('gh', ['issue', 'view', String(n), '--repo', REPO, '--json', 'labels,assignees']));
+        beginTier = takeable({ labels: i.labels.map(l => l.name), assignees: i.assignees.map(a => a.login) }, null, { me, also: s.takeFrom || [], mine: s.mine, keepGoing: Boolean(s.keepGoing), greedy: false }).tier;
+      } catch { /* the hint is a help; the work goes on without it */ }
+      off = tree.has(n) ? offLimits(n, tree, me, new Set(s.avoid || []), s.takeFrom) : null;
+      // mine + keep-going may take an unassigned issue once the person's own are done.
+      notMine = s.mine && !(s.queue || []).includes(n) && !assignees.includes(me) && !(mineThenOpen(s) && assignees.length === 0);
+    }
     if (!tree.has(n) || off || notMine) {
       const why = !tree.has(n) ? 'closed' : off || 'not assigned to you (--mine)';
       s.skipped.push({ n, why });
@@ -875,11 +1036,14 @@ if (action === 'begin' || action === 'finish' || action === 'skip') {
       process.exit(4);
     }
   }
+  let beginTitle = null;
   const u = await usage(30);
   if (action === 'begin') {
     const b = judge(u, s);
     if (b.verdict === 'WRAP' || b.verdict === 'STOP') { console.log(`${b.line}\nNo new issue now: checkpoint instead.`); process.exit(6); }
-    const sizes = JSON.parse(sh('gh', ['issue', 'view', String(n), '--repo', REPO, '--json', 'labels'])).labels.map(l => l.name);
+    const viewed = JSON.parse(sh('gh', ['issue', 'view', String(n), '--repo', REPO, '--json', 'labels,title']));
+    beginTitle = viewed.title || null;
+    const sizes = viewed.labels.map(l => l.name);
     // --asked: the person asked for this issue now (maintainer, 2026-11-14), so the
     // fresh-window rule gives way; keep-going and the weekly room still hold.
     if (isLarge(sizes)) { const large = largeAllowed(u, s, flag('asked')); if (!large.ok) { console.log(`${b.line}\n#${n}: ${large.why}.`); process.exit(6); } }
@@ -890,13 +1054,36 @@ if (action === 'begin' || action === 'finish' || action === 'skip') {
   }
   record(s, u, `${action} #${n}`);
   const used = u.error ? null : u.session;
-  if (action === 'begin') s.current = { n, at: new Date().toISOString(), sessionAtStart: used, weeklyAtStart: u.weekly ?? null, repo: linked ? where : null };
+  if (action === 'begin') s.current = { n, title: beginTitle, tier: beginTier, owners: beginOwners, at: new Date().toISOString(), sessionAtStart: used, weeklyAtStart: u.weekly ?? null, repo: linked ? where : null };
   if (action === 'begin' && linked) {
     console.log(`#${n} is ${where} work: build it in ${linked.worktree} (branch ${linked.branch}), under that repo's CLAUDE.md, never in ${linked.checkout}.`);
     console.log(`Commit there as "<title> (${REPO}#${n})" with git -C "${linked.worktree}"; finish pushes it and opens or updates ${linked.repo}'s PR.`);
   }
   // Working again after a checkpoint: the PR says so at once, not at the next finish.
-  if (action === 'begin' && !s.external) { try { const pr = openPr(s.branch); if (pr) sprintLabel(pr.number, RUNNING); } catch { /* the label is cosmetic; never block the work on it */ } }
+  // And its body names the issue now being built (claude-workflow#1): one pr edit, no push.
+  if (action === 'begin' && !s.external) {
+    try {
+      const pr = openPr(s.branch);
+      if (pr) {
+        sprintLabel(pr.number, RUNNING);
+        writeState(s);
+        const file = join(DIR, 'pr.md');
+        writeFileSync(file, prBody(s, pr.number, true));
+        sh('gh', ['pr', 'edit', String(pr.number), '--repo', REPO, '--body-file', file], true);
+      }
+    } catch { /* the label and the line are for people watching; never block the work on them */ }
+  }
+  // Claimed on GitHub (claude-workflow#3): assigned, card In Progress, a comment, so another
+  // machine's sprint sees it is taken and leaves it alone.
+  if (action === 'begin') {
+    const work = join(sh('git', ['rev-parse', '--show-toplevel']), '.claude', 'skills', `${PREFIX}-issues`, 'work.mjs');
+    try { sh(process.execPath, [work, 'start', String(n)], true); console.log(`#${n} claimed: assigned to you, card In Progress`); }
+    catch (e) { console.log(`(could not claim #${n} on GitHub: ${String(e.message).split('\n')[0]}; carry on)`); }
+    if (beginTier === 2 && beginOwners.length) {
+      try { sh('gh', ['issue', 'comment', String(n), '--repo', REPO, '--body', `Taken over by a keep-going sprint: nothing of its own or unassigned was left on the board. ${beginOwners.map(o => `@${o}`).join(' ')}, it stays assigned to you as well; if you are already on it, take the sprint's assignee off and it lets go at its next step.`], true); } catch {}
+    }
+    if (beginTier >= 3) console.log(`#${n} is ${TIERS[beginTier]}: build only what needs no person (mock-ups as an artifact linked on the issue, drafts, research, code that doesn't wait on the decision), commit it as "<title> (#${n})" if there is any, then \`sprint.mjs handoff ${n} --why "<what is built; what is left, for whom>"\`. Nothing to prepare: hand off at once, naming the real-world step.`);
+  }
   if (action === 'finish') {
     const start = s.current?.n === n ? s.current : null;
     const took = issueUsage(start, u);
@@ -908,26 +1095,35 @@ if (action === 'begin' || action === 'finish' || action === 'skip') {
     // e2e fixtures), but nobody has run it on a real application site yet.
     let title = null;
     try { title = sh('gh', ['issue', 'view', String(n), '--repo', REPO, '--json', 'title', '--jq', '.title']); } catch { /* the PR line goes without it */ }
-    s.done.push({ n, title, at: new Date().toISOString(), cost, weeklyCost: took.weekly, ...((flag('needs-live') || flag('needs-device')) && { device: true }), ...(linked && { repo: where }) });
+    const again = s.done.find(d => d.n === n && (d.repo || null) === (linked ? where : null));
+    s.done = withDone(s.done, { n, title, at: new Date().toISOString(), cost, weeklyCost: took.weekly, ...((flag('needs-live') || flag('needs-device')) && { device: true }), ...(linked && { repo: where }) });
+    if (again) console.log(`#${n} was finished before (that run stopped half way): its line is replaced, not repeated${again.reviewed ? ', and its In Review note is not posted twice' : ''}`);
     s.current = null;
     writeState(s);
     console.log(`#${n} done${cost !== null ? `, cost ${cost}% of the 5-hour window` : ''}`);
     const work = join(sh('git', ['rev-parse', '--show-toplevel']), '.claude', 'skills', `${PREFIX}-issues`, 'work.mjs');
+    const entry = () => s.done.find(d => d.n === n && (d.repo || null) === (linked ? where : null));
+    const review = note => {
+      if (entry()?.reviewed) { console.log(`#${n}: In Review already (an earlier finish got that far)`); return; }
+      console.log(sh(process.execPath, [work, 'review', String(n), '--note', note]));
+      entry().reviewed = true;
+      writeState(s);
+    };
     if (linked) {
       // That repo's branch and PR (#57); this repo's PR then lists it under "In <name>".
       const pr = publishLinked(s, where, true);
       console.log(`pushed ${linked.branch} in ${where}; ${linked.repo}#${pr} updated`);
       try { const own = publish(s, true); if (own) console.log(`${REPO_NAME} PR #${own} now lists it`); } catch (e) { console.log(`(could not update this repo's PR: ${String(e.message).split('\n')[0]})`); }
-      console.log(sh(process.execPath, [work, 'review', String(n), '--note', `${opt('note')}; ${linked.repo}#${pr}${usageLine ? `; ${usageLine}` : ''}`]));
+      review(`${opt('note')}; ${linked.repo}#${pr}${usageLine ? `; ${usageLine}` : ''}`);
     } else if (s.external) {
       // The commit and its PR are the other repo's (already pushed there, under
       // that repo's own rule); here only the card moves, with the PR's address.
-      console.log(sh(process.execPath, [work, 'review', String(n), '--note', `${opt('note')}; ${opt('pr')}${usageLine ? `; ${usageLine}` : ''}`]));
+      review(`${opt('note')}; ${opt('pr')}${usageLine ? `; ${usageLine}` : ''}`);
     } else {
       // Straight onto the PR and into In Review (maintainer, 2026-11-13), not at the checkpoint.
       const pr = publish(s, true);
       console.log(`pushed; PR #${pr} updated ("${RUNNING}": CI waits for the checkpoint)`);
-      console.log(sh(process.execPath, [work, 'review', String(n), '--note', `${opt('note')}; PR #${pr}${usageLine ? `; ${usageLine}` : ''}`]));
+      review(`${opt('note')}; PR #${pr}${usageLine ? `; ${usageLine}` : ''}`);
     }
   }
   if (action === 'skip') {
@@ -936,6 +1132,9 @@ if (action === 'begin' || action === 'finish' || action === 'skip') {
   }
   writeState(s);
   console.log(judge(u, s).line);
+  console.log(inboxLine(action === 'begin'
+    ? 'Log them now, before building this issue (an Inbox pass is between issues, never inside one).'
+    : 'Do the Inbox pass before the next issue.'));
   process.exit(0);
 }
 
@@ -960,6 +1159,8 @@ if (action === 'status') {
   console.log(`done: ${s.done.map(d => `#${d.n}`).join(' ') || 'none'} · skipped: ${s.skipped.map(d => `#${d.n}`).join(' ') || 'none'} · now: ${s.current ? `#${s.current.n}` : 'nothing'}`);
   const r = s.readings.at(-1);
   if (r) console.log(`last reading: 5-hour ${r.session}%, weekly ${r.weekly}% (${r.step})`);
+  if (s.handedOff?.length) console.log(`handed off (Claude's part done): ${s.handedOff.map(h => `#${h.n}`).join(' ')}`);
+  if (s.keepGoing) console.log(`greedy: ${greedyOn(s) ? 'yes (other developers\' issues and Claude\'s part of shared ones, once nothing else is left)' : 'no (--no-greedy)'}`);
   if (s.pr) console.log(`PR #${s.pr}`);
   for (const [name, l] of Object.entries(s.linked || {})) console.log(`linked ${name}: ${l.worktree} on ${l.branch}${l.pr ? `, PR ${l.repo}#${l.pr}` : ', no PR yet'} · done there: ${s.done.filter(d => d.repo === name).map(d => `#${d.n}`).join(' ') || 'none'}`);
   for (const q of s.questions || []) console.log(`question for the checkpoint${q.issue ? ` (#${q.issue})` : ''}: ${q.text}`);
@@ -971,9 +1172,15 @@ if (action === 'status') {
 // Questions wait for the checkpoint (maintainer, 2026-11-13): a sprint never
 // stops to ask; it notes the question here and carries on. `status` lists them.
 if (action === 'ask') {
-  const text = args.slice(1).join(' ').trim();
-  if (!text) { console.log('usage: sprint.mjs ask "<question, with the issue number>"'); process.exit(1); }
-  s.questions = [...(s.questions || []), { at: new Date().toISOString(), issue: s.current?.n ?? null, text }];
+  const valued = new Set(['--options', '--recommend', '--link', '--issue']);
+  const text = args.slice(1).filter((a, i, all) => !valued.has(a) && !valued.has(all[i - 1])).join(' ').trim();
+  if (!text) { console.log('usage: sprint.mjs ask "<question, with the issue number>" [--options "A | B"] [--recommend B] [--link <url>] [--issue N]'); process.exit(1); }
+  const options = opt('options') ? opt('options').split('|').map(o => o.trim()).filter(Boolean) : [];
+  const q = { at: new Date().toISOString(), issue: Number(opt('issue')) || s.current?.n || null, text };
+  if (options.length) q.options = options;
+  if (opt('recommend')) q.recommend = opt('recommend');
+  if (opt('link')) q.link = opt('link');
+  s.questions = [...(s.questions || []), q];
   writeState(s);
   console.log(`noted (${s.questions.length} waiting for the checkpoint). Carry on: take the default or skip the issue.`);
   process.exit(0);
@@ -991,6 +1198,9 @@ if (action === 'summary') {
 if (action === 'checkpoint') {
   if (opt('title')) s.title = opt('title');
   if (opt('intro-file') && !s.external) s.intro = { pr: openPr(s.branch)?.number ?? null, text: readFileSync(opt('intro-file'), 'utf8') };
+  // When the paused sprint wakes next, for the PR's last line (claude-workflow#4); none given, none said.
+  s.nextWake = wakeAt({ wakeIn: opt('wake-in'), nextWake: opt('next-wake') });
+  if ((opt('wake-in') || opt('next-wake')) && !s.nextWake) console.log('could not read --wake-in / --next-wake; the PR names no wake');
   const u = await usage(30);
   record(s, u, 'checkpoint');
   writeState(s);
@@ -1011,9 +1221,25 @@ if (action === 'checkpoint') {
     }
     const pr = publish(s, false);
     console.log(pr ? `PR #${pr} checkpointed: title, body and usage updated, "${RUNNING}" off and "${CHECKPOINT}" on, so CI runs once` : 'nothing finished: no PR');
+    // Every open question goes onto the PR as one comment; the
+    // sprint reads the answers under it when it resumes (`next`).
+    const asks = decisionsComment(s.questions, ATTRIBUTION);
+    const at = pr ?? openPr(s.branch)?.number;
+    if (asks && at) {
+      const file = join(DIR, 'decisions.md');
+      writeFileSync(file, asks);
+      try {
+        const url = sh('gh', ['pr', 'comment', String(at), '--repo', REPO, '--body-file', file]);
+        for (const q of s.questions) q.posted = true;
+        s.answersSeen = new Date().toISOString();
+        writeState(s);
+        console.log(`decisions: ${s.questions.length} question${s.questions.length === 1 ? '' : 's'} posted on PR #${at} (${url})`);
+      } catch (e) { console.log(`decisions: could not comment on PR #${at} (${String(e.message).split('\n')[0]}); post them by hand`); }
+    } else if (asks) console.log('decisions: no PR to post them on; ask them in the summary');
   }
   const jc = judge(u, s);
   console.log(jc.line);
+  console.log(inboxLine('Do the Inbox pass now, before the pause.'));
   // A wait longer than the prompt cache's hour: the first message after it
   // re-writes the whole context at full price, so a smaller context then costs
   // far less. Only the person can run /compact (maintainer, 2026-11-13).
@@ -1024,6 +1250,19 @@ if (action === 'checkpoint') {
 }
 
 if (action === 'end') {
+  // The PR's last line says the sprint ended and no wake follows (claude-workflow#4).
+  // Only the body changes: nothing is pushed, and a merged or closed PR is left alone.
+  const open = !s.external && s.pr ? openPr(s.branch) : null;
+  if (open) {
+    s.ended = true;
+    delete s.nextWake;
+    try {
+      const file = join(DIR, 'pr.md');
+      writeFileSync(file, prBody(s, open.number, false));
+      sh('gh', ['pr', 'edit', String(open.number), '--repo', REPO, '--body-file', file], true);
+      console.log(`PR #${open.number}: says the sprint ended`);
+    } catch (e) { console.log(`PR #${open.number}: could not say the sprint ended (${String(e.message).split('\n')[0]})`); }
+  }
   // A linked worktree goes once it is clean (its branch and commits stay); one with work left in it stays.
   for (const [name, l] of Object.entries(s.linked || {})) {
     try { sh('git', ['-C', l.checkout, 'worktree', 'remove', l.worktree], true); console.log(`${name}: worktree ${l.worktree} removed (branch ${l.branch} kept)`); }
@@ -1035,5 +1274,5 @@ if (action === 'end') {
   process.exit(0);
 }
 
-console.log('usage: sprint.mjs start|budget [--hook]|next|sizes|link [repo]|begin N|finish N --note "…"|checkpoint|ask "…"|skip N --why "…"|wind-down [--undo]|status|summary|end');
+console.log('usage: sprint.mjs start|budget [--hook]|next|sizes|link [repo]|begin N|finish N --note "…"|checkpoint|ask "…"|skip N --why "…"|wind-down [--undo]|status|summary|stalls [--hours 12] [--min 5]|handoff N --why "…"|end');
 process.exit(1);
