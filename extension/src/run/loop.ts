@@ -107,7 +107,7 @@ export async function runPages(state: RunState, deps: RunDeps, opts: RunOptions)
         if (deps.cancelled()) return stop({ reason: 'cancelled' });
         reports = (await deps.reports()).filter((r) => !ticked.includes(r.id));
         const before = new Set(toAsk.map((r) => r.id));
-        agent = reports.filter((r) => before.has(r.id) && r.status !== 'needs').length;
+        agent = reports.filter((r) => before.has(r.id) && r.status !== 'needs' && r.status !== 'skipped').length;
       }
       const step: RunStep = {
         page: state.page,
@@ -170,12 +170,14 @@ export async function runPages(state: RunState, deps: RunDeps, opts: RunOptions)
 
 /**
  * What Run with AI hands the Answerer (#113): a required question nothing answered, or any
- * unanswered long-answer box ("Why us?", "Anything else?"). Never a password, a file, or a
- * question the site already holds an answer for.
+ * unanswered long-answer box ("Why us?", "Anything else?"), which the pipeline leaves `skipped`
+ * when the page doesn't mark it required (#123). Never a password, a file, or a question the
+ * site already holds an answer for.
  */
 export function wantsAgent(r: FieldReport): boolean {
-  if (r.status !== 'needs' || r.kind === 'password' || r.kind === 'file') return false;
-  return r.required || r.kind === 'textarea';
+  if (r.kind === 'password' || r.kind === 'file') return false;
+  if (r.status === 'needs') return r.required || r.kind === 'textarea';
+  return r.status === 'skipped' && r.kind === 'textarea';
 }
 
 function hostOf(url: string): string {

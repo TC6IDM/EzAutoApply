@@ -122,7 +122,8 @@ describe('Run to Submit: the loop (#9)', () => {
 
   it('Run with AI (#113) hands what nothing answered to the agent, waits, and goes on; Run alone never does', async () => {
     const pages = (): FakePage[] => [
-      { reports: [field('name', 'filled', true), { ...field('why', 'needs'), kind: 'textarea' }, field('pronouns', 'needs')], button: next() },
+      // An optional essay comes back `skipped` from the pipeline (#123), a required question `needs`.
+      { reports: [field('name', 'filled', true), { ...field('why', 'skipped'), kind: 'textarea' }, { ...field('else', 'skipped'), kind: 'textarea' }, field('pronouns', 'needs'), field('nickname', 'skipped')], button: next() },
       { reports: [field('salary', 'needs', true), field('note', 'needs')], button: { label: 'Submit', kind: 'submit' } },
     ];
     const withAgent = (ps: FakePage[], leave: Record<string, string> = {}) => {
@@ -137,10 +138,11 @@ describe('Run to Submit: the loop (#9)', () => {
       return { s, asked };
     };
 
-    const all = withAgent(pages());
+    const all = withAgent(pages(), { else: 'nothing on record' });
     const r = await runPages(newRun(7, 'https://boards.greenhouse.io/acme/jobs/1', 0, undefined, true), all.s.deps, opts);
-    // The long answer and the required salary; an optional short question stays the owner's.
-    expect(all.asked).toEqual([['why'], ['salary']]);
+    // The long answers (optional ones too) and the required salary; an optional short question stays
+    // the owner's. The essay the agent left blank isn't counted as one it wrote.
+    expect(all.asked).toEqual([['why', 'else'], ['salary']]);
     expect(r.stop).toEqual({ reason: 'submitReady', detail: '"Submit" · 2 answers written by the agent: read them first' });
     expect(r.asking).toBeUndefined();
 
