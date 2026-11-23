@@ -60,6 +60,7 @@ export const LABELS = {
   'who:together': ['fef2c0', 'Needs both: a live job site, the owner\'s accounts, a real application'],
   'status:blocked': ['444444', 'Waiting on another issue or an account'],
   'status:needs-decision': ['f7c6c7', 'Cannot start until the owner decides'],
+  'needs:watched-session': ['5319e7', 'Edits .claude/ or CLAUDE.md: Claude Code asks before writing, so only with someone watching'],
   'status:needs-site': ['e4b7f0', 'Needs a live application page to reproduce or check (saved markup first if possible)'],
   'inbox': ['ffffff', 'The pinned Inbox issue: raw ideas waiting to be turned into issues'],
   'area:scan': ['ededed', 'Finding fields and labels: scan.ts, labels.ts, shadow roots, frames'],

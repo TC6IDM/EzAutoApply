@@ -375,6 +375,22 @@ export function stallSummary(stalls, sessionMinutes = null) {
 // `handoff`, which puts HANDED_OFF on them so no later sprint does them again.
 // Never an issue someone else has In Progress: they are on it now.
 export const HANDED_OFF = 'status:claude-part-done';
+
+// An issue whose work edits `.claude/` or CLAUDE.md: Claude Code asks before each
+// write there, even in auto mode, so an unattended sprint sits on the question
+// until someone comes back (the owner, 2026-11-23: a sprint stalled on one).
+// The picker leaves it out of every sprint not started with --watched, and the
+// PR lists it as left on purpose, ready for a session someone watches.
+export const WATCHED = 'needs:watched-session';
+export const WATCHED_LABEL = ['5319e7', 'Edits .claude/ or CLAUDE.md: Claude Code asks before writing, so only with someone watching'];
+
+/** The PR section for issues left on purpose for a watched session; [] when there are none. */
+export function watchedLines(list = []) {
+  if (!list.length) return [];
+  return ['', '## Left for a watched session (on purpose)',
+    `These change \`.claude/\` or \`CLAUDE.md\`, where Claude Code asks before every write, so an unattended sprint would wait on the question until someone answered it. They were skipped deliberately (label \`${WATCHED}\`), not because anything is wrong with them: do them while someone is at the computer (ask Claude for the issue, or \`sprint.mjs start --watched --issues N\`).`,
+    ...list.map(w => `- #${w.n}${w.title ? ` ${w.title}` : ''}${w.why ? `: ${w.why}` : ''}`)];
+}
 export const TIERS = [
   'yours',
   'unassigned',
@@ -387,10 +403,12 @@ export const TIERS = [
  * { tier } when this sprint may take the issue (lower tiers first), or
  * { tier: null, why }. issue: { labels: [names], assignees: [logins] };
  * status: its board column. greedy: a keep-going sprint not started --no-greedy.
+ * watched: a sprint started --watched (someone is at the computer) may take WATCHED issues.
  */
-export function takeable({ labels = [], assignees = [] }, status, { me, also = [], mine = false, keepGoing = false, greedy = false } = {}) {
+export function takeable({ labels = [], assignees = [] }, status, { me, also = [], mine = false, keepGoing = false, greedy = false, watched = false } = {}) {
   const has = l => labels.includes(l);
   if (has('type:epic') || has('inbox')) return { tier: null, why: 'a parent or the Inbox' };
+  if (has(WATCHED) && !watched) return { tier: null, why: 'left for a watched session', watched: true };
   const waiting = labels.find(l => l.startsWith('status:'));
   if (waiting) return { tier: null, why: `waiting on a person (${waiting})` };
   if (status === 'In Review') return { tier: null, why: 'in review' };
