@@ -306,6 +306,26 @@ test('without keep going (or with --no-greedy) a sprint stays with yours and una
   assert.equal(tierOf(issue(['who:claude'], ['tc']), null, { me: 'bora', also: ['tc'] }), 0, 'take-from still makes theirs yours');
 });
 
+import { WATCHED, watchedLines } from '../skills/ezaa-sprint/verdict.mjs';
+
+test('an issue that edits .claude/ or CLAUDE.md waits for a watched session, and the PR says so on purpose', () => {
+  for (const o of [{ me: 'bora' }, greedy]) {
+    const t = takeable(issue(['who:claude', WATCHED]), null, o);
+    assert.equal(t.tier, null, 'an unattended sprint never takes it');
+    assert.equal(t.watched, true);
+    assert.equal(t.why, 'left for a watched session');
+  }
+  assert.equal(tierOf(issue(['who:claude', WATCHED]), null, { me: 'bora', watched: true }), 1, 'a --watched sprint takes it like any other');
+  assert.equal(takeable(issue(['type:epic', WATCHED]), null, { me: 'bora' }).watched, undefined, 'a parent stays a parent');
+  assert.deepEqual(watchedLines([]), [], 'no section without one');
+  const lines = watchedLines([{ n: 817, title: 'Prompt audit', why: 'edits the agents and skills' }]);
+  assert.equal(lines[1], '## Left for a watched session (on purpose)');
+  assert.match(lines[2], /skipped deliberately/);
+  assert.match(lines[2], /needs:watched-session/);
+  assert.equal(lines[3], '- #817 Prompt audit: edits the agents and skills');
+  assert.equal(watchedLines([{ n: 5 }])[3], '- #5');
+});
+
 test('the done line counts why every open issue was left', () => {
   assert.equal(nothingLeft(['in review', 'in review', 'waiting on a person (status:needs-decision)', 'in progress under tc', 'in progress under bora', 'assigned to tc']),
     'NOTHING LEFT on the board that this sprint can work on: 2 in review · 2 in progress · 1 waiting on a person (status:needs-decision) · 1 assigned to someone else.');

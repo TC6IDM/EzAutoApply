@@ -19,6 +19,9 @@
 //       takes --pr <url>, and checkpoint pushes nothing.
 //       --avoid 86,131: never these or anything under them. Anything under a parent assigned to
 //       someone else is left out without being asked.
+//       --watched: someone is at the computer for this sprint, so it may take issues labelled
+//       needs:watched-session (they edit .claude/ or CLAUDE.md, where Claude Code asks before writing).
+//       Without it those are left out, and the PR lists them as left on purpose.
 //   ... budget            GO / SMALL / WRAP / STOP / UNKNOWN, with both limits and when they reset.
 //   ... budget --hook     The PostToolUse hook: silent unless a sprint is on and it is SMALL, WRAP or STOP.
 //   ... next [--limit 8] [--mine] [--issues …] [--only]  The issues Claude can take, named ones first,
@@ -41,6 +44,9 @@
 //   ... statusline        The status line command: saves the 5-hour and weekly figures Claude Code
 //                         hands it, so usage() rarely needs the endpoint (and its 429s).
 //   ... skip N --why "…"  Note an issue passed over (needs a phone, a decision, too big…).
+//   ... skip N --watched [--why "…"]  The issue turned out to edit .claude/ or CLAUDE.md: labels it
+//                         needs:watched-session, so no unattended sprint takes it again, and the PR lists
+//                         it under "Left for a watched session (on purpose)".
 //   ... unskip 12,34      Put passed-over issues back among the candidates (their blocker was answered).
 //   ... take-from LOGIN[,LOGIN] [--undo]  The person said the sprint may also take issues assigned to
 //                         these developers (e.g. "and Andrew's"): they count as the person's own for
@@ -69,7 +75,7 @@ import { join, resolve } from 'node:path';
 import https from 'node:https';
 
 import { REPO, REPO_NAME, OWNER, PROJECT, MILESTONE_ORDER as MILESTONES, LINKED_REPOS, linkedRepoOf, NAME, PREFIX, NEEDS_LIVE_TEXT } from './repo.mjs';
-import { STALE_HOURS, KEEP_GOING_STALE_HOURS, DEFAULT_SMALL_AT, DEFAULT_NEW_AT, DEFAULT_STOP_AT, FABLE_LINES, LARGE_SESSION_AT, LARGE_WEEKLY_UNDER, DEFAULT_ISSUE_COST, defaultLines, until, judge, isLarge, largeAllowed, averageCost, finishRefusal, takenAway, USAGE_FIELD, MEASURED_AFTER, issueUsage, usageNote, sizeAverages, expectedCost, misSized, readingLine, usageLines, decisionsComment, answersSince, nowLine, wakeAt, pauseLine, withDone, findStalls, stallSummary, takeable, nothingLeft, TIERS, HANDED_OFF } from './verdict.mjs';
+import { STALE_HOURS, KEEP_GOING_STALE_HOURS, DEFAULT_SMALL_AT, DEFAULT_NEW_AT, DEFAULT_STOP_AT, FABLE_LINES, LARGE_SESSION_AT, LARGE_WEEKLY_UNDER, DEFAULT_ISSUE_COST, defaultLines, until, judge, isLarge, largeAllowed, averageCost, finishRefusal, takenAway, USAGE_FIELD, MEASURED_AFTER, issueUsage, usageNote, sizeAverages, expectedCost, misSized, readingLine, usageLines, decisionsComment, answersSince, nowLine, wakeAt, pauseLine, withDone, findStalls, stallSummary, takeable, nothingLeft, TIERS, HANDED_OFF, WATCHED, WATCHED_LABEL, watchedLines } from './verdict.mjs';
 const DIR = join(tmpdir(), `${PREFIX}-sprint`);
 const STATE = join(DIR, 'state.json');
 const CACHE = join(DIR, 'usage.json');
@@ -282,6 +288,8 @@ function prBody(s, pr, running) {
   }
   if (s.current && !running) lines.push('', '## In progress', `- #${s.current.n}${s.current.repo ? ` (in ${s.current.repo})` : ''}: not finished, kept off this PR (see its "Next" comment)`);
   if (s.skipped.length) lines.push('', '## Passed over', ...s.skipped.map(d => `- #${d.n}: ${d.why}`));
+  // Left on purpose for a session someone watches (needs:watched-session), so nobody reads them as stuck.
+  lines.push(...watchedLines((s.leftForWatched || []).filter(w => !listed.has(w.n))));
   // Claude's part done, the rest waits on a person: listed without Fixes, so the merge leaves them open.
   if (s.handedOff?.length) lines.push('', '## Prepared, waiting on a person (these stay open)', ...s.handedOff.map(h => `- #${h.n}${h.title ? ` ${h.title}` : ''}: ${h.why}`));
   // Each reading says when its windows reset, measured from that reading's own time.
@@ -516,10 +524,14 @@ function candidates(s, mine, tree, avoid) {
   const columns = boardStatus();
   const left = [];
   const out = [];
+  const watched = [];
   for (const i of list) {
     if (passed.has(i.number)) continue;
-    const t = takeable({ labels: i.labels.map(l => l.name), assignees: i.assignees.map(a => a.login) }, columns.get(i.number) ?? null,
-      { me, also: s?.takeFrom || [], mine, keepGoing: Boolean(s?.keepGoing), greedy });
+    const issue = { labels: i.labels.map(l => l.name), assignees: i.assignees.map(a => a.login) };
+    const how = { me, also: s?.takeFrom || [], mine, keepGoing: Boolean(s?.keepGoing), greedy, watched: Boolean(s?.watchedSession) };
+    const t = takeable(issue, columns.get(i.number) ?? null, how);
+    // Left for a watched session: listed on the PR only when it would otherwise have been taken.
+    if (t.watched && takeable(issue, columns.get(i.number) ?? null, { ...how, watched: true }).tier !== null) watched.push({ n: i.number, title: i.title });
     if (t.tier === null) { left.push(t.why); continue; }
     // Yours and unassigned: never under someone else's parent. Greedy tiers: only the avoid list.
     const off = offLimits(i.number, tree, me, avoid, s?.takeFrom, t.tier >= 2);
@@ -528,7 +540,7 @@ function candidates(s, mine, tree, avoid) {
       rank(i, 'P', ['0', '1', '2', '3']), rank(i, 'size:', ['S', 'M', 'L']), i.number] });
   }
   out.sort((a, b) => { for (let k = 0; k < a.key.length; k++) if (a.key[k] !== b.key[k]) return a.key[k] - b.key[k]; return 0; });
-  return { list: out, left };
+  return { list: out, left, watched };
 }
 
 // --issues 12,34,56: the issues the person named, in their order. A parent becomes its open
@@ -554,9 +566,20 @@ function named(s, queue, tree, avoid) {
     const why = offLimits(n, tree, me, avoid);
     if (why) { console.log(`#${n} (named) is ${why}: left out`); continue; }
     const i = JSON.parse(sh('gh', ['issue', 'view', String(n), '--repo', REPO, '--json', 'number,title,labels,milestone,assignees,state']));
+    if (i.labels.some(l => l.name === WATCHED) && !s?.watchedSession) {
+      console.log(`#${n} (named) is labelled ${WATCHED}: left for a session someone watches (start --watched to take it)`);
+      if (s) noteWatched(s, { n, title: i.title });
+      continue;
+    }
     out.push({ ...i, named: true });
   }
   return out;
+}
+
+// Records an issue left for a watched session, once, for the PR's "on purpose" section.
+function noteWatched(s, w) {
+  const before = (s.leftForWatched || []).find(x => x.n === w.n) || {};
+  s.leftForWatched = [...(s.leftForWatched || []).filter(x => x.n !== w.n), { ...before, ...Object.fromEntries(Object.entries(w).filter(([, v]) => v != null)) }];
 }
 
 // ---------- commands ----------
@@ -822,7 +845,7 @@ if (action === 'start') {
   const queue = expandNamed(parseIssues(opt('issues')));
   if (flag('only') && !queue.length) { console.log('--only needs --issues'); process.exit(1); }
   const avoid = parseIssues(opt('avoid'));
-  const state = { startedAt: new Date().toISOString(), branch, smallAt, newAt, stopAt, keepGoing: flag('keep-going'), greedy: !flag('no-greedy'), mine: flag('mine'), label: opt('label') || null, external, queue, only: flag('only'), avoid, done: [], skipped: [], current: null, readings: [] };
+  const state = { startedAt: new Date().toISOString(), branch, smallAt, newAt, stopAt, keepGoing: flag('keep-going'), greedy: !flag('no-greedy'), mine: flag('mine'), label: opt('label') || null, external, queue, only: flag('only'), avoid, watchedSession: flag('watched'), done: [], skipped: [], current: null, readings: [] };
   record(state, u, 'start');
   writeState(state);
   // The linked repos' worktrees (#57); an --external sprint works one other checkout by hand instead.
@@ -875,7 +898,10 @@ if (action === 'next') {
   const tree = openTree();
   const first = named(s, queue, tree, avoid);
   const firstSet = new Set(first.map(i => i.number));
-  const found = only ? { list: [], left: [] } : candidates(s, mine, tree, avoid);
+  const found = only ? { list: [], left: [], watched: [] } : candidates(s, mine, tree, avoid);
+  // named() may have noted some too; either way the state keeps them for the PR.
+  if (s) { for (const w of found.watched) noteWatched(s, w); writeState(s); }
+  if (found.watched.length) console.log(`left for a watched session (${WATCHED}, on purpose): ${found.watched.map(w => `#${w.n}`).join(' ')}`);
   const rest = found.list.filter(i => !firstSet.has(i.number));
   if (avoid.size) console.log(`avoiding ${[...avoid].map(n => `#${n}`).join(' ')} and everything under them`);
   const small = i => i.labels.some(l => l.name === 'size:S' || l.name === 'size:XS');
@@ -1014,7 +1040,7 @@ if (action === 'begin' || action === 'finish' || action === 'skip') {
       // Keep going takes anything that isn't someone else's In Progress, waiting on a person, or avoided.
       const i = JSON.parse(sh('gh', ['issue', 'view', String(n), '--repo', REPO, '--json', 'labels,assignees']));
       const t = takeable({ labels: i.labels.map(l => l.name), assignees: i.assignees.map(a => a.login) }, boardStatus().get(n) ?? null,
-        { me, also: s.takeFrom || [], mine: s.mine, keepGoing: true, greedy: true });
+        { me, also: s.takeFrom || [], mine: s.mine, keepGoing: true, greedy: true, watched: Boolean(s.watchedSession) });
       off = offLimits(n, tree, me, new Set(s.avoid || []), s.takeFrom, true) || (t.tier === null ? t.why : null);
       beginTier = t.tier;
       beginOwners = i.assignees.map(a => a.login).filter(a => a !== me && !(s.takeFrom || []).includes(a));
@@ -1022,15 +1048,18 @@ if (action === 'begin' || action === 'finish' || action === 'skip') {
       // The tier only says how to work it (a decision: prepare, then handoff); the old rules decide.
       try {
         const i = JSON.parse(sh('gh', ['issue', 'view', String(n), '--repo', REPO, '--json', 'labels,assignees']));
-        beginTier = takeable({ labels: i.labels.map(l => l.name), assignees: i.assignees.map(a => a.login) }, null, { me, also: s.takeFrom || [], mine: s.mine, keepGoing: Boolean(s.keepGoing), greedy: false }).tier;
+        const labels = i.labels.map(l => l.name);
+        beginTier = takeable({ labels, assignees: i.assignees.map(a => a.login) }, null, { me, also: s.takeFrom || [], mine: s.mine, keepGoing: Boolean(s.keepGoing), greedy: false, watched: true }).tier;
+        if (labels.includes(WATCHED) && !s.watchedSession) off = 'left for a watched session';
       } catch { /* the hint is a help; the work goes on without it */ }
-      off = tree.has(n) ? offLimits(n, tree, me, new Set(s.avoid || []), s.takeFrom) : null;
+      off = off || (tree.has(n) ? offLimits(n, tree, me, new Set(s.avoid || []), s.takeFrom) : null);
       // mine + keep-going may take an unassigned issue once the person's own are done.
       notMine = s.mine && !(s.queue || []).includes(n) && !assignees.includes(me) && !(mineThenOpen(s) && assignees.length === 0);
     }
     if (!tree.has(n) || off || notMine) {
       const why = !tree.has(n) ? 'closed' : off || 'not assigned to you (--mine)';
-      s.skipped.push({ n, why });
+      if (why === 'left for a watched session') noteWatched(s, { n, title: tree.get(n)?.title ?? null });
+      else s.skipped.push({ n, why });
       writeState(s);
       console.log(`#${n} is ${why}: not taking it. Pick the next one.`);
       process.exit(4);
@@ -1126,7 +1155,19 @@ if (action === 'begin' || action === 'finish' || action === 'skip') {
       review(`${opt('note')}; PR #${pr}${usageLine ? `; ${usageLine}` : ''}`);
     }
   }
-  if (action === 'skip') {
+  if (action === 'skip' && flag('watched')) {
+    // It edits .claude/ or CLAUDE.md: the label keeps every unattended sprint off it,
+    // and the PR says it was left on purpose, for a session someone watches.
+    let title = null;
+    try {
+      sh('gh', ['label', 'create', WATCHED, '--repo', REPO, '--color', WATCHED_LABEL[0], '--description', WATCHED_LABEL[1], '--force'], true);
+      sh('gh', ['issue', 'edit', String(n), '--repo', REPO, '--add-label', WATCHED], true);
+      title = sh('gh', ['issue', 'view', String(n), '--repo', REPO, '--json', 'title', '--jq', '.title'], true);
+    } catch { console.log(`(could not label #${n} ${WATCHED}; add the label by hand)`); }
+    noteWatched(s, { n, title, why: opt('why') || null });
+    if (s.current?.n === n) s.current = null;
+    console.log(`#${n} left for a watched session: labelled ${WATCHED}; the PR lists it as left on purpose. Put back any edit made for it (git restore, or park it on wip/issue-${n}) before the next issue.`);
+  } else if (action === 'skip') {
     s.skipped.push({ n, why: opt('why') || 'no reason given' });
     if (s.current?.n === n) s.current = null;
   }
