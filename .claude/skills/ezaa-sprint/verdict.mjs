@@ -330,8 +330,9 @@ export function nowLine(s, running, now = Date.now()) {
     const when = resetLabel(weekly ? r.weeklyResets : r.sessionResets, new Date(now));
     if (when) resets = `${weekly ? 'weekly limit' : '5-hour limit'} resets ${when}`;
   }
-  // When the paused sprint's next loop is sent (checkpoint --wake-in / --next-wake).
-  const next = s.ended ? '' : s.nextWake ? `next loop about ${resetLabel(s.nextWake, new Date(now))}` : 'no next loop scheduled';
+  // When the paused sprint next checks in (the 55-minute wakes that keep the cache warm,
+  // or 30 with nothing left): set by checkpoint --wake-in and by `sprint.mjs wake` on each wake.
+  const next = s.ended ? '' : s.nextWake ? `next check-up ${resetLabel(s.nextWake, new Date(now))}` : 'no check-up scheduled';
   const done = (s.done || []).filter(d => !d.repo).length;
   const waiting = (s.handedOff || []).length;
   const decisions = (s.questions || []).filter(q => !q.settled && !q.answered).length;

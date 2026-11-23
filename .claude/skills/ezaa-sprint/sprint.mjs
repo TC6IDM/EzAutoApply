@@ -33,6 +33,8 @@
 //                         --needs-live: nobody has tried it on a live job site yet. The PR still says Fixes
 //                         (the merge closes it, maintainer 2026-11-12) and adds that it is not yet seen.
 //   ... refresh           Rewrite the running PR's body only (the permission hook uses it to say it waits).
+//   ... wake <seconds>    Run before every ScheduleWakeup of a paused sprint: records the next
+//                         check-up and rewrites the PR's top line to name it (each 55-minute wake moves it).
 //   ... checkpoint [--title "…"] [--intro-file f.md] [--wake-in <seconds> | --next-wake <time>] [--reason limit|wind-down|nothing-left|checkpoint]  Rewrite the PR (title,
 //                         Claude's description above the generated part, usage) and take the running label off: CI runs once.
 //                         --wake-in / --next-wake: when the paused sprint wakes next, which the PR's last line names.
@@ -689,7 +691,11 @@ if (action === 'budget') {
   if (s) { record(s, u, 'budget'); writeState(s); }
   dropIfLost(s);
   console.log(j.line);
-  if (j.verdict !== 'GO' && j.verdict !== 'SMALL' && j.resumeInSeconds !== null) console.log(`the ${j.binding} limit resets in ${Math.round(j.resumeInSeconds / 60)} min (resumeInSeconds=${j.resumeInSeconds})`);
+  if (j.verdict !== 'GO' && j.verdict !== 'SMALL' && j.resumeInSeconds !== null) {
+    console.log(`the ${j.binding} limit resets in ${Math.round(j.resumeInSeconds / 60)} min (resumeInSeconds=${j.resumeInSeconds})`);
+    const delay = Math.max(60, Math.min(3300, j.resumeInSeconds));
+    if (s?.keepGoing) console.log(`WAKE: run \`sprint.mjs wake ${delay}\`, then ScheduleWakeup delaySeconds=${delay} (the PR then names the check-up)`);
+  }
   // A keep-going wake that only reads the budget still sees the Inbox (PTrainr, 2026-11-16).
   console.log(inboxLine('Do the Inbox pass before taking an issue (unless STOP).'));
   process.exit(0);
@@ -1094,6 +1100,7 @@ if (action === 'begin' || action === 'finish' || action === 'skip') {
     }
   }
   if (action === 'begin') delete s.nothingLeftAt;
+  if (action === 'begin' || action === 'finish') delete s.pausedAt;
   let beginTitle = null;
   const u = await usage(30);
   if (action === 'begin') {
@@ -1287,6 +1294,25 @@ if (action === 'refresh') {
   process.exit(0);
 }
 
+// `wake <seconds>`: the paused sprint's next check-up (the owner, 2026-11-23: the PR says
+// when the next check-up is, like the 55-minute wakes that keep the cache warm). Run before
+// every ScheduleWakeup; a paused PR's top line is rewritten to name it.
+if (action === 'wake') {
+  if (!s) { console.log('no sprint running'); process.exit(1); }
+  const seconds = Number(args[1]);
+  if (!(seconds > 0)) { console.log('usage: sprint.mjs wake <seconds> (the delaySeconds about to go to ScheduleWakeup)'); process.exit(1); }
+  s.nextWake = wakeAt({ wakeIn: String(Math.round(seconds)) });
+  writeState(s);
+  const at = s.pausedAt && !s.external ? s.pr ?? openPr(s.branch)?.number : null;
+  if (at) {
+    const file = join(DIR, 'pr.md');
+    writeFileSync(file, prBody(s, at, false));
+    try { sh('gh', ['pr', 'edit', String(at), '--repo', REPO, '--body-file', file], true); console.log(`next check-up ${new Date(s.nextWake).toLocaleTimeString()}; PR #${at}'s top line says so`); }
+    catch { console.log(`next check-up ${new Date(s.nextWake).toLocaleTimeString()} (PR #${at} could not be updated)`); }
+  } else console.log(`next check-up ${new Date(s.nextWake).toLocaleTimeString()}`);
+  process.exit(0);
+}
+
 // The checkpoint's PR step: --title "<what the issues add up to>" and
 // --intro-file <markdown> (Claude's description, kept above the generated part),
 // then the body is rewritten with the latest usage and the running label comes off (CI runs once).
@@ -1301,6 +1327,7 @@ if (action === 'checkpoint') {
   const jc = judge(u, s);
   // The PR's top line says why it stopped (the owner, 2026-11-23): the limit, a wind-down, nothing left.
   s.status = { reason: stopReason({ given: opt('reason'), verdict: jc.verdict, windDown: s.windDown, nothingLeftAt: s.nothingLeftAt }), at: new Date().toISOString() };
+  s.pausedAt = s.status.at;
   writeState(s);
   if (s.external) console.log(`external sprint: nothing to push here; the work and its PR are in ${s.external} (done ${s.done.map(d => `#${d.n}`).join(' ') || 'none'})`);
   else {
