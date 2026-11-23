@@ -171,3 +171,29 @@ describe('privacy notices', () => {
     expect(applied).toBe(false);
   });
 });
+
+/** Workable (apply.workable.com, November 2026): each role="radio" is labelled by the question and its own text. */
+describe('Workable yes/no radios', () => {
+  it('reads each option as its own text, not the question plus it', async () => {
+    const option = (id: string, text: string) => `
+      <div data-ui="option" aria-labelledby="q_label radio_label_${id}" id="wrapper_${id}" role="radio" aria-checked="false" aria-required="true" tabindex="0">
+        <label><input aria-required="true" required="" id="${id}" tabindex="-1" aria-hidden="true" type="radio" name="QA_1" value="">
+        <div><div><span id="radio_label_${id}">${text}</span></div></div></label>
+      </div>`;
+    document.body.innerHTML = `
+      <div><span><span><strong>*</strong></span><span><span id="q_label"><strong>Are you legally authorized to work in Canada?</strong></span></span></span>
+      <div><fieldset role="radiogroup" data-ui="QA_1" aria-labelledby="q_label">${option('a1', 'YES')}${option('a2', 'NO')}</fieldset></div></div>`;
+    // Workable's React sets aria-checked on the clicked option.
+    for (const r of document.querySelectorAll<HTMLElement>('[role="radio"]')) {
+      r.addEventListener('click', () => {
+        for (const o of document.querySelectorAll('[role="radio"]')) o.setAttribute('aria-checked', String(o === r));
+      });
+    }
+    const field = scanFields(document).find((f) => f.kind === 'radio')!;
+    expect(field.label).toBe('Are you legally authorized to work in Canada?');
+    expect(field.options?.map((o) => o.label)).toEqual(['YES', 'NO']);
+    const out = await fillField(field, res(field, 'Yes', 'authorizedToWork'), ctx);
+    expect(out.ok).toBe(true);
+    expect(document.getElementById('wrapper_a1')!.getAttribute('aria-checked')).toBe('true');
+  });
+});

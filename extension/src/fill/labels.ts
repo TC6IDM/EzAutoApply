@@ -38,12 +38,13 @@ export function textOf(node: Node, skip?: Set<Node>): string {
   return cleanText(parts.join(''));
 }
 
-function labelledBy(el: Element): string {
+function labelledBy(el: Element, skip: ReadonlySet<string> = new Set()): string {
   const ids = el.getAttribute('aria-labelledby');
   if (!ids) return '';
   return cleanText(
     ids
       .split(/\s+/)
+      .filter((id) => !skip.has(id))
       .map((id) => {
         const target = byId(el, id);
         return target && target !== el ? textOf(target) : '';
@@ -181,7 +182,12 @@ export function groupLabel(members: Element[], container: Element | null): strin
 
 /** The text of one option in a radio/checkbox group. */
 export function optionLabel(el: Element): string {
-  const t = labelledBy(el) || explicitLabels(el) || cleanText(el.getAttribute('aria-label') ?? '');
+  // Workable's options are labelled by the question and their own text ("Q? YES"): leave out
+  // the ids the group itself is labelled by, so the option reads "YES".
+  const group = el.parentElement?.closest('[role="radiogroup"], [role="group"], fieldset');
+  const groupIds = new Set((group?.getAttribute('aria-labelledby') ?? '').split(/\s+/).filter(Boolean));
+  const t =
+    labelledBy(el, groupIds) || labelledBy(el) || explicitLabels(el) || cleanText(el.getAttribute('aria-label') ?? '');
   if (t) return t;
   // <input type=radio><span>Yes</span> without a <label>
   let sib = el.nextSibling;
