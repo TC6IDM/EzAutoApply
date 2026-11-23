@@ -21,6 +21,19 @@
     ]
   },
   "hooks": {
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/permission.mjs\"",
+            "timeout": 1200,
+            "statusMessage": "During a sprint: asking this on its PR (15 min, then skip)..."
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Bash|PowerShell",

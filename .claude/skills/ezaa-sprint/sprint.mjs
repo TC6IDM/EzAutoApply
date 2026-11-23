@@ -19,9 +19,6 @@
 //       takes --pr <url>, and checkpoint pushes nothing.
 //       --avoid 86,131: never these or anything under them. Anything under a parent assigned to
 //       someone else is left out without being asked.
-//       --watched: someone is at the computer for this sprint, so it may take issues labelled
-//       needs:watched-session (they edit .claude/ or CLAUDE.md, where Claude Code asks before writing).
-//       Without it those are left out, and the PR lists them as left on purpose.
 //   ... budget            GO / SMALL / WRAP / STOP / UNKNOWN, with both limits and when they reset.
 //   ... budget --hook     The PostToolUse hook: silent unless a sprint is on and it is SMALL, WRAP or STOP.
 //   ... next [--limit 8] [--mine] [--issues …] [--only]  The issues Claude can take, named ones first,
@@ -35,7 +32,8 @@
 //                         it, and moves the issue to In Review (work.mjs review: the note + the PR).
 //                         --needs-live: nobody has tried it on a live job site yet. The PR still says Fixes
 //                         (the merge closes it, maintainer 2026-11-12) and adds that it is not yet seen.
-//   ... checkpoint [--title "…"] [--intro-file f.md] [--wake-in <seconds> | --next-wake <time>]  Rewrite the PR (title,
+//   ... refresh           Rewrite the running PR's body only (the permission hook uses it to say it waits).
+//   ... checkpoint [--title "…"] [--intro-file f.md] [--wake-in <seconds> | --next-wake <time>] [--reason limit|wind-down|nothing-left|checkpoint]  Rewrite the PR (title,
 //                         Claude's description above the generated part, usage) and take the running label off: CI runs once.
 //                         --wake-in / --next-wake: when the paused sprint wakes next, which the PR's last line names.
 //   ... sizes             What each size has cost, measured on the board ("Usage %", set by finish
@@ -44,9 +42,9 @@
 //   ... statusline        The status line command: saves the 5-hour and weekly figures Claude Code
 //                         hands it, so usage() rarely needs the endpoint (and its 429s).
 //   ... skip N --why "…"  Note an issue passed over (needs a phone, a decision, too big…).
-//   ... skip N --watched [--why "…"]  The issue turned out to edit .claude/ or CLAUDE.md: labels it
-//                         needs:watched-session, so no unattended sprint takes it again, and the PR lists
-//                         it under "Left for a watched session (on purpose)".
+//   ... skip N --watched [--why "…"]  The permission hook got no answer (or a no) on the PR: labels it
+//                         needs:watched-session and the PR lists it under "Left for a watched session
+//                         (on purpose)". A later "allow P<n>" on the PR puts it back (`next` reads it).
 //   ... unskip 12,34      Put passed-over issues back among the candidates (their blocker was answered).
 //   ... take-from LOGIN[,LOGIN] [--undo]  The person said the sprint may also take issues assigned to
 //                         these developers (e.g. "and Andrew's"): they count as the person's own for
@@ -58,6 +56,8 @@
 //                         Note a question for the checkpoint instead of stopping to ask it. The
 //                         checkpoint posts every open one as one comment on the PR (options, the
 //                         recommended one, the link), and `next` prints the answers under it.
+//   ... settle N [--why "…"]  Close open question N (as numbered in the posts): it was decided
+//                         elsewhere (on its issue, in chat) and must not be asked again.
 //   ... summary [--final] The PR body as it stands: Fixes lines, in progress, passed over, usage.
 //   ... wind-down [--undo] Shut the sprint down gently: no new issue; the one in progress is
 //                         finished and committed, then the checkpoint. Run it from any terminal
@@ -73,9 +73,11 @@ import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, readdirSync
 import { homedir, tmpdir, platform } from 'node:os';
 import { join, resolve } from 'node:path';
 import https from 'node:https';
+// The permission hook's rules (a synced repo keeps hooks in .claude/hooks, two folders up).
+import { readAnswer } from '../../hooks/permission-rules.mjs';
 
 import { REPO, REPO_NAME, OWNER, PROJECT, MILESTONE_ORDER as MILESTONES, LINKED_REPOS, linkedRepoOf, NAME, PREFIX, NEEDS_LIVE_TEXT } from './repo.mjs';
-import { STALE_HOURS, KEEP_GOING_STALE_HOURS, DEFAULT_SMALL_AT, DEFAULT_NEW_AT, DEFAULT_STOP_AT, FABLE_LINES, LARGE_SESSION_AT, LARGE_WEEKLY_UNDER, DEFAULT_ISSUE_COST, defaultLines, until, judge, isLarge, largeAllowed, averageCost, finishRefusal, takenAway, USAGE_FIELD, MEASURED_AFTER, issueUsage, usageNote, sizeAverages, expectedCost, misSized, readingLine, usageLines, decisionsComment, answersSince, nowLine, wakeAt, pauseLine, withDone, findStalls, stallSummary, takeable, nothingLeft, TIERS, HANDED_OFF, WATCHED, WATCHED_LABEL, watchedLines } from './verdict.mjs';
+import { STALE_HOURS, KEEP_GOING_STALE_HOURS, DEFAULT_SMALL_AT, DEFAULT_NEW_AT, DEFAULT_STOP_AT, FABLE_LINES, LARGE_SESSION_AT, LARGE_WEEKLY_UNDER, DEFAULT_ISSUE_COST, defaultLines, until, judge, isLarge, largeAllowed, averageCost, finishRefusal, takenAway, USAGE_FIELD, MEASURED_AFTER, issueUsage, usageNote, sizeAverages, expectedCost, misSized, readingLine, usageLines, decisionsComment, answersSince, answeredTexts, openQuestions, numberQuestions, nowLine, stopReason, wakeAt, pauseLine, withDone, findStalls, stallSummary, takeable, nothingLeft, TIERS, HANDED_OFF, WATCHED, WATCHED_LABEL, watchedLines } from './verdict.mjs';
 const DIR = join(tmpdir(), `${PREFIX}-sprint`);
 const STATE = join(DIR, 'state.json');
 const CACHE = join(DIR, 'usage.json');
@@ -524,14 +526,10 @@ function candidates(s, mine, tree, avoid) {
   const columns = boardStatus();
   const left = [];
   const out = [];
-  const watched = [];
   for (const i of list) {
     if (passed.has(i.number)) continue;
     const issue = { labels: i.labels.map(l => l.name), assignees: i.assignees.map(a => a.login) };
-    const how = { me, also: s?.takeFrom || [], mine, keepGoing: Boolean(s?.keepGoing), greedy, watched: Boolean(s?.watchedSession) };
-    const t = takeable(issue, columns.get(i.number) ?? null, how);
-    // Left for a watched session: listed on the PR only when it would otherwise have been taken.
-    if (t.watched && takeable(issue, columns.get(i.number) ?? null, { ...how, watched: true }).tier !== null) watched.push({ n: i.number, title: i.title });
+    const t = takeable(issue, columns.get(i.number) ?? null, { me, also: s?.takeFrom || [], mine, keepGoing: Boolean(s?.keepGoing), greedy });
     if (t.tier === null) { left.push(t.why); continue; }
     // Yours and unassigned: never under someone else's parent. Greedy tiers: only the avoid list.
     const off = offLimits(i.number, tree, me, avoid, s?.takeFrom, t.tier >= 2);
@@ -540,7 +538,7 @@ function candidates(s, mine, tree, avoid) {
       rank(i, 'P', ['0', '1', '2', '3']), rank(i, 'size:', ['S', 'M', 'L']), i.number] });
   }
   out.sort((a, b) => { for (let k = 0; k < a.key.length; k++) if (a.key[k] !== b.key[k]) return a.key[k] - b.key[k]; return 0; });
-  return { list: out, left, watched };
+  return { list: out, left };
 }
 
 // --issues 12,34,56: the issues the person named, in their order. A parent becomes its open
@@ -566,11 +564,6 @@ function named(s, queue, tree, avoid) {
     const why = offLimits(n, tree, me, avoid);
     if (why) { console.log(`#${n} (named) is ${why}: left out`); continue; }
     const i = JSON.parse(sh('gh', ['issue', 'view', String(n), '--repo', REPO, '--json', 'number,title,labels,milestone,assignees,state']));
-    if (i.labels.some(l => l.name === WATCHED) && !s?.watchedSession) {
-      console.log(`#${n} (named) is labelled ${WATCHED}: left for a session someone watches (start --watched to take it)`);
-      if (s) noteWatched(s, { n, title: i.title });
-      continue;
-    }
     out.push({ ...i, named: true });
   }
   return out;
@@ -580,6 +573,42 @@ function named(s, queue, tree, avoid) {
 function noteWatched(s, w) {
   const before = (s.leftForWatched || []).find(x => x.n === w.n) || {};
   s.leftForWatched = [...(s.leftForWatched || []).filter(x => x.n !== w.n), { ...before, ...Object.fromEntries(Object.entries(w).filter(([, v]) => v != null)) }];
+}
+
+// Answers that came after the permission hook stopped waiting (claude-workflow#8).
+// Only from people with write access, and not from the sprint's own account
+// (Claude can comment by then). An allow remembers the request, takes the issue
+// off the skipped lists and its label off, so the picker offers it again.
+function lateAnswers(s) {
+  const waiting = (s.permissionAsks || []).filter(a => a.status === 'no-answer' && a.target);
+  if (!waiting.length) return [];
+  const me = whoAmI();
+  const said = [];
+  const byTarget = new Map();
+  for (const a of waiting) {
+    const k = a.target.join(' ');
+    if (!byTarget.has(k)) {
+      try {
+        byTarget.set(k, JSON.parse(sh('gh', [a.target[0], 'view', a.target[1], '--repo', REPO, '--json', 'comments'], true)).comments
+          .map(c => ({ login: c.author?.login, association: c.authorAssociation, at: c.createdAt, body: c.body })));
+      } catch { byTarget.set(k, null); }
+    }
+    const comments = byTarget.get(k);
+    if (!comments) continue;
+    const got = readAnswer(comments, { id: a.id, askedAt: a.at, notLogin: me });
+    if (!got) continue;
+    Object.assign(a, { status: got.answer === 'allow' ? 'allowed-late' : 'denied', by: got.by, answeredAt: got.at });
+    if (got.answer !== 'allow') { said.push(`${a.id} (#${a.issue}) was denied by @${got.by} after the wait: it stays skipped.`); continue; }
+    s.approvals = [...(s.approvals || []), { key: a.key, id: a.id, by: got.by, at: got.at }];
+    if (a.issue) {
+      s.leftForWatched = (s.leftForWatched || []).filter(w => w.n !== a.issue);
+      s.skipped = (s.skipped || []).filter(d => d.n !== a.issue);
+      try { sh('gh', ['issue', 'edit', String(a.issue), '--repo', REPO, '--remove-label', WATCHED], true); } catch { /* the picker takes it anyway */ }
+    }
+    said.push(`LATE ALLOW: ${a.id} allowed by @${got.by}${a.issue ? `; #${a.issue} is back among the candidates` : ''}, and "${a.what}" will now pass without asking.`);
+  }
+  writeState(s);
+  return said;
 }
 
 // ---------- commands ----------
@@ -845,7 +874,7 @@ if (action === 'start') {
   const queue = expandNamed(parseIssues(opt('issues')));
   if (flag('only') && !queue.length) { console.log('--only needs --issues'); process.exit(1); }
   const avoid = parseIssues(opt('avoid'));
-  const state = { startedAt: new Date().toISOString(), branch, smallAt, newAt, stopAt, keepGoing: flag('keep-going'), greedy: !flag('no-greedy'), mine: flag('mine'), label: opt('label') || null, external, queue, only: flag('only'), avoid, watchedSession: flag('watched'), done: [], skipped: [], current: null, readings: [] };
+  const state = { startedAt: new Date().toISOString(), branch, smallAt, newAt, stopAt, keepGoing: flag('keep-going'), greedy: !flag('no-greedy'), mine: flag('mine'), label: opt('label') || null, external, queue, only: flag('only'), avoid, done: [], skipped: [], current: null, readings: [] };
   record(state, u, 'start');
   writeState(state);
   // The linked repos' worktrees (#57); an --external sprint works one other checkout by hand instead.
@@ -898,10 +927,10 @@ if (action === 'next') {
   const tree = openTree();
   const first = named(s, queue, tree, avoid);
   const firstSet = new Set(first.map(i => i.number));
-  const found = only ? { list: [], left: [], watched: [] } : candidates(s, mine, tree, avoid);
-  // named() may have noted some too; either way the state keeps them for the PR.
-  if (s) { for (const w of found.watched) noteWatched(s, w); writeState(s); }
-  if (found.watched.length) console.log(`left for a watched session (${WATCHED}, on purpose): ${found.watched.map(w => `#${w.n}`).join(' ')}`);
+  // Late answers to the permission hook's questions (claude-workflow#8): an "allow P<n>"
+  // after the wait puts the skipped issue back, and the same request then passes without asking.
+  if (s && !s.external) for (const line of lateAnswers(s)) console.log(line);
+  const found = only ? { list: [], left: [] } : candidates(s, mine, tree, avoid);
   const rest = found.list.filter(i => !firstSet.has(i.number));
   if (avoid.size) console.log(`avoiding ${[...avoid].map(n => `#${n}`).join(' ')} and everything under them`);
   const small = i => i.labels.some(l => l.name === 'size:S' || l.name === 'size:XS');
@@ -920,7 +949,7 @@ if (action === 'next') {
       const at = s.pr ?? openPr(s.branch)?.number;
       if (at) {
         const comments = JSON.parse(sh('gh', ['pr', 'view', String(at), '--repo', REPO, '--json', 'comments'], true)).comments
-          .map(c => ({ author: c.author?.login, at: c.createdAt, body: c.body, url: c.url }));
+          .map(c => ({ author: c.author?.login, association: c.authorAssociation, at: c.createdAt, body: c.body, url: c.url }));
         const answers = answersSince(comments, s.answersSeen ?? null);
         if (answers.length) {
           console.log(`ANSWERS on PR #${at} to the checkpoint's questions: act on them before choosing (unskip, build, or note them on the issue):`);
@@ -952,6 +981,8 @@ if (action === 'next') {
   }
   // Done only when nothing on the board can be worked on (the owner, 2026-11-22).
   if (!list.length) console.log(rest.length || first.length ? 'Nothing that fits the room left now.' : nothingLeft(found.left));
+  // The PR's status line says "work done" at the checkpoint when nothing was left (not when only room ran out).
+  if (s && !list.length && !rest.length && !first.length && j.verdict === 'GO') { s.nothingLeftAt = new Date().toISOString(); writeState(s); }
   process.exit(0);
 }
 
@@ -1040,7 +1071,7 @@ if (action === 'begin' || action === 'finish' || action === 'skip') {
       // Keep going takes anything that isn't someone else's In Progress, waiting on a person, or avoided.
       const i = JSON.parse(sh('gh', ['issue', 'view', String(n), '--repo', REPO, '--json', 'labels,assignees']));
       const t = takeable({ labels: i.labels.map(l => l.name), assignees: i.assignees.map(a => a.login) }, boardStatus().get(n) ?? null,
-        { me, also: s.takeFrom || [], mine: s.mine, keepGoing: true, greedy: true, watched: Boolean(s.watchedSession) });
+        { me, also: s.takeFrom || [], mine: s.mine, keepGoing: true, greedy: true });
       off = offLimits(n, tree, me, new Set(s.avoid || []), s.takeFrom, true) || (t.tier === null ? t.why : null);
       beginTier = t.tier;
       beginOwners = i.assignees.map(a => a.login).filter(a => a !== me && !(s.takeFrom || []).includes(a));
@@ -1048,23 +1079,21 @@ if (action === 'begin' || action === 'finish' || action === 'skip') {
       // The tier only says how to work it (a decision: prepare, then handoff); the old rules decide.
       try {
         const i = JSON.parse(sh('gh', ['issue', 'view', String(n), '--repo', REPO, '--json', 'labels,assignees']));
-        const labels = i.labels.map(l => l.name);
-        beginTier = takeable({ labels, assignees: i.assignees.map(a => a.login) }, null, { me, also: s.takeFrom || [], mine: s.mine, keepGoing: Boolean(s.keepGoing), greedy: false, watched: true }).tier;
-        if (labels.includes(WATCHED) && !s.watchedSession) off = 'left for a watched session';
+        beginTier = takeable({ labels: i.labels.map(l => l.name), assignees: i.assignees.map(a => a.login) }, null, { me, also: s.takeFrom || [], mine: s.mine, keepGoing: Boolean(s.keepGoing), greedy: false }).tier;
       } catch { /* the hint is a help; the work goes on without it */ }
-      off = off || (tree.has(n) ? offLimits(n, tree, me, new Set(s.avoid || []), s.takeFrom) : null);
+      off = tree.has(n) ? offLimits(n, tree, me, new Set(s.avoid || []), s.takeFrom) : null;
       // mine + keep-going may take an unassigned issue once the person's own are done.
       notMine = s.mine && !(s.queue || []).includes(n) && !assignees.includes(me) && !(mineThenOpen(s) && assignees.length === 0);
     }
     if (!tree.has(n) || off || notMine) {
       const why = !tree.has(n) ? 'closed' : off || 'not assigned to you (--mine)';
-      if (why === 'left for a watched session') noteWatched(s, { n, title: tree.get(n)?.title ?? null });
-      else s.skipped.push({ n, why });
+      s.skipped.push({ n, why });
       writeState(s);
       console.log(`#${n} is ${why}: not taking it. Pick the next one.`);
       process.exit(4);
     }
   }
+  if (action === 'begin') delete s.nothingLeftAt;
   let beginTitle = null;
   const u = await usage(30);
   if (action === 'begin') {
@@ -1156,8 +1185,8 @@ if (action === 'begin' || action === 'finish' || action === 'skip') {
     }
   }
   if (action === 'skip' && flag('watched')) {
-    // It edits .claude/ or CLAUDE.md: the label keeps every unattended sprint off it,
-    // and the PR says it was left on purpose, for a session someone watches.
+    // The permission hook got no answer (or a no): the label and the PR say it was skipped
+    // on purpose; a later "allow P<n>" puts it back (lateAnswers, at `next`).
     let title = null;
     try {
       sh('gh', ['label', 'create', WATCHED, '--repo', REPO, '--color', WATCHED_LABEL[0], '--description', WATCHED_LABEL[1], '--force'], true);
@@ -1166,7 +1195,7 @@ if (action === 'begin' || action === 'finish' || action === 'skip') {
     } catch { console.log(`(could not label #${n} ${WATCHED}; add the label by hand)`); }
     noteWatched(s, { n, title, why: opt('why') || null });
     if (s.current?.n === n) s.current = null;
-    console.log(`#${n} left for a watched session: labelled ${WATCHED}; the PR lists it as left on purpose. Put back any edit made for it (git restore, or park it on wip/issue-${n}) before the next issue.`);
+    console.log(`#${n} left for a watched session: labelled ${WATCHED}; the PR lists it as skipped on purpose. Put back any edit made for it (git restore, or park it on wip/issue-${n}) before the next issue.`);
   } else if (action === 'skip') {
     s.skipped.push({ n, why: opt('why') || 'no reason given' });
     if (s.current?.n === n) s.current = null;
@@ -1204,7 +1233,7 @@ if (action === 'status') {
   if (s.keepGoing) console.log(`greedy: ${greedyOn(s) ? 'yes (other developers\' issues and Claude\'s part of shared ones, once nothing else is left)' : 'no (--no-greedy)'}`);
   if (s.pr) console.log(`PR #${s.pr}`);
   for (const [name, l] of Object.entries(s.linked || {})) console.log(`linked ${name}: ${l.worktree} on ${l.branch}${l.pr ? `, PR ${l.repo}#${l.pr}` : ', no PR yet'} · done there: ${s.done.filter(d => d.repo === name).map(d => `#${d.n}`).join(' ') || 'none'}`);
-  for (const q of s.questions || []) console.log(`question for the checkpoint${q.issue ? ` (#${q.issue})` : ''}: ${q.text}`);
+  for (const q of openQuestions(numberQuestions(s.questions || []))) console.log(`open question ${q.n}${q.issue ? ` (#${q.issue})` : ''}${q.posted ? ' (posted, no answer yet)' : ''}: ${q.text}`);
   if (s.windDown) console.log(`winding down since ${new Date(s.windDown.at).toLocaleTimeString()}: no new issue`);
   if (s.compactions?.length) console.log(`compacted ${s.compactions.length}× this sprint, last ${new Date(s.compactions.at(-1)).toLocaleTimeString()}`);
   process.exit(0);
@@ -1221,15 +1250,40 @@ if (action === 'ask') {
   if (options.length) q.options = options;
   if (opt('recommend')) q.recommend = opt('recommend');
   if (opt('link')) q.link = opt('link');
-  s.questions = [...(s.questions || []), q];
+  s.questions = numberQuestions([...(s.questions || []), q]);
   writeState(s);
-  console.log(`noted (${s.questions.length} waiting for the checkpoint). Carry on: take the default or skip the issue.`);
+  console.log(`noted as question ${q.n} (${openQuestions(s.questions).length} open; every checkpoint posts all of them until answered). Carry on: take the default or skip the issue.`);
+  process.exit(0);
+}
+
+// `settle N` (claude-workflow#7): a question decided somewhere other than under a
+// decisions post. Settled questions are never asked again.
+if (action === 'settle') {
+  if (!s) { console.log('no sprint running'); process.exit(1); }
+  const numbers = parseIssues(args[1]);
+  numberQuestions(s.questions || []);
+  const hit = (s.questions || []).filter(q => numbers.includes(q.n));
+  if (!hit.length) { console.log(`usage: sprint.mjs settle <N[,N]> [--why "…"] (open: ${openQuestions(s.questions || []).map(q => q.n).join(', ') || 'none'})`); process.exit(1); }
+  for (const q of hit) q.settled = { at: new Date().toISOString(), why: opt('why') || null };
+  writeState(s);
+  console.log(`settled: ${hit.map(q => q.n).join(', ')}; open now: ${openQuestions(s.questions).map(q => q.n).join(', ') || 'none'}`);
   process.exit(0);
 }
 
 if (action === 'summary') {
   // What the PR body says now (publish() writes it; this only prints it).
   console.log(prBody(s, s.pr ?? null, !flag('final')));
+  process.exit(0);
+}
+
+// `refresh`: the running PR's body rewritten from the state, nothing pushed (the
+// permission hook calls it so the top line says the sprint waits on an answer).
+if (action === 'refresh') {
+  const at = s && !s.external ? s.pr ?? openPr(s.branch)?.number : null;
+  if (!at) process.exit(0);
+  const file = join(DIR, 'pr.md');
+  writeFileSync(file, prBody(s, at, true));
+  try { sh('gh', ['pr', 'edit', String(at), '--repo', REPO, '--body-file', file], true); } catch { /* the next publish says it */ }
   process.exit(0);
 }
 
@@ -1244,6 +1298,9 @@ if (action === 'checkpoint') {
   if ((opt('wake-in') || opt('next-wake')) && !s.nextWake) console.log('could not read --wake-in / --next-wake; the PR names no wake');
   const u = await usage(30);
   record(s, u, 'checkpoint');
+  const jc = judge(u, s);
+  // The PR's top line says why it stopped (the owner, 2026-11-23): the limit, a wind-down, nothing left.
+  s.status = { reason: stopReason({ given: opt('reason'), verdict: jc.verdict, windDown: s.windDown, nothingLeftAt: s.nothingLeftAt }), at: new Date().toISOString() };
   writeState(s);
   if (s.external) console.log(`external sprint: nothing to push here; the work and its PR are in ${s.external} (done ${s.done.map(d => `#${d.n}`).join(' ') || 'none'})`);
   else {
@@ -1262,23 +1319,40 @@ if (action === 'checkpoint') {
     }
     const pr = publish(s, false);
     console.log(pr ? `PR #${pr} checkpointed: title, body and usage updated, "${RUNNING}" off and "${CHECKPOINT}" on, so CI runs once` : 'nothing finished: no PR');
-    // Every open question goes onto the PR as one comment; the
-    // sprint reads the answers under it when it resumes (`next`).
-    const asks = decisionsComment(s.questions, ATTRIBUTION);
+    // Every open question goes onto the PR as one comment, the ones asked before and
+    // not answered included (claude-workflow#7); the sprint reads the answers when it resumes (`next`).
     const at = pr ?? openPr(s.branch)?.number;
+    let answered = new Set();
+    if (at) {
+      try {
+        const comments = JSON.parse(sh('gh', ['pr', 'view', String(at), '--repo', REPO, '--json', 'comments'], true)).comments
+          .map(c => ({ association: c.authorAssociation, body: c.body }));
+        answered = answeredTexts(comments);
+      } catch { console.log('decisions: the PR\'s comments could not be read; questions answered there may be asked again'); }
+    }
+    for (const q of numberQuestions(s.questions || [])) {
+      if (!q.answered && answered.has(String(q.text).trim())) q.answered = true;
+      // Its issue closed: decided by the work itself.
+      if (!q.answered && !q.settled && q.issue) {
+        try { if (sh('gh', ['issue', 'view', String(q.issue), '--repo', REPO, '--json', 'state', '--jq', '.state'], true) === 'CLOSED') q.settled = { at: new Date().toISOString(), why: `#${q.issue} closed` }; } catch { /* asked again: better than lost */ }
+      }
+    }
+    writeState(s);
+    const asks = decisionsComment(s.questions, ATTRIBUTION, answered);
     if (asks && at) {
       const file = join(DIR, 'decisions.md');
       writeFileSync(file, asks);
       try {
         const url = sh('gh', ['pr', 'comment', String(at), '--repo', REPO, '--body-file', file]);
-        for (const q of s.questions) q.posted = true;
-        s.answersSeen = new Date().toISOString();
+        const open = openQuestions(s.questions, answered);
+        const now = new Date().toISOString();
+        for (const q of open) { q.posted = true; q.firstPosted = q.firstPosted || now; }
+        s.answersSeen = now;
         writeState(s);
-        console.log(`decisions: ${s.questions.length} question${s.questions.length === 1 ? '' : 's'} posted on PR #${at} (${url})`);
+        console.log(`decisions: ${open.length} open question${open.length === 1 ? '' : 's'} posted on PR #${at}, every one not yet answered (${url})`);
       } catch (e) { console.log(`decisions: could not comment on PR #${at} (${String(e.message).split('\n')[0]}); post them by hand`); }
     } else if (asks) console.log('decisions: no PR to post them on; ask them in the summary');
   }
-  const jc = judge(u, s);
   console.log(jc.line);
   console.log(inboxLine('Do the Inbox pass now, before the pause.'));
   // A wait longer than the prompt cache's hour: the first message after it
@@ -1296,6 +1370,7 @@ if (action === 'end') {
   const open = !s.external && s.pr ? openPr(s.branch) : null;
   if (open) {
     s.ended = true;
+    s.status = { reason: 'ended', at: new Date().toISOString() };
     delete s.nextWake;
     try {
       const file = join(DIR, 'pr.md');

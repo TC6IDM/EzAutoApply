@@ -184,16 +184,81 @@ export function usageLines(readings = [], resets = 0, timeZone) {
 /** The hidden mark on the checkpoint's questions comment, so a resumed sprint finds it. */
 export const DECISIONS_MARK = '<!-- sprint-decisions -->';
 
+// ---------- open decisions (claude-workflow#7) ----------
+// The owner, 2026-11-23: every "Decisions waiting" post carries ALL the open
+// decisions, not only the newest; one asked once and left unanswered must not
+// get buried. A question stays open until someone with write access answers it
+// under any post that listed it, or the sprint settles it (`settle N`, or its
+// issue closed). Numbers are the question's own and stay the same in every post.
+
+/** Who may answer: the PR's comment author association. */
+export const ANSWERERS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+
+/** Gives every question a stable number (1, 2, 3… in the order asked), keeping ones it has. */
+export function numberQuestions(questions = []) {
+  let next = Math.max(0, ...questions.map(q => q.n || 0)) + 1;
+  for (const q of questions) if (!q.n) q.n = next++;
+  return questions;
+}
+
+const POST_ITEM = /^(\d{1,3})\. (?:\*\*#\d+:\*\* )?(.+)$/;
+/** A decisions post's questions: Map(number as printed in that post → question text). */
+export function postedQuestions(body) {
+  const map = new Map();
+  for (const line of String(body || '').split('\n')) {
+    const m = line.match(POST_ITEM);
+    if (m) map.set(Number(m[1]), m[2].trim());
+  }
+  return map;
+}
+
+/** The numbers a reply answers, among those its post listed ("1 B", "1.B", "2. A 3. C", "2 keep main"). */
+export function answeredNumbers(body, listed) {
+  const found = new Set();
+  for (const m of String(body || '').matchAll(/(?:^|[\s,;(])(\d{1,3})\s*[.):-]?\s*[A-Za-z]/gm)) if (listed.has(Number(m[1]))) found.add(Number(m[1]));
+  // A post with one question: any reply from someone who may answer is its answer.
+  if (!found.size && listed.size === 1 && String(body || '').trim()) found.add([...listed.keys()][0]);
+  return found;
+}
+
 /**
- * The one PR comment a checkpoint posts: every open question with its options,
- * the recommended one and any artifact link. null when nothing is open.
+ * The texts of the questions answered anywhere in the PR's comments: each reply
+ * from someone who may answer counts for the post above it (numbers as that post
+ * printed them, so posts from before stable numbers still count).
  */
-export function decisionsComment(questions, attribution = '') {
-  const open = (questions || []).filter(q => !q.posted);
+export function answeredTexts(comments = [], answerers = ANSWERERS) {
+  const done = new Set();
+  let listed = null;
+  for (const c of comments) {
+    const body = String(c.body || '');
+    if (body.includes(DECISIONS_MARK)) { listed = postedQuestions(body); continue; }
+    if (!listed || !answerers.has(c.association)) continue;
+    for (const n of answeredNumbers(body, listed)) done.add(listed.get(n));
+  }
+  return done;
+}
+
+/** The questions still open: not settled, and not answered in the thread. */
+export function openQuestions(questions = [], answered = new Set()) {
+  return questions.filter(q => !q.settled && !q.answered && !answered.has(String(q.text).trim()));
+}
+
+const shortDate = iso => new Date(iso).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+
+/**
+ * The one PR comment a checkpoint posts: EVERY open question (new ones and ones
+ * asked before and not yet answered) with its own number, its options, the
+ * recommended one and any artifact link. null when nothing is open.
+ */
+export function decisionsComment(questions, attribution = '', answered = new Set()) {
+  const open = openQuestions(numberQuestions(questions || []), answered);
   if (!open.length) return null;
-  const lines = [DECISIONS_MARK, '## Decisions waiting', 'Answer under this comment (a number and a letter is enough, e.g. "1 B"); the sprint reads the answers when it resumes.', ''];
-  open.forEach((q, i) => {
-    lines.push(`${i + 1}. ${q.issue ? `**#${q.issue}:** ` : ''}${q.text}`);
+  const again = open.filter(q => q.posted).length;
+  const lines = [DECISIONS_MARK, '## Decisions waiting',
+    `Every open decision is here${again ? `, including ${again} asked before and not answered yet` : ''}. Answer under this comment (a number and a letter is enough, e.g. "${open[0].n} B"); the sprint reads the answers when it resumes.`, ''];
+  open.forEach(q => {
+    lines.push(`${q.n}. ${q.issue ? `**#${q.issue}:** ` : ''}${q.text}`);
+    if (q.posted) lines.push(`   - _Asked before${q.firstPosted || q.at ? ` (first ${shortDate(q.firstPosted || q.at)})` : ''}, still open._`);
     (q.options || []).forEach((o, k) => {
       const letter = String.fromCharCode(65 + k);
       const recommended = q.recommend && (q.recommend === o || q.recommend.toUpperCase() === letter);
@@ -222,17 +287,56 @@ export function answersSince(comments, seen = null) {
 const clock = iso => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' });
 const span = ms => { const m = Math.max(0, Math.round(ms / 60000)); return m >= 60 ? `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min` : `${m} min`; };
 
+// Why a sprint stopped, for the PR's top line (claude-workflow#9; the owner, 2026-11-23: "the top of
+// a PR will always show status"). Set by checkpoint (inferred, or --reason) and end.
+export const STOP_REASONS = {
+  limit: '⏸ Usage limit reached, checkpointed',
+  'wind-down': '⏹ Wound down on request, checkpointed',
+  'nothing-left': '✅ Work done: nothing left this sprint can take, checkpointed',
+  ended: '⏹ Sprint ended',
+  checkpoint: '⏸ Checkpointed',
+};
+
+/** Why a checkpoint stopped: the person's --reason, else the budget, a wind-down, or nothing left. */
+export function stopReason({ given, verdict, windDown, nothingLeftAt }) {
+  if (given && STOP_REASONS[given]) return given;
+  if (verdict === 'WRAP' || verdict === 'STOP') return 'limit';
+  if (windDown) return 'wind-down';
+  if (nothingLeftAt) return 'nothing-left';
+  return 'checkpoint';
+}
+
 /**
- * The line at the top of a running sprint's PR: the issue being built and since
- * when, or "between issues". Null once the sprint has checkpointed (the PR is
- * then a paused or finished state, and its In progress section says the rest).
+ * The line at the top of the sprint's PR, always there: while it runs, the issue
+ * being built and since when (or that it waits on a permission answer on the PR,
+ * or is between issues); once stopped, why and when, and what is left to look at.
  */
 export function nowLine(s, running, now = Date.now()) {
-  if (!running || !s) return null;
-  const c = s.current;
-  if (c) return `**Now working on:** #${c.n}${c.title ? ` ${c.title}` : ''}${c.repo ? ` (in ${c.repo})` : ''} · since ${clock(c.at)} (${span(now - Date.parse(c.at))} at the last update)`;
-  const last = s.done?.at(-1)?.at;
-  return `**Now:** between issues${last ? ` (last one finished ${clock(last)})` : ''}`;
+  if (!s) return null;
+  if (running) {
+    const c = s.current;
+    if (c?.waitingOn) return `**Now:** ⏳ waiting on a permission answer on this PR (${c.waitingOn.id}, asked ${clock(c.waitingOn.at)}) for #${c.n}${c.title ? ` ${c.title}` : ''}. Reply \`allow\` or \`deny\` under it.`;
+    if (c) return `**Now working on:** #${c.n}${c.title ? ` ${c.title}` : ''}${c.repo ? ` (in ${c.repo})` : ''} · since ${clock(c.at)} (${span(now - Date.parse(c.at))} at the last update)`;
+    const last = s.done?.at(-1)?.at;
+    return `**Now:** between issues${last ? ` (last one finished ${clock(last)})` : ''}`;
+  }
+  const reason = s.ended ? 'ended' : s.status?.reason || 'checkpoint';
+  const at = s.status?.at;
+  // Which limit stopped it and when that one resets: the higher figure of the last reading.
+  let resets = '';
+  const r = s.readings?.at(-1);
+  if (reason === 'limit' && r) {
+    const weekly = (r.weekly ?? -1) > (r.session ?? -1);
+    const when = resetLabel(weekly ? r.weeklyResets : r.sessionResets, new Date(now));
+    if (when) resets = `${weekly ? 'weekly limit' : '5-hour limit'} resets ${when}`;
+  }
+  // When the paused sprint's next loop is sent (checkpoint --wake-in / --next-wake).
+  const next = s.ended ? '' : s.nextWake ? `next loop about ${resetLabel(s.nextWake, new Date(now))}` : 'no next loop scheduled';
+  const done = (s.done || []).filter(d => !d.repo).length;
+  const waiting = (s.handedOff || []).length;
+  const decisions = (s.questions || []).filter(q => !q.settled && !q.answered).length;
+  const tail = [resets, next, `${done} done`, waiting ? `${waiting} waiting on a person` : '', decisions ? `${decisions} decision${decisions === 1 ? '' : 's'} open (see the latest "Decisions waiting" comment)` : ''].filter(Boolean).join(' · ');
+  return `**Status:** ${STOP_REASONS[reason]}${at ? ` ${clock(at)}` : ''} · ${tail}`;
 }
 
 // ---------- when a paused sprint wakes (claude-workflow#4) ----------
@@ -376,21 +480,23 @@ export function stallSummary(stalls, sessionMinutes = null) {
 // Never an issue someone else has In Progress: they are on it now.
 export const HANDED_OFF = 'status:claude-part-done';
 
-// An issue whose work edits `.claude/` or CLAUDE.md: Claude Code asks before each
-// write there, even in auto mode, so an unattended sprint sits on the question
-// until someone comes back (the owner, 2026-11-23: a sprint stalled on one).
-// The picker leaves it out of every sprint not started with --watched, and the
-// PR lists it as left on purpose, ready for a session someone watches.
+// An issue skipped because a permission question went unanswered (claude-workflow#8).
+// The owner, 2026-11-23: a sprint stalled for hours on a "may Claude edit .claude/…?"
+// prompt. The permission hook (.claude/hooks/permission.mjs) now asks it on the PR
+// and waits; with no answer the sprint skips the issue (`skip N --watched`), which
+// labels it and lists it on the PR as skipped on purpose. The label does not keep
+// later sprints off it: each asks again, and a late "allow P<n>" puts it back.
 export const WATCHED = 'needs:watched-session';
-export const WATCHED_LABEL = ['5319e7', 'Edits .claude/ or CLAUDE.md: Claude Code asks before writing, so only with someone watching'];
+export const WATCHED_LABEL = ['5319e7', 'A sprint asked permission for it on the PR and got no answer; skipped on purpose'];
 
-/** The PR section for issues left on purpose for a watched session; [] when there are none. */
+/** The PR section for issues skipped on purpose for want of a permission answer; [] when there are none. */
 export function watchedLines(list = []) {
   if (!list.length) return [];
   return ['', '## Left for a watched session (on purpose)',
-    `These change \`.claude/\` or \`CLAUDE.md\`, where Claude Code asks before every write, so an unattended sprint would wait on the question until someone answered it. They were skipped deliberately (label \`${WATCHED}\`), not because anything is wrong with them: do them while someone is at the computer (ask Claude for the issue, or \`sprint.mjs start --watched --issues N\`).`,
+    `These needed permission for something Claude Code always asks about (a change to \`.claude/\` or \`CLAUDE.md\`, for example). The sprint asked on this PR and nobody answered in time, or the answer was no, so it skipped them deliberately (label \`${WATCHED}\`) instead of waiting. Nothing is wrong with them: reply \`allow P<n>\` under the question and the sprint's next pass puts the issue back, or do it while someone is at the computer.`,
     ...list.map(w => `- #${w.n}${w.title ? ` ${w.title}` : ''}${w.why ? `: ${w.why}` : ''}`)];
 }
+
 export const TIERS = [
   'yours',
   'unassigned',
@@ -403,12 +509,10 @@ export const TIERS = [
  * { tier } when this sprint may take the issue (lower tiers first), or
  * { tier: null, why }. issue: { labels: [names], assignees: [logins] };
  * status: its board column. greedy: a keep-going sprint not started --no-greedy.
- * watched: a sprint started --watched (someone is at the computer) may take WATCHED issues.
  */
-export function takeable({ labels = [], assignees = [] }, status, { me, also = [], mine = false, keepGoing = false, greedy = false, watched = false } = {}) {
+export function takeable({ labels = [], assignees = [] }, status, { me, also = [], mine = false, keepGoing = false, greedy = false } = {}) {
   const has = l => labels.includes(l);
   if (has('type:epic') || has('inbox')) return { tier: null, why: 'a parent or the Inbox' };
-  if (has(WATCHED) && !watched) return { tier: null, why: 'left for a watched session', watched: true };
   const waiting = labels.find(l => l.startsWith('status:'));
   if (waiting) return { tier: null, why: `waiting on a person (${waiting})` };
   if (status === 'In Review') return { tier: null, why: 'in review' };
