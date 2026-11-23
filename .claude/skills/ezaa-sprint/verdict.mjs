@@ -322,21 +322,22 @@ export function nowLine(s, running, now = Date.now()) {
   }
   const reason = s.ended ? 'ended' : s.status?.reason || 'checkpoint';
   const at = s.status?.at;
-  // Which limit stopped it and when that one resets: the higher figure of the last reading.
+  // Both times (the owner, 2026-11-23): the next wake-up (every 55 minutes, to keep the
+  // prompt cache warm, or 30 with nothing left; set by checkpoint --wake-in and by
+  // `sprint.mjs wake`), and, stopped by a limit, the check-up at its reset, when work resumes.
+  const next = s.ended ? '' : s.nextWake ? `next wake-up ${resetLabel(s.nextWake, new Date(now))}` : 'no wake-up scheduled';
   let resets = '';
   const r = s.readings?.at(-1);
   if (reason === 'limit' && r) {
     const weekly = (r.weekly ?? -1) > (r.session ?? -1);
-    const when = resetLabel(weekly ? r.weeklyResets : r.sessionResets, new Date(now));
-    if (when) resets = `${weekly ? 'weekly limit' : '5-hour limit'} resets ${when}`;
+    const iso = weekly ? r.weeklyResets : r.sessionResets;
+    const when = resetLabel(iso, new Date(now));
+    if (when) resets = `${weekly ? 'weekly limit' : '5-hour limit'} resets ${when}: the check-up then resumes work`;
   }
-  // When the paused sprint next checks in (the 55-minute wakes that keep the cache warm,
-  // or 30 with nothing left): set by checkpoint --wake-in and by `sprint.mjs wake` on each wake.
-  const next = s.ended ? '' : s.nextWake ? `next check-up ${resetLabel(s.nextWake, new Date(now))}` : 'no check-up scheduled';
   const done = (s.done || []).filter(d => !d.repo).length;
   const waiting = (s.handedOff || []).length;
   const decisions = (s.questions || []).filter(q => !q.settled && !q.answered).length;
-  const tail = [resets, next, `${done} done`, waiting ? `${waiting} waiting on a person` : '', decisions ? `${decisions} decision${decisions === 1 ? '' : 's'} open (see the latest "Decisions waiting" comment)` : ''].filter(Boolean).join(' · ');
+  const tail = [next, resets, `${done} done`, waiting ? `${waiting} waiting on a person` : '', decisions ? `${decisions} decision${decisions === 1 ? '' : 's'} open (see the latest "Decisions waiting" comment)` : ''].filter(Boolean).join(' · ');
   return `**Status:** ${STOP_REASONS[reason]}${at ? ` ${clock(at)}` : ''} · ${tail}`;
 }
 

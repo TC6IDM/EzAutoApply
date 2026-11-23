@@ -85,6 +85,15 @@ test('other commands are left to the normal permission rules', () => {
   for (const cmd of ['git status', 'git log --oneline', 'npm test', '', '   ']) assert.equal(d(cmd), null, JSON.stringify(cmd));
 });
 
+test('claude-workflow sync-all asks once for the whole run; its --dry plan is left alone', () => {
+  const r = decide('node ../../claude-workflow/sync-all.mjs --message-file m.txt --bump patch', { now: NOW, branch: 'feature' });
+  assert.equal(r?.decision, 'ask');
+  assert.match(r.reason, /one yes covers it all/);
+  assert.equal(d('node ../claude-workflow/sync-all.mjs --dry'), null);
+  // asked even during a sprint, whatever branch the session is on
+  assert.equal(d('node C:/x/claude-workflow/sync-all.mjs', { state: sprint(), branch: sprint().branch }), 'ask');
+});
+
 // #57: one sprint works EzAutoApply and the linked ai-job-search worktree.
 const HOME = 'C:/Users/me/Desktop/EzAutoApply';
 const WT = 'C:/Users/me/Desktop/ai-job-search-sprint';

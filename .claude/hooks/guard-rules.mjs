@@ -100,6 +100,11 @@ export function decide(cmd, { branch = '', state = null, now = Date.now(), place
   if (isForcePush(cmd)) return { decision: 'deny', reason: `Force-push is blocked in ${name}. Ask the owner, and do it by hand if they agree.` };
   // The repo's own hard denials (config.mjs GUARD_DENY: [{ re: 'regex source', reason }]), e.g. a build that takes 40 minutes.
   for (const d of deny) if (new RegExp(d.re).test(cmd)) return { decision: 'deny', reason: d.reason };
+  // claude-workflow's sync-all.mjs commits and pushes the library, then a branch, commit, push and PR per repo:
+  // one question covers all of it (the owner, 2026-11-23: "we only need to ask permission once"). --dry changes nothing.
+  if (/\bsync-all\.mjs\b/.test(cmd) && !/(^|\s)--dry\b/.test(cmd)) {
+    return { decision: 'ask', reason: 'claude-workflow sync-all: one yes covers it all (the library\'s commit and push to its main, then a branch, commit, push and PR per repo; never a repo\'s main, never a merge).' };
+  }
   const where = places?.length ? places : [{ toplevel: home, branch }];
   if (isPush(cmd) && !hasRefspec(cmd) && where.some(p => p.branch === 'main')) {
     return { decision: 'deny', reason: 'Bare `git push` from main is blocked. Name the branch (`git push origin main:main`), after asking.' };

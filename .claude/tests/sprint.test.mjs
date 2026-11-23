@@ -260,7 +260,7 @@ test('the PR names the issue being built while the sprint runs, and drops the li
   assert.match(line, /\(42 min at the last update\)$/);
   assert.match(nowLine({ current: null, done: [{ n: 1, at }] }, true), /^\*\*Now:\*\* between issues \(last one finished /);
   assert.equal(nowLine({ current: null, done: [] }, true), '**Now:** between issues');
-  assert.match(nowLine(s, false), /^\*\*Status:\*\* ⏸ Checkpointed · no check-up scheduled · 0 done$/, 'a checkpointed PR says so');
+  assert.match(nowLine(s, false), /^\*\*Status:\*\* ⏸ Checkpointed · no wake-up scheduled · 0 done$/, 'a checkpointed PR says so');
   assert.match(nowLine({ current: { n: 5, at: new Date(Date.now() - 125 * 60000).toISOString() } }, true), /2 h 05 min/);
 });
 
@@ -272,18 +272,18 @@ test('the top of the PR always shows a status: working, waiting on an answer, or
     /^\*\*Now:\*\* ⏳ waiting on a permission answer on this PR \(P2, asked .+\) for #817 Prompt audit\. Reply `allow` or `deny` under it\.$/);
   const base = { done: [{ n: 1 }, { n: 2 }, { n: 9, repo: 'other' }], handedOff: [{ n: 3 }], questions: [{ text: 'a' }, { text: 'b', answered: true }, { text: 'c', settled: {} }] };
   assert.match(nowLine({ ...base, status: { reason: 'limit', at } }, false),
-    /^\*\*Status:\*\* ⏸ Usage limit reached, checkpointed .+ · no check-up scheduled · 2 done · 1 waiting on a person · 1 decision open/);
-  // Which limit, and when it resets; when the next check-up is (each 55-minute wake moves it).
-  const soon = new Date(Date.now() + 90 * 60000).toISOString(), later = new Date(Date.now() + 4 * 86400e3).toISOString();
+    /^\*\*Status:\*\* ⏸ Usage limit reached, checkpointed .+ · no wake-up scheduled · 2 done · 1 waiting on a person · 1 decision open/);
+  // Both times: the next wake-up (each 55-minute wake moves it), and the check-up at the limit's reset.
+  const soon = new Date(Date.now() + 55 * 60000).toISOString(), reset = new Date(Date.now() + 200 * 60000).toISOString(), later = new Date(Date.now() + 4 * 86400e3).toISOString();
   const limited = { ...base, status: { reason: 'limit', at }, nextWake: soon };
-  assert.match(nowLine({ ...limited, readings: [{ session: 97, sessionResets: soon, weekly: 40, weeklyResets: later }] }, false),
-    /checkpointed .+ · 5-hour limit resets .*\d{1,2}:\d\d [AP]M · next check-up .*\d{1,2}:\d\d [AP]M · 2 done/);
-  assert.match(nowLine({ ...limited, readings: [{ session: 20, sessionResets: soon, weekly: 99, weeklyResets: later }] }, false),
-    / · weekly limit resets [A-Z][a-z]{2} \d{1,2}:\d\d [AP]M · next check-up /, 'the weekly limit, on another day');
+  assert.match(nowLine({ ...limited, readings: [{ session: 97, sessionResets: reset, weekly: 40, weeklyResets: later }] }, false),
+    /checkpointed .+ · next wake-up .*\d{1,2}:\d\d [AP]M · 5-hour limit resets .*\d{1,2}:\d\d [AP]M: the check-up then resumes work · 2 done/);
+  assert.match(nowLine({ ...limited, readings: [{ session: 20, sessionResets: reset, weekly: 99, weeklyResets: later }] }, false),
+    / · next wake-up .+ · weekly limit resets [A-Z][a-z]{2} \d{1,2}:\d\d [AP]M: the check-up then resumes work · /, 'the weekly limit, on another day');
   assert.doesNotMatch(nowLine({ ...base, status: { reason: 'nothing-left', at }, readings: [{ session: 97, sessionResets: soon }] }, false), /resets/, 'not stopped by a limit: no reset named');
   assert.match(nowLine({ ...base, status: { reason: 'nothing-left', at } }, false), /✅ Work done: nothing left this sprint can take/);
   assert.match(nowLine({ ...base, status: { reason: 'wind-down', at } }, false), /⏹ Wound down on request/);
-  assert.match(nowLine({ ...base, ended: true, nextWake: at, status: { reason: 'ended', at } }, false), /^\*\*Status:\*\* ⏹ Sprint ended [^·]+ · 2 done/, 'ended: no check-up named');
+  assert.match(nowLine({ ...base, ended: true, nextWake: at, status: { reason: 'ended', at } }, false), /^\*\*Status:\*\* ⏹ Sprint ended [^·]+ · 2 done/, 'ended: no wake-up named');
   assert.equal(stopReason({ verdict: 'STOP' }), 'limit');
   assert.equal(stopReason({ verdict: 'WRAP', windDown: true }), 'limit', 'the limit is the reason when both');
   assert.equal(stopReason({ verdict: 'GO', windDown: { at } }), 'wind-down');

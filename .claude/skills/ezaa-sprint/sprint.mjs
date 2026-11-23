@@ -34,7 +34,7 @@
 //                         (the merge closes it, maintainer 2026-11-12) and adds that it is not yet seen.
 //   ... refresh           Rewrite the running PR's body only (the permission hook uses it to say it waits).
 //   ... wake <seconds>    Run before every ScheduleWakeup of a paused sprint: records the next
-//                         check-up and rewrites the PR's top line to name it (each 55-minute wake moves it).
+//                         wake-up and rewrites the PR's top line to name it (each 55-minute wake moves it).
 //   ... checkpoint [--title "…"] [--intro-file f.md] [--wake-in <seconds> | --next-wake <time>] [--reason limit|wind-down|nothing-left|checkpoint]  Rewrite the PR (title,
 //                         Claude's description above the generated part, usage) and take the running label off: CI runs once.
 //                         --wake-in / --next-wake: when the paused sprint wakes next, which the PR's last line names.
@@ -694,7 +694,7 @@ if (action === 'budget') {
   if (j.verdict !== 'GO' && j.verdict !== 'SMALL' && j.resumeInSeconds !== null) {
     console.log(`the ${j.binding} limit resets in ${Math.round(j.resumeInSeconds / 60)} min (resumeInSeconds=${j.resumeInSeconds})`);
     const delay = Math.max(60, Math.min(3300, j.resumeInSeconds));
-    if (s?.keepGoing) console.log(`WAKE: run \`sprint.mjs wake ${delay}\`, then ScheduleWakeup delaySeconds=${delay} (the PR then names the check-up)`);
+    if (s?.keepGoing) console.log(`WAKE: run \`sprint.mjs wake ${delay}\`, then ScheduleWakeup delaySeconds=${delay} (the PR then names the next wake-up)`);
   }
   // A keep-going wake that only reads the budget still sees the Inbox (PTrainr, 2026-11-16).
   console.log(inboxLine('Do the Inbox pass before taking an issue (unless STOP).'));
@@ -1294,8 +1294,8 @@ if (action === 'refresh') {
   process.exit(0);
 }
 
-// `wake <seconds>`: the paused sprint's next check-up (the owner, 2026-11-23: the PR says
-// when the next check-up is, like the 55-minute wakes that keep the cache warm). Run before
+// `wake <seconds>`: the paused sprint's next wake-up (the owner, 2026-11-23: the PR says
+// when the next wake-up is, like the 55-minute wakes that keep the cache warm). Run before
 // every ScheduleWakeup; a paused PR's top line is rewritten to name it.
 if (action === 'wake') {
   if (!s) { console.log('no sprint running'); process.exit(1); }
@@ -1307,9 +1307,9 @@ if (action === 'wake') {
   if (at) {
     const file = join(DIR, 'pr.md');
     writeFileSync(file, prBody(s, at, false));
-    try { sh('gh', ['pr', 'edit', String(at), '--repo', REPO, '--body-file', file], true); console.log(`next check-up ${new Date(s.nextWake).toLocaleTimeString()}; PR #${at}'s top line says so`); }
-    catch { console.log(`next check-up ${new Date(s.nextWake).toLocaleTimeString()} (PR #${at} could not be updated)`); }
-  } else console.log(`next check-up ${new Date(s.nextWake).toLocaleTimeString()}`);
+    try { sh('gh', ['pr', 'edit', String(at), '--repo', REPO, '--body-file', file], true); console.log(`next wake-up ${new Date(s.nextWake).toLocaleTimeString()}; PR #${at}'s top line says so`); }
+    catch { console.log(`next wake-up ${new Date(s.nextWake).toLocaleTimeString()} (PR #${at} could not be updated)`); }
+  } else console.log(`next wake-up ${new Date(s.nextWake).toLocaleTimeString()}`);
   process.exit(0);
 }
 
