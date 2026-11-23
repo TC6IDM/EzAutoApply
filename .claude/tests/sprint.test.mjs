@@ -177,7 +177,8 @@ test('usage: the start, every checkpoint, then the latest reading unless it is t
 
 test('the decisions comment: options lettered, the recommended one marked, the link, nothing when none are open', () => {
   assert.equal(decisionsComment([]), null);
-  assert.equal(decisionsComment([{ text: 'old', posted: true }]), null);
+  assert.equal(decisionsComment([{ text: 'old', posted: true, answered: true }]), null, 'answered: not asked again');
+  assert.equal(decisionsComment([{ text: 'old', posted: true, settled: { why: 'x' } }]), null, 'settled: not asked again');
   const c = decisionsComment([
     { issue: 12, text: 'Which header?', options: ['Compact', 'Large'], recommend: 'A', link: 'https://example.com/mock' },
     { text: 'Merge conflict in x', recommend: 'keep main' },
@@ -189,6 +190,50 @@ test('the decisions comment: options lettered, the recommended one marked, the l
   assert.match(c, /Mock-ups: https:\/\/example\.com\/mock/);
   assert.match(c, /2\. Merge conflict in x\n   - Recommended: keep main/);
   assert.ok(c.endsWith('attrib'));
+});
+
+import { answeredTexts, answeredNumbers, postedQuestions, openQuestions, numberQuestions } from '../skills/ezaa-sprint/verdict.mjs';
+
+test('every decisions post carries all open questions; an unanswered one is asked again under its own number (claude-workflow#7)', () => {
+  const qs = [
+    { at: '2026-11-22T20:00:00Z', issue: 793, text: 'Sheets: full height, floating, or our own?', options: ['Full', 'Floating', 'Own'] },
+    { at: '2026-11-22T20:05:00Z', issue: 162, text: 'Storage: pass sealed files on, or not?', options: ['Sealed', 'Plain'] },
+  ];
+  const first = decisionsComment(qs, '');
+  assert.match(first, /^1\. \*\*#793:\*\* Sheets/m);
+  assert.match(first, /^2\. \*\*#162:\*\* Storage/m);
+  for (const q of qs) { q.posted = true; q.firstPosted = '2026-11-22T21:00:00Z'; }
+  qs.push({ at: '2026-11-23T03:00:00Z', issue: 811, text: 'Keep the greeting?', options: ['Keep', 'Day'] });
+  // Only #811's question is answered: the owner replied "3 A" under the second post.
+  const thread = [
+    { association: 'COLLABORATOR', body: first },
+    { association: 'NONE', body: '1 A' }, // a stranger: does not count
+    { association: 'COLLABORATOR', body: decisionsComment(qs, '') },
+    { association: 'OWNER', body: '3. A' },
+  ];
+  const answered = answeredTexts(thread);
+  assert.deepEqual([...answered], ['Keep the greeting?']);
+  const third = decisionsComment(qs, '', answered);
+  assert.match(third, /including 2 asked before and not answered yet/);
+  assert.match(third, /^1\. \*\*#793:\*\* Sheets/m, 'the buried one is asked again, same number');
+  assert.match(third, /^2\. \*\*#162:\*\* Storage/m);
+  assert.match(third, /_Asked before \(first .+\), still open\._/);
+  assert.doesNotMatch(third, /greeting/, 'the answered one is gone');
+  assert.deepEqual(openQuestions(qs, answered).map(q => q.n), [1, 2]);
+});
+
+test('answers count against the post above them, in that post\'s own numbering', () => {
+  // An old-style post numbered per post: "1." there was #802, whatever its stable number.
+  const old = `${DECISIONS_MARK}\n## Decisions waiting\nx\n\n1. **#802:** Lock screen shows?\n   - A. Timer\n   - B. Set\n2. Merge conflict in x\n   - Recommended: keep main`;
+  assert.deepEqual([...postedQuestions(old)], [[1, 'Lock screen shows?'], [2, 'Merge conflict in x']]);
+  const listed = postedQuestions(old);
+  assert.deepEqual([...answeredNumbers('1.B', listed)], [1]);
+  assert.deepEqual([...answeredNumbers('1. A\n2. B', listed)], [1, 2]);
+  assert.deepEqual([...answeredNumbers('2 keep main', listed)], [2]);
+  assert.deepEqual([...answeredNumbers('see PR 784 A and #1 B', listed)], [], 'other numbers and #issue refs are not answers');
+  assert.deepEqual([...answeredNumbers('looks good to me', listed)], [], 'two questions: a reply without a number answers neither');
+  assert.deepEqual([...answeredNumbers('yes, do it', postedQuestions(`${DECISIONS_MARK}\n1. Only one?`))], [1], 'one question: any reply answers it');
+  assert.deepEqual(numberQuestions([{ n: 4 }, {}, {}]).map(q => q.n), [4, 5, 6], 'new questions number on from the highest');
 });
 
 test('answers are the comments after the last decisions post, minus the ones seen', () => {
@@ -215,8 +260,37 @@ test('the PR names the issue being built while the sprint runs, and drops the li
   assert.match(line, /\(42 min at the last update\)$/);
   assert.match(nowLine({ current: null, done: [{ n: 1, at }] }, true), /^\*\*Now:\*\* between issues \(last one finished /);
   assert.equal(nowLine({ current: null, done: [] }, true), '**Now:** between issues');
-  assert.equal(nowLine(s, false), null, 'a checkpointed PR has no Now line');
+  assert.match(nowLine(s, false), /^\*\*Status:\*\* ⏸ Checkpointed · no wake-up scheduled · 0 done$/, 'a checkpointed PR says so');
   assert.match(nowLine({ current: { n: 5, at: new Date(Date.now() - 125 * 60000).toISOString() } }, true), /2 h 05 min/);
+});
+
+import { stopReason } from '../skills/ezaa-sprint/verdict.mjs';
+
+test('the top of the PR always shows a status: working, waiting on an answer, or why it stopped', () => {
+  const at = new Date(Date.now() - 5 * 60000).toISOString();
+  assert.match(nowLine({ current: { n: 817, title: 'Prompt audit', at, waitingOn: { id: 'P2', at } } }, true),
+    /^\*\*Now:\*\* ⏳ waiting on a permission answer on this PR \(P2, asked .+\) for #817 Prompt audit\. Reply `allow` or `deny` under it\.$/);
+  const base = { done: [{ n: 1 }, { n: 2 }, { n: 9, repo: 'other' }], handedOff: [{ n: 3 }], questions: [{ text: 'a' }, { text: 'b', answered: true }, { text: 'c', settled: {} }] };
+  assert.match(nowLine({ ...base, status: { reason: 'limit', at } }, false),
+    /^\*\*Status:\*\* ⏸ Usage limit reached, checkpointed .+ · no wake-up scheduled · 2 done · 1 waiting on a person · 1 decision open/);
+  // Both times: the next wake-up (each 55-minute wake moves it), and the check-up at the limit's reset.
+  const soon = new Date(Date.now() + 55 * 60000).toISOString(), reset = new Date(Date.now() + 200 * 60000).toISOString(), later = new Date(Date.now() + 4 * 86400e3).toISOString();
+  const limited = { ...base, status: { reason: 'limit', at }, nextWake: soon };
+  assert.match(nowLine({ ...limited, readings: [{ session: 97, sessionResets: reset, weekly: 40, weeklyResets: later }] }, false),
+    /checkpointed .+ · next wake-up .*\d{1,2}:\d\d [AP]M · 5-hour limit resets .*\d{1,2}:\d\d [AP]M: the check-up then resumes work · 2 done/);
+  assert.match(nowLine({ ...limited, readings: [{ session: 20, sessionResets: reset, weekly: 99, weeklyResets: later }] }, false),
+    / · next wake-up .+ · weekly limit resets [A-Z][a-z]{2} \d{1,2}:\d\d [AP]M: the check-up then resumes work · /, 'the weekly limit, on another day');
+  assert.doesNotMatch(nowLine({ ...base, status: { reason: 'nothing-left', at }, readings: [{ session: 97, sessionResets: soon }] }, false), /resets/, 'not stopped by a limit: no reset named');
+  assert.match(nowLine({ ...base, status: { reason: 'nothing-left', at } }, false), /✅ Work done: nothing left this sprint can take/);
+  assert.match(nowLine({ ...base, status: { reason: 'wind-down', at } }, false), /⏹ Wound down on request/);
+  assert.match(nowLine({ ...base, ended: true, nextWake: at, status: { reason: 'ended', at } }, false), /^\*\*Status:\*\* ⏹ Sprint ended [^·]+ · 2 done/, 'ended: no wake-up named');
+  assert.equal(stopReason({ verdict: 'STOP' }), 'limit');
+  assert.equal(stopReason({ verdict: 'WRAP', windDown: true }), 'limit', 'the limit is the reason when both');
+  assert.equal(stopReason({ verdict: 'GO', windDown: { at } }), 'wind-down');
+  assert.equal(stopReason({ verdict: 'GO', nothingLeftAt: at }), 'nothing-left');
+  assert.equal(stopReason({ verdict: 'GO' }), 'checkpoint');
+  assert.equal(stopReason({ given: 'nothing-left', verdict: 'STOP' }), 'nothing-left', 'the person\'s --reason wins');
+  assert.equal(stopReason({ given: 'made-up', verdict: 'GO' }), 'checkpoint');
 });
 
 test('a finish run again replaces its own line and keeps what the first run knew', () => {
@@ -308,19 +382,16 @@ test('without keep going (or with --no-greedy) a sprint stays with yours and una
 
 import { WATCHED, watchedLines } from '../skills/ezaa-sprint/verdict.mjs';
 
-test('an issue that edits .claude/ or CLAUDE.md waits for a watched session, and the PR says so on purpose', () => {
-  for (const o of [{ me: 'bora' }, greedy]) {
-    const t = takeable(issue(['who:claude', WATCHED]), null, o);
-    assert.equal(t.tier, null, 'an unattended sprint never takes it');
-    assert.equal(t.watched, true);
-    assert.equal(t.why, 'left for a watched session');
-  }
-  assert.equal(tierOf(issue(['who:claude', WATCHED]), null, { me: 'bora', watched: true }), 1, 'a --watched sprint takes it like any other');
-  assert.equal(takeable(issue(['type:epic', WATCHED]), null, { me: 'bora' }).watched, undefined, 'a parent stays a parent');
+test('an issue skipped for want of a permission answer is still offered to later sprints, and the PR says it was on purpose (claude-workflow#8)', () => {
+  // The permission hook asks on the PR now, so the label no longer keeps sprints off an issue.
+  assert.equal(tierOf(issue(['who:claude', WATCHED]), null, { me: 'bora' }), 1);
+  assert.equal(tierOf(issue(['who:claude', WATCHED])), 1, 'keep going too');
+  assert.equal(takeable(issue(['type:epic', WATCHED]), null, { me: 'bora' }).tier, null, 'a parent stays a parent');
   assert.deepEqual(watchedLines([]), [], 'no section without one');
   const lines = watchedLines([{ n: 817, title: 'Prompt audit', why: 'edits the agents and skills' }]);
   assert.equal(lines[1], '## Left for a watched session (on purpose)');
-  assert.match(lines[2], /skipped deliberately/);
+  assert.match(lines[2], /skipped them deliberately/);
+  assert.match(lines[2], /allow P<n>/);
   assert.match(lines[2], /needs:watched-session/);
   assert.equal(lines[3], '- #817 Prompt audit: edits the agents and skills');
   assert.equal(watchedLines([{ n: 5 }])[3], '- #5');
