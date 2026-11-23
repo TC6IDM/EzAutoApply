@@ -1,6 +1,6 @@
 {
-  "version": "0.10.0",
-  "commit": "412eb79",
+  "version": "0.10.1",
+  "commit": "85adca0",
   "prefix": "ezaa",
   "design": false,
   "syncedAt": "2026-11-23",
@@ -28,8 +28,8 @@
     ".claude/tests/sprint.test.mjs": "f95451d9084cc8f5",
     ".claude/skills/ezaa-sprint/repo.mjs": "47ac34a692ca3420",
     ".claude/hooks/repo.mjs": "5c47592db3c79247",
-    ".claude/skills/ezaa-issues/SKILL.md": "dfc744623692fc8b",
-    ".claude/skills/ezaa-sprint/SKILL.md": "93107b7cadd7417f",
-    ".claude/skills/ezaa-workflow-sync/SKILL.md": "2094fc0a3b1d3c83"
+    ".claude/skills/ezaa-issues/SKILL.md": "689dad0ed7634e97",
+    ".claude/skills/ezaa-sprint/SKILL.md": "1b19dd22e4b3820b",
+    ".claude/skills/ezaa-workflow-sync/SKILL.md": "a237026679ac5927"
   }
 }
