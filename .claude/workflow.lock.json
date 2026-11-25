@@ -1,9 +1,9 @@
 {
-  "version": "0.10.1",
-  "commit": "85adca0",
+  "version": "0.11.0",
+  "commit": "6f324a8",
   "prefix": "ezaa",
   "design": false,
-  "syncedAt": "2026-11-23",
+  "syncedAt": "2026-11-25",
   "files": {
     ".claude/skills/ezaa-issues/board-plan.mjs": "6bda36b647ed40f3",
     ".claude/skills/ezaa-issues/bootstrap.mjs": "f50b403e6934fcb5",
@@ -14,8 +14,8 @@
     ".claude/skills/ezaa-issues/sync-board.mjs": "6b792d88134972f3",
     ".claude/skills/ezaa-issues/watch-video.mjs": "64e01f6bf06a347d",
     ".claude/skills/ezaa-issues/work.mjs": "7d3a3a117cb7aba7",
-    ".claude/skills/ezaa-sprint/sprint.mjs": "5b4b1985e83647db",
-    ".claude/skills/ezaa-sprint/verdict.mjs": "4819cd541f7ebf77",
+    ".claude/skills/ezaa-sprint/sprint.mjs": "a2a818e615758de8",
+    ".claude/skills/ezaa-sprint/verdict.mjs": "41a6f085cf051e71",
     ".claude/hooks/guard-rules.mjs": "0193b424a2bfb561",
     ".claude/hooks/guard.mjs": "2f9da3f1c93df585",
     ".claude/hooks/permission-rules.mjs": "8b6275fa2bbb4506",
@@ -25,11 +25,11 @@
     ".claude/tests/guard.test.mjs": "228bf76cb9cdf406",
     ".claude/tests/inbox.test.mjs": "93913e79bd95941f",
     ".claude/tests/permission.test.mjs": "dbd0ddfdd1985532",
-    ".claude/tests/sprint.test.mjs": "f95451d9084cc8f5",
+    ".claude/tests/sprint.test.mjs": "6032e7664307bccc",
     ".claude/skills/ezaa-sprint/repo.mjs": "47ac34a692ca3420",
     ".claude/hooks/repo.mjs": "5c47592db3c79247",
-    ".claude/skills/ezaa-issues/SKILL.md": "689dad0ed7634e97",
-    ".claude/skills/ezaa-sprint/SKILL.md": "1b19dd22e4b3820b",
+    ".claude/skills/ezaa-issues/SKILL.md": "0d4e1e5d800465b8",
+    ".claude/skills/ezaa-sprint/SKILL.md": "d7c2a2a13ff716ae",
     ".claude/skills/ezaa-workflow-sync/SKILL.md": "a237026679ac5927"
   }
 }

@@ -79,7 +79,7 @@ import https from 'node:https';
 import { readAnswer } from '../../hooks/permission-rules.mjs';
 
 import { REPO, REPO_NAME, OWNER, PROJECT, MILESTONE_ORDER as MILESTONES, LINKED_REPOS, linkedRepoOf, NAME, PREFIX, NEEDS_LIVE_TEXT } from './repo.mjs';
-import { STALE_HOURS, KEEP_GOING_STALE_HOURS, DEFAULT_SMALL_AT, DEFAULT_NEW_AT, DEFAULT_STOP_AT, FABLE_LINES, LARGE_SESSION_AT, LARGE_WEEKLY_UNDER, DEFAULT_ISSUE_COST, defaultLines, until, judge, isLarge, largeAllowed, averageCost, finishRefusal, takenAway, USAGE_FIELD, MEASURED_AFTER, issueUsage, usageNote, sizeAverages, expectedCost, misSized, readingLine, usageLines, decisionsComment, answersSince, answeredTexts, openQuestions, numberQuestions, nowLine, stopReason, wakeAt, pauseLine, withDone, findStalls, stallSummary, takeable, nothingLeft, TIERS, HANDED_OFF, WATCHED, WATCHED_LABEL, watchedLines } from './verdict.mjs';
+import { STALE_HOURS, KEEP_GOING_STALE_HOURS, DEFAULT_SMALL_AT, DEFAULT_NEW_AT, DEFAULT_STOP_AT, DEFAULT_WEEKLY_NEW_AT, DEFAULT_WEEKLY_STOP_AT, FABLE_LINES, LARGE_SESSION_AT, LARGE_WEEKLY_UNDER, DEFAULT_ISSUE_COST, defaultLines, until, judge, isLarge, largeAllowed, averageCost, finishRefusal, takenAway, USAGE_FIELD, MEASURED_AFTER, issueUsage, usageNote, sizeAverages, expectedCost, misSized, readingLine, usageLines, decisionsComment, answersSince, answeredTexts, openQuestions, numberQuestions, nowLine, stopReason, wakeAt, pauseLine, withDone, findStalls, stallSummary, takeable, nothingLeft, TIERS, HANDED_OFF, WATCHED, WATCHED_LABEL, watchedLines } from './verdict.mjs';
 const DIR = join(tmpdir(), `${PREFIX}-sprint`);
 const STATE = join(DIR, 'state.json');
 const CACHE = join(DIR, 'usage.json');
@@ -832,7 +832,7 @@ if (action === 'sizes') {
 
 if (action === 'lines') {
   const d = defaultLines(opt('model') ? { id: opt('model'), name: null } : sessionModel());
-  console.log(`small issues only from ${d.smallAt}%, no new issue from ${d.newAt}%, checkpoint at ${d.stopAt}%: ${d.why}`);
+  console.log(`5-hour: small issues only from ${d.smallAt}%, no new issue from ${d.newAt}%, checkpoint at ${d.stopAt}% · weekly: size:L under ${LARGE_WEEKLY_UNDER}%, no new issue from ${DEFAULT_WEEKLY_NEW_AT}%, checkpoint at ${DEFAULT_WEEKLY_STOP_AT}%: ${d.why}`);
   process.exit(0);
 }
 
@@ -844,11 +844,13 @@ if (action === 'start') {
   const chosen = defaultLines(sessionModel());
   const newAt = Number(opt('new-at') ?? chosen.newAt), stopAt = Number(opt('stop-at') ?? chosen.stopAt);
   const smallAt = Math.min(Number(opt('small-at') ?? chosen.smallAt), newAt);
+  const weeklyNewAt = Number(opt('weekly-new-at') ?? DEFAULT_WEEKLY_NEW_AT), weeklyStopAt = Number(opt('weekly-stop-at') ?? DEFAULT_WEEKLY_STOP_AT);
   if (!(smallAt > 0 && newAt > 0 && stopAt > newAt && stopAt <= 100)) { console.log('need 0 < --small-at <= --new-at < --stop-at <= 100'); process.exit(1); }
-  const named = ['small-at', 'new-at', 'stop-at'].filter(k => opt(k) != null);
-  console.log(`lines: small issues only from ${smallAt}%, no new issue from ${newAt}%, checkpoint at ${stopAt}% (${named.length === 3 ? 'all three named' : `${chosen.why}${named.length ? `; --${named.join(', --')} named` : ''}`})`);
+  if (!(weeklyNewAt > 0 && weeklyStopAt > weeklyNewAt && weeklyStopAt <= 100)) { console.log('need 0 < --weekly-new-at < --weekly-stop-at <= 100'); process.exit(1); }
+  const named = ['small-at', 'new-at', 'stop-at', 'weekly-new-at', 'weekly-stop-at'].filter(k => opt(k) != null);
+  console.log(`lines: 5-hour: small issues only from ${smallAt}%, no new issue from ${newAt}%, checkpoint at ${stopAt}% · weekly: size:L under ${LARGE_WEEKLY_UNDER}%, no new issue from ${weeklyNewAt}%, checkpoint at ${weeklyStopAt}% (${named.length === 5 ? 'all named' : `${chosen.why}${named.length ? `; --${named.join(', --')} named` : ''}`})`);
   const u = await usage(30);
-  const j = judge(u, { smallAt, newAt, stopAt });
+  const j = judge(u, { smallAt, newAt, stopAt, weeklyNewAt, weeklyStopAt });
   console.log(j.line);
   if (j.verdict !== 'GO' && j.verdict !== 'SMALL') { console.log('Not enough room to start a sprint now.'); process.exit(3); }
   let branch;
@@ -880,7 +882,7 @@ if (action === 'start') {
   const queue = expandNamed(parseIssues(opt('issues')));
   if (flag('only') && !queue.length) { console.log('--only needs --issues'); process.exit(1); }
   const avoid = parseIssues(opt('avoid'));
-  const state = { startedAt: new Date().toISOString(), branch, smallAt, newAt, stopAt, keepGoing: flag('keep-going'), greedy: !flag('no-greedy'), mine: flag('mine'), label: opt('label') || null, external, queue, only: flag('only'), avoid, done: [], skipped: [], current: null, readings: [] };
+  const state = { startedAt: new Date().toISOString(), branch, smallAt, newAt, stopAt, weeklyNewAt, weeklyStopAt, keepGoing: flag('keep-going'), greedy: !flag('no-greedy'), mine: flag('mine'), label: opt('label') || null, external, queue, only: flag('only'), avoid, done: [], skipped: [], current: null, readings: [] };
   record(state, u, 'start');
   writeState(state);
   // The linked repos' worktrees (#57); an --external sprint works one other checkout by hand instead.
@@ -969,21 +971,21 @@ if (action === 'next') {
   console.log([queue.length ? `named first: ${queue.map(n => `#${n}`).join(' ')}${only ? ' (only these)' : ''}` : '',
     only ? '' : greedyOn(s) ? 'then yours, unassigned ones, other developers\' who:claude ones, then Claude\'s part of the shared and the owner\'s issues (keep going; never one In Progress under someone else)'
       : mine ? (mineThenOpen(s) ? 'then issues assigned to you, then unassigned ones (never anyone else\'s)' : 'then only issues assigned to you') : 'then issues assigned to you and unassigned ones (never anyone else\'s)'].filter(Boolean).join('; '));
-  if (j.used !== null) console.log(`room before checkpoint: ${j.stopAt - j.used}% · an issue has cost ${cost ? `${cost}% on average this sprint` : `~${DEFAULT_ISSUE_COST}% (a guess until one is measured)`}`);
+  if (j.used !== null) console.log(`room before checkpoint: ${j.room}% · an issue has cost ${cost ? `${cost}% on average this sprint` : `~${DEFAULT_ISSUE_COST}% (a guess until one is measured)`}`);
   // What each size costs, measured on the board across sprints (#49); a guess until MEASURED_AFTER of a size.
   let averages = {};
   try { averages = sizeAverages(boardUsage()); } catch { /* the board is a nicety here; the list still prints */ }
   const measured = Object.entries(averages).map(([k, v]) => `${k} ${v.avg}% (${v.n})`);
   if (measured.length) console.log(`measured per size on the board: ${measured.join(' · ')}; a size's own average counts from ${MEASURED_AFTER} issues`);
   const sizeLabel = i => i.labels.map(l => l.name).find(n => n.startsWith('size:'));
-  const fits = i => { const e = expectedCost(sizeLabel(i), averages, cost); return { ...e, ok: j.used === null || e.cost <= j.stopAt - j.used }; };
+  const fits = i => { const e = expectedCost(sizeLabel(i), averages, cost); return { ...e, ok: j.used === null || e.cost <= j.room }; };
   if (j.verdict === 'GO') console.log(large.ok ? `${large.why}; work it in steps, wip/issue-N at each pause.` : `${large.why}: large issues are left out of this list.`);
-  if (j.verdict === 'SMALL') console.log(`Past ${j.smallAt}%: size:S issues only.`);
+  if (j.verdict === 'SMALL') console.log(`Past ${j.smallAt}% of the 5-hour window: size:S issues only.`);
   else if (j.verdict !== 'GO') console.log('Not GO: start no new issue.');
   for (const i of list) {
     const labels = i.labels.map(l => l.name).filter(n => /^(P\d|size:|platform:|type:)/.test(n)).join(' ');
     const f = fits(i);
-    console.log(`#${i.number}  ${i.title}${i.named ? '  [named]' : ''}${i.tier >= 2 ? `  [${TIERS[i.tier]}]` : ''}\n        ${labels} · ${i.milestone?.title || 'no milestone'} · ~${f.cost}%${f.measured ? ' (measured)' : ''}${f.ok ? '' : ` · does not fit the ${j.stopAt - j.used}% left`}`);
+    console.log(`#${i.number}  ${i.title}${i.named ? '  [named]' : ''}${i.tier >= 2 ? `  [${TIERS[i.tier]}]` : ''}\n        ${labels} · ${i.milestone?.title || 'no milestone'} · ~${f.cost}%${f.measured ? ' (measured)' : ''}${f.ok ? '' : ` · does not fit the ${j.room}% left`}`);
   }
   // Done only when nothing on the board can be worked on (the owner, 2026-11-22).
   if (!list.length) console.log(rest.length || first.length ? 'Nothing that fits the room left now.' : nothingLeft(found.left));
@@ -1114,7 +1116,7 @@ if (action === 'begin' || action === 'finish' || action === 'skip') {
     if (isLarge(sizes)) { const large = largeAllowed(u, s, flag('asked')); if (!large.ok) { console.log(`${b.line}\n#${n}: ${large.why}.`); process.exit(6); } }
     if (b.verdict === 'SMALL') {
       const size = sizes.find(x => x.startsWith('size:'));
-      if (size !== 'size:S' && size !== 'size:XS') { console.log(`${b.line}\n#${n} is ${size || 'unsized'}: past ${b.smallAt}% only size:S issues start. Pick a small one or checkpoint.`); process.exit(6); }
+      if (size !== 'size:S' && size !== 'size:XS') { console.log(`${b.line}\n#${n} is ${size || 'unsized'}: past ${b.smallAt}% of the 5-hour window only size:S issues start. Pick a small one or checkpoint.`); process.exit(6); }
     }
   }
   record(s, u, `${action} #${n}`);
