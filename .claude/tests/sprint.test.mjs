@@ -4,23 +4,38 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   judge, defaultLines, largeAllowed, averageCost, finishRefusal, isLarge,
-  DEFAULT_SMALL_AT, DEFAULT_NEW_AT, DEFAULT_STOP_AT, FABLE_LINES, LARGE_SESSION_AT, LARGE_WEEKLY_UNDER,
+  DEFAULT_SMALL_AT, DEFAULT_NEW_AT, DEFAULT_STOP_AT, DEFAULT_WEEKLY_NEW_AT, DEFAULT_WEEKLY_STOP_AT, FABLE_LINES, LARGE_SESSION_AT, LARGE_WEEKLY_UNDER,
 } from '../skills/ezaa-sprint/verdict.mjs';
 
 const soon = new Date(Date.now() + 3600e3).toISOString();
 const u = (session, weekly) => ({ session, weekly, sessionResets: soon, weeklyResets: soon });
 const v = (session, weekly, lines) => judge(u(session, weekly), lines).verdict;
 
-test('default lines: GO / SMALL / WRAP / STOP on either limit', () => {
+test('default lines: GO / SMALL / WRAP / STOP on the 5-hour window', () => {
   assert.deepEqual([DEFAULT_SMALL_AT, DEFAULT_NEW_AT, DEFAULT_STOP_AT], [80, 94, 96]);
   assert.equal(v(10, 10), 'GO');
   assert.equal(v(79, 0), 'GO');
   assert.equal(v(80, 0), 'SMALL');
-  assert.equal(v(0, 93), 'SMALL', 'the weekly figure counts too');
   assert.equal(v(94, 0), 'WRAP');
   assert.equal(v(95, 50), 'WRAP');
   assert.equal(v(96, 0), 'STOP');
+});
+
+test('the weekly limit has its own lines (the owner, 2026-11-25): S and M until 98%, L under 92%', () => {
+  assert.deepEqual([DEFAULT_WEEKLY_NEW_AT, DEFAULT_WEEKLY_STOP_AT, LARGE_WEEKLY_UNDER], [98, 99, 92]);
+  assert.equal(v(10, 81), 'GO', 'past 80% of the week, medium issues still start');
+  assert.equal(v(10, 93), 'GO', 'and past 92%');
+  assert.equal(v(10, 97), 'GO');
+  assert.equal(v(10, 98), 'WRAP');
   assert.equal(v(10, 99), 'STOP');
+  assert.equal(largeAllowed(u(5, 91), { keepGoing: true }).ok, true);
+  assert.equal(largeAllowed(u(5, 92), { keepGoing: true }).ok, false, 'size:L stops at 92% of the week');
+  assert.equal(judge(u(10, 97)).room, 2, 'room is to the nearer checkpoint line');
+  assert.equal(judge(u(90, 20)).room, 6);
+  assert.equal(judge(u(10, 98)).binding, 'weekly', 'the week set the verdict, so its reset is the one to wait for');
+  assert.equal(v(10, 95, { smallAt: 80, newAt: 94, stopAt: 96, weeklyNewAt: 90, weeklyStopAt: 95 }), 'STOP', 'named weekly lines win');
+  assert.equal(v(10, 95, { smallAt: 80, newAt: 94, stopAt: 96 }), 'GO', 'a sprint started before the weekly lines gets the defaults');
+  assert.match(judge(u(10, 10)).line, /weekly: size:L under 92%, no new issue from 98%, checkpoint at 99%/);
 });
 
 test('a missing figure counts as 0, an error is UNKNOWN', () => {

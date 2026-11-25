@@ -4,9 +4,15 @@
 
 export const STALE_HOURS = 14;              // a sprint left behind by a crash stops counting this long after its last step
 export const KEEP_GOING_STALE_HOURS = 8 * 24; // a keep-going sprint may wait out a weekly reset (maintainer, 2026-11-13)
+// The 5-hour window's lines.
 export const DEFAULT_SMALL_AT = 80;         // only size:S issues start at or above this % (maintainer, 2026-11-13)
-export const DEFAULT_NEW_AT = 94;           // no new issue at or above this % (either limit)
+export const DEFAULT_NEW_AT = 94;           // no new issue at or above this %
 export const DEFAULT_STOP_AT = 96;          // checkpoint now at or above this % (every finished issue is already pushed, so it costs under 1%)
+// The weekly limit's own lines (the owner, 2026-11-25): its reset is a day or more
+// away, so size:S and size:M issues keep starting until the week is 98% full;
+// size:L stops at LARGE_WEEKLY_UNDER (92%), below.
+export const DEFAULT_WEEKLY_NEW_AT = 98;    // no new issue at or above this % of the week
+export const DEFAULT_WEEKLY_STOP_AT = 99;   // checkpoint now at or above this % of the week
 // On Fable a keep-going sprint's 55-minute wakes alone cost about 2% of the
 // 5-hour window an hour (the owner, 2026-11-16, #82), so the lines sit lower
 // there. Any other model keeps the three above.
@@ -32,17 +38,27 @@ export const until = iso => {
   return `${at}, in ${m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}` : `${m}m`}`;
 };
 
+// newAt, stopAt and smallAt are the 5-hour window's lines; weeklyNewAt and
+// weeklyStopAt the week's (a sprint started before they existed gets the defaults).
+// `room` is how far the nearer checkpoint line is.
 export function judge(u, s) {
   const newAt = s?.newAt ?? DEFAULT_NEW_AT, stopAt = s?.stopAt ?? DEFAULT_STOP_AT;
   const smallAt = Math.min(s?.smallAt ?? DEFAULT_SMALL_AT, newAt);
-  if (u.error) return { verdict: 'UNKNOWN', smallAt, newAt, stopAt, used: null, line: `UNKNOWN: ${u.error}. Finish the current issue, then checkpoint.` };
-  const used = Math.max(u.session ?? 0, u.weekly ?? 0);
-  const binding = (u.weekly ?? 0) > (u.session ?? 0) ? 'weekly' : '5-hour';
-  const verdict = used >= stopAt ? 'STOP' : used >= newAt ? 'WRAP' : used >= smallAt ? 'SMALL' : 'GO';
+  const weeklyNewAt = s?.weeklyNewAt ?? DEFAULT_WEEKLY_NEW_AT, weeklyStopAt = s?.weeklyStopAt ?? DEFAULT_WEEKLY_STOP_AT;
+  if (u.error) return { verdict: 'UNKNOWN', smallAt, newAt, stopAt, weeklyNewAt, weeklyStopAt, used: null, room: null, line: `UNKNOWN: ${u.error}. Finish the current issue, then checkpoint.` };
+  const session = u.session ?? 0, weekly = u.weekly ?? 0;
+  const used = Math.max(session, weekly);
+  const verdict = session >= stopAt || weekly >= weeklyStopAt ? 'STOP'
+    : session >= newAt || weekly >= weeklyNewAt ? 'WRAP'
+    : session >= smallAt ? 'SMALL' : 'GO';
+  const room = Math.max(0, Math.min(stopAt - session, weeklyStopAt - weekly));
+  // The limit that set the verdict (or, with neither past a line, the fuller one) is the one to wait out.
+  const weeklyHit = weekly >= weeklyNewAt, sessionHit = session >= newAt;
+  const binding = weeklyHit !== sessionHit ? (weeklyHit ? 'weekly' : '5-hour') : (weekly > session ? 'weekly' : '5-hour');
   const resets = binding === 'weekly' ? u.weeklyResets : u.sessionResets;
-  const line = `${verdict}: 5-hour ${u.session ?? '?'}% (resets ${until(u.sessionResets)}) · weekly ${u.weekly ?? '?'}% (resets ${until(u.weeklyResets)}) · ${smallAt < newAt ? `small issues only from ${smallAt}%, ` : ''}no new issue from ${newAt}%, checkpoint at ${stopAt}%${u.stale ? ` (stale: ${u.stale})` : ''}`;
+  const line = `${verdict}: 5-hour ${u.session ?? '?'}% (resets ${until(u.sessionResets)}) · weekly ${u.weekly ?? '?'}% (resets ${until(u.weeklyResets)}) · 5-hour: ${smallAt < newAt ? `small issues only from ${smallAt}%, ` : ''}no new issue from ${newAt}%, checkpoint at ${stopAt}% · weekly: size:L under ${LARGE_WEEKLY_UNDER}%, no new issue from ${weeklyNewAt}%, checkpoint at ${weeklyStopAt}%${u.stale ? ` (stale: ${u.stale})` : ''}`;
   const resumeInSeconds = resets ? Math.max(0, Math.round((Date.parse(resets) - Date.now()) / 1000) + 120) : null;
-  return { verdict, smallAt, newAt, stopAt, used, binding, resumeInSeconds, line };
+  return { verdict, smallAt, newAt, stopAt, weeklyNewAt, weeklyStopAt, used, room, binding, resumeInSeconds, line };
 }
 
 export const isLarge = labels => labels.some(l => (l.name ?? l) === 'size:L' || (l.name ?? l) === 'size:XL');
