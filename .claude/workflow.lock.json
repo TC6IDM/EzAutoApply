@@ -1,9 +1,9 @@
 {
-  "version": "0.11.0",
-  "commit": "6f324a8",
+  "version": "0.12.0",
+  "commit": "98788d4",
   "prefix": "ezaa",
   "design": false,
-  "syncedAt": "2026-11-25",
+  "syncedAt": "2026-11-28",
   "files": {
     ".claude/skills/ezaa-issues/board-plan.mjs": "6bda36b647ed40f3",
     ".claude/skills/ezaa-issues/bootstrap.mjs": "f50b403e6934fcb5",
@@ -28,8 +28,9 @@
     ".claude/tests/sprint.test.mjs": "6032e7664307bccc",
     ".claude/skills/ezaa-sprint/repo.mjs": "47ac34a692ca3420",
     ".claude/hooks/repo.mjs": "5c47592db3c79247",
-    ".claude/skills/ezaa-issues/SKILL.md": "0d4e1e5d800465b8",
-    ".claude/skills/ezaa-sprint/SKILL.md": "d7c2a2a13ff716ae",
-    ".claude/skills/ezaa-workflow-sync/SKILL.md": "a237026679ac5927"
+    ".claude/skills/ezaa-issues/SKILL.md": "1ce1ad9d2ab95f5e",
+    ".claude/skills/ezaa-sprint/SKILL.md": "001b4b5ed7a813bd",
+    ".claude/skills/ezaa-workflow-sync/SKILL.md": "a237026679ac5927",
+    ".claude/skills/ezaa-untangle/SKILL.md": "7296a84a91c96c21"
   }
 }
